@@ -1,0 +1,7 @@
+{
+  "name": "dairyapplication",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dairy application monorepo root (mobile app lives in ./mobile)",
+  "license": "ISC"
+}
