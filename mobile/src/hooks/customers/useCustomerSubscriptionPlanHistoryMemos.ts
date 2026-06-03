@@ -23,7 +23,11 @@ export function useCustomerSubscriptionPlanHistoryMemos(customerId: string | und
     queryKey: subscriptionPlanHistoryMemosQueryKey(customerId),
     queryFn: () => loadSubscriptionPlanHistoryMemos(customerId!),
     enabled: !!customerId,
-    staleTime: 5_000,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   });
 
   const append = useMutation({

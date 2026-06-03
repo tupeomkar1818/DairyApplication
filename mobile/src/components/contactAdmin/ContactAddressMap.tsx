@@ -4,6 +4,7 @@ import { WebView } from 'react-native-webview';
 
 import type { ContactAddress } from '@/src/domain/contactAdmin/entities';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { pointerEventsNone } from '@/src/theme/platformStyles';
 
 type Props = {
   address: ContactAddress;
@@ -27,9 +28,8 @@ export function ContactAddressMap({ address }: Props) {
       <View style={styles.mapWrap}>
         <WebView
           source={{ uri: address.mapEmbedUrl }}
-          style={styles.map}
+          style={[styles.map, pointerEventsNone]}
           scrollEnabled={false}
-          pointerEvents="none"
           originWhitelist={['https://*']}
           accessibilityLabel="Map showing Amrale Dairy location"
         />

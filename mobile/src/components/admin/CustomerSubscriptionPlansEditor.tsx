@@ -40,6 +40,7 @@ import {
   useUpdateCustomer,
 } from '@/src/hooks/customers';
 import { useProducts } from '@/src/hooks/products';
+import { formFieldAttrs } from '@/src/theme/platformStyles';
 
 function planIsMilkRow(p: CustomerSubscriptionPlanDto, catalog: Product[]): boolean {
   const prod = catalog.find((x) => x.name === p.productName);
@@ -119,7 +120,7 @@ export type CustomerSubscriptionPlansEditorProps = {
   customerId: string;
 };
 
-export function CustomerSubscriptionPlansEditor({ customer, customerId }: CustomerSubscriptionPlansEditorProps) {
+function CustomerSubscriptionPlansEditorInner({ customer, customerId }: CustomerSubscriptionPlansEditorProps) {
   const scheme = useColorScheme();
   const { width } = useWindowDimensions();
   const qc = useQueryClient();
@@ -532,6 +533,7 @@ export function CustomerSubscriptionPlansEditor({ customer, customerId }: Custom
   return (
     <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
       <Card.Content style={styles.cardInnerAccordion}>
+        <View style={styles.sectionCardClip}>
         <List.Accordion
           title="Basic subscription details"
           expanded={basicAccordionExpanded}
@@ -673,6 +675,7 @@ export function CustomerSubscriptionPlansEditor({ customer, customerId }: Custom
                   {milkLineHasPackComplete(wizardDraft, milkProducts) ? (
                     <>
                       <TextInput
+                        {...formFieldAttrs('subscription-plan-start-date')}
                         dense={inputDense}
                         mode="outlined"
                         label="Start date"
@@ -699,6 +702,7 @@ export function CustomerSubscriptionPlansEditor({ customer, customerId }: Custom
                         End date defaults to month-end when you set the start date; you can edit it or use the calendar. End must be on or after the start date (same day is allowed to expire a line).
                       </Text>
                       <TextInput
+                        {...formFieldAttrs('subscription-plan-end-date')}
                         dense={inputDense}
                         mode="outlined"
                         label="End date"
@@ -746,6 +750,7 @@ export function CustomerSubscriptionPlansEditor({ customer, customerId }: Custom
             </HelperText>
           </View>
         </List.Accordion>
+        </View>
       </Card.Content>
 
       <Portal>
@@ -965,6 +970,8 @@ export function CustomerSubscriptionPlansEditor({ customer, customerId }: Custom
   );
 }
 
+export const CustomerSubscriptionPlansEditor = React.memo(CustomerSubscriptionPlansEditorInner);
+
 const styles = StyleSheet.create({
   bold: { fontWeight: '900' },
   cardInner: { gap: 10 },
@@ -1001,7 +1008,8 @@ const styles = StyleSheet.create({
   savedPlanCardLight: { borderColor: 'rgba(148,163,184,0.35)', backgroundColor: 'rgba(148,163,184,0.06)' },
   savedPlanCardDark: { borderColor: 'rgba(255,255,255,0.12)', backgroundColor: 'rgba(255,255,255,0.04)' },
   savedPlanFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2, gap: 8 },
-  sectionCard: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
+  sectionCard: { borderRadius: 16, borderWidth: 1 },
+  sectionCardClip: { overflow: 'hidden', borderRadius: 16 },
   sectionCardLight: { backgroundColor: 'white', borderColor: 'rgba(37,99,235,0.10)' },
   sectionCardDark: { backgroundColor: 'rgba(15,23,42,0.70)', borderColor: 'rgba(255,255,255,0.10)' },
   textOnLight: { color: COLORS.text },

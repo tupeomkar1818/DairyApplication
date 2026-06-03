@@ -292,7 +292,6 @@ const styles = StyleSheet.create({
   deliveryCard: {
     borderRadius: 12,
     borderWidth: 1,
-    overflow: 'hidden',
     shadowColor: '#000',
     shadowOpacity: 0.04,
     shadowRadius: 10,

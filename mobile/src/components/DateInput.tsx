@@ -5,6 +5,8 @@ import { Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View 
 import { Calendar } from 'react-native-calendars';
 import { Button, Dialog, Portal, Text, TextInput } from 'react-native-paper';
 
+import { formFieldAttrs } from '@/src/theme/platformStyles';
+
 export type DateInputValueFormat = 'DD/MM/YYYY';
 
 /** Strips non-digits, caps at 8, inserts slashes as DD/MM/YYYY while typing. */
@@ -69,6 +71,7 @@ export function DateInput({
   mode = 'outlined',
   outlineStyle,
   activeOutlineColor = '#2563EB',
+  fieldName,
 }: {
   label: string;
   value: string;
@@ -79,6 +82,8 @@ export function DateInput({
   mode?: React.ComponentProps<typeof TextInput>['mode'];
   outlineStyle?: object;
   activeOutlineColor?: string;
+  /** DOM id/name stem; defaults to a slug from `label`. */
+  fieldName?: string;
 }) {
   const { width, height } = useWindowDimensions();
   const isMobile = width < 520;
@@ -104,10 +109,13 @@ export function DateInput({
   }
 
   const selectedIso = useMemo(() => ddMmYyyyToIso((value ?? '').trim()), [value]);
+  const resolvedFieldName =
+    fieldName ?? `date-${label.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'field'}`;
 
   return (
     <>
       <TextInput
+        {...formFieldAttrs(resolvedFieldName, { autoComplete: 'bday' })}
         dense={dense}
         mode={mode}
         label={label}
@@ -142,10 +150,11 @@ export function DateInput({
         <Dialog
           visible={open && Platform.OS === 'web'}
           onDismiss={() => setOpen(false)}
-          style={{ alignSelf: 'center', width: dialogW, maxWidth: dialogW, maxHeight: dialogMaxHeight, overflow: 'hidden' }}
+          style={{ alignSelf: 'center', width: dialogW, maxWidth: dialogW, maxHeight: dialogMaxHeight }}
         >
-          <Dialog.Title>{step === 'calendar' ? 'Select Date' : step === 'year' ? 'Select Year' : 'Select Month'}</Dialog.Title>
-          <Dialog.Content>
+          <View style={styles.dialogClip}>
+            <Dialog.Title>{step === 'calendar' ? 'Select Date' : step === 'year' ? 'Select Year' : 'Select Month'}</Dialog.Title>
+            <Dialog.Content>
             {step === 'calendar' ? (
               <Calendar
                 current={`${cursorState.getFullYear()}-${String(cursorState.getMonth() + 1).padStart(2, '0')}-01`}
@@ -211,19 +220,20 @@ export function DateInput({
                 ))}
               </View>
             ) : null}
-          </Dialog.Content>
-          <Dialog.Actions style={{ flexWrap: 'wrap' }}>
-            {!isMobile && step !== 'calendar' ? (
-              <Button
-                onPress={() => {
-                  setStep(step === 'month' ? 'year' : 'calendar');
-                }}
-              >
-                Back
-              </Button>
-            ) : null}
-            <Button onPress={() => setOpen(false)}>Close</Button>
-          </Dialog.Actions>
+            </Dialog.Content>
+            <Dialog.Actions style={{ flexWrap: 'wrap' }}>
+              {!isMobile && step !== 'calendar' ? (
+                <Button
+                  onPress={() => {
+                    setStep(step === 'month' ? 'year' : 'calendar');
+                  }}
+                >
+                  Back
+                </Button>
+              ) : null}
+              <Button onPress={() => setOpen(false)}>Close</Button>
+            </Dialog.Actions>
+          </View>
         </Dialog>
       </Portal>
     </>
@@ -231,6 +241,7 @@ export function DateInput({
 }
 
 const styles = StyleSheet.create({
+  dialogClip: { overflow: 'hidden', borderRadius: 28 },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
   webCalHeaderPress: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 },
   pickItem: { paddingVertical: 10, paddingHorizontal: 10, borderRadius: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(148,163,184,0.12)', marginBottom: 8 },

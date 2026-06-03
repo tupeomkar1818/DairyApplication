@@ -2,6 +2,7 @@ import { StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { normalizeMobileNumberInput } from '@/src/domain/shared/numerals';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { formFieldAttrs } from '@/src/theme/platformStyles';
 
 type Props = {
   value: string;
@@ -36,6 +37,7 @@ export function MobileNumberField({
           <Text style={[styles.countryText, isLight ? styles.textLight : styles.textDark]}>🇮🇳 +91</Text>
         </View>
         <TextInput
+          {...formFieldAttrs('login-mobile', { autoComplete: 'tel' })}
           style={[styles.input, isLight ? styles.inputLight : styles.inputDark]}
           placeholder={isLight ? 'Enter mobile number' : 'Mobile number'}
           placeholderTextColor={isLight ? amraleColors.textSubtle : amraleColors.whiteSubtle}

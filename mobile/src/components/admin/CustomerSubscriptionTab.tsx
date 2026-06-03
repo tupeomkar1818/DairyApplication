@@ -1,5 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Button, Card, Dialog, Portal, Text, TextInput } from 'react-native-paper';
@@ -30,6 +30,7 @@ import {
   useCustomerSubscriptionCalendar,
 } from '@/src/hooks/customers';
 import { useProducts } from '@/src/hooks/products';
+import { platformShadow } from '@/src/theme/platformStyles';
 
 const COLORS = {
   primary: '#2563EB',
@@ -213,7 +214,7 @@ export type CustomerSubscriptionTabProps = {
   scheme: 'light' | 'dark' | null | undefined;
 };
 
-export function CustomerSubscriptionTab({
+function CustomerSubscriptionTabInner({
   customer: c,
   customerId,
   isMobile,
@@ -917,6 +918,8 @@ export function CustomerSubscriptionTab({
   );
 }
 
+export const CustomerSubscriptionTab = memo(CustomerSubscriptionTabInner);
+
 const styles = StyleSheet.create({
   root: { width: '100%', maxWidth: '100%' },
   mainCol: { width: '100%', maxWidth: '100%' },
@@ -933,7 +936,11 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     flexGrow: 1,
   },
-  sectionCard: { borderRadius: 16, borderWidth: 1, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
+  sectionCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    ...platformShadow({ shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } }),
+  },
   sectionCardLight: { backgroundColor: 'white', borderColor: 'rgba(37,99,235,0.10)' },
   sectionCardDark: { backgroundColor: 'rgba(15,23,42,0.70)', borderColor: 'rgba(255,255,255,0.10)' },
   textOnLight: { color: COLORS.text },

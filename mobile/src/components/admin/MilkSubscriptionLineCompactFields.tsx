@@ -13,6 +13,7 @@ import {
   moneyInr,
   packSizeOptionsForProduct,
 } from '@/src/components/admin/milkSubscriptionLineUi';
+import { formFieldAttrs } from '@/src/theme/platformStyles';
 
 const COLORS = {
   primary: '#2563EB',
@@ -180,6 +181,7 @@ export function MilkSubscriptionLineCompactFields({
           <Dialog.Content style={[styles.pickerDialogContent, { maxHeight: productListScrollMaxH + 120 }]}>
             <View style={styles.pickerDialogInner}>
               <TextInput
+                {...formFieldAttrs('subscription-product-search', { autoComplete: 'off' })}
                 mode="outlined"
                 dense
                 label="Search product"

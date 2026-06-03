@@ -12,7 +12,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Snackbar } from 'react-native-paper';
+import { AppSnackbar } from '@/src/components/shared/AppSnackbar';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
 
 import { MobileNumberField } from '@/src/components/auth/MobileNumberField';
@@ -439,9 +439,7 @@ export function ProfileScreen() {
         onResend={isOldMobileOtpStep ? onStartMobileChange : onSendNewMobileOtp}
       />
 
-      <Snackbar visible={!!snack} onDismiss={() => setSnack(null)} duration={3000}>
-        {snack}
-      </Snackbar>
+      <AppSnackbar visible={!!snack} message={snack ?? ''} onDismiss={() => setSnack(null)} duration={3000} />
     </KeyboardAvoidingView>
   );
 }

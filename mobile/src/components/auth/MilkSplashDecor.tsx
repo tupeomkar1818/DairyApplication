@@ -2,6 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import { amraleColors } from '@/src/theme/dairyTactile';
+import { pointerEventsNone } from '@/src/theme/platformStyles';
 
 type Props = {
   variant?: 'dark' | 'light';
@@ -19,7 +20,7 @@ export function MilkSplashDecor({ variant = 'dark' }: Props) {
   });
 
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none" accessibilityElementsHidden>
+    <View style={[StyleSheet.absoluteFill, pointerEventsNone]} accessibilityElementsHidden>
       <LinearGradient
         colors={[`${accent}22`, `${accent}08`, 'transparent']}
         start={{ x: 0, y: 1 }}

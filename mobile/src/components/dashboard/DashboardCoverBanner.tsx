@@ -5,6 +5,7 @@ import type { DashboardCoverImage } from '@/src/domain/adminDashboard/entities';
 import { computeDashboardCoverHeight } from '@/src/components/dashboard/dashboardCoverLayout';
 import { resolveDashboardCoverSource } from '@/src/components/dashboard/dashboardCover';
 import { amraleColors } from '@/src/theme/dairyTactile';
+import { pointerEventsNone } from '@/src/theme/platformStyles';
 import { useResponsiveLayout } from '@/src/utils/responsiveLayout';
 
 type Props = {
@@ -46,7 +47,7 @@ export function DashboardCoverBanner({
         accessibilityIgnoresInvertColors
       />
       {editable ? (
-        <View style={styles.editBadge} pointerEvents="none">
+        <View style={[styles.editBadge, pointerEventsNone]}>
           {isUpdating ? (
             <ActivityIndicator color={amraleColors.white} size="small" />
           ) : (

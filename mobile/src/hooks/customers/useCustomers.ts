@@ -11,7 +11,11 @@ export function useCustomers() {
   const query = useQuery<CustomerListResponse>({
     queryKey: ['customers', 'list'],
     queryFn: () => services.customers.list(),
-    staleTime: 10_000,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -30,7 +34,11 @@ export function useCustomer(id: string | undefined) {
     queryKey,
     queryFn: () => (id ? services.customers.getById(id) : Promise.resolve(null)),
     enabled: !!id,
-    staleTime: 10_000,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {

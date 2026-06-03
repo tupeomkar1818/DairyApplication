@@ -929,7 +929,7 @@ const styles = StyleSheet.create({
   summaryLabel: { color: 'rgba(255,255,255,0.90)', marginTop: 10 },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  productCard: { borderRadius: 20, borderWidth: 1, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 16, shadowOffset: { width: 0, height: 10 } },
+  productCard: { borderRadius: 20, borderWidth: 1, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 16, shadowOffset: { width: 0, height: 10 } },
   productContent: { gap: 10 },
 
   productTop: { flexDirection: 'row', gap: 12, alignItems: 'center' },

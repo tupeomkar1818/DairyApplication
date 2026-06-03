@@ -11,7 +11,11 @@ export function useProducts() {
   const query = useQuery<ProductListResponse>({
     queryKey: ['products', 'list'],
     queryFn: () => services.products.list(),
-    staleTime: 10_000,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {

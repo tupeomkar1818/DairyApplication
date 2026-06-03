@@ -69,9 +69,6 @@ function RootLayoutNav() {
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="(auth)" />
-            <Stack.Screen name="(admin)" />
-            <Stack.Screen name="(customer)" />
-            <Stack.Screen name="(delivery)" />
             <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
           </Stack>
         </ThemeProvider>

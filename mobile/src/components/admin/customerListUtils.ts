@@ -42,10 +42,10 @@ export function customerListStatus(c: CustomerResponse): { label: string; tone: 
 export function customerStatusBadgeColors(tone: CustomerListStatusTone): { bg: string; fg: string } {
   switch (tone) {
     case 'leave':
-      return { bg: 'rgba(53, 81, 161, 0.12)', fg: '#3551A1' };
+      return { bg: 'rgba(206, 212, 225, 0.55)', fg: '#3e454f' };
     case 'inactive':
-      return { bg: 'rgba(100, 116, 139, 0.14)', fg: '#64748B' };
+      return { bg: 'rgba(195, 198, 214, 0.4)', fg: '#424653' };
     default:
-      return { bg: 'rgba(34, 197, 94, 0.12)', fg: '#16A34A' };
+      return { bg: 'rgba(37, 117, 252, 0.1)', fg: '#0055c7' };
   }
 }

@@ -24,7 +24,11 @@ export function useCustomerSubscriptionCalendar(customerId: string | undefined) 
     queryKey,
     queryFn: () => loadCalendarEntries(customerId!),
     enabled: !!customerId,
-    staleTime: 5_000,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -74,7 +78,7 @@ export function useCustomerSubscriptionCalendar(customerId: string | undefined) 
   return {
     entries: safeEntries,
     ready,
-    append: useCallback((p: AppendSubscriptionCalendarEntryRequest) => append.mutateAsync(p), [append]),
-    remove: useCallback((id: string) => remove.mutateAsync(id), [remove]),
+    append: useCallback((p: AppendSubscriptionCalendarEntryRequest) => append.mutateAsync(p), [append.mutateAsync]),
+    remove: useCallback((id: string) => remove.mutateAsync(id), [remove.mutateAsync]),
   };
 }

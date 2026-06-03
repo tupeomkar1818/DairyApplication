@@ -278,7 +278,7 @@ const styles = StyleSheet.create({
   appBar: { paddingHorizontal: 16, paddingBottom: 12 },
   container: { padding: 16, paddingBottom: 24 },
 
-  sectionCard: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
+  sectionCard: { borderRadius: 16, borderWidth: 1 },
   cardLight: { backgroundColor: 'white', borderColor: 'rgba(37,99,235,0.10)' },
   cardDark: { backgroundColor: 'rgba(15,23,42,0.70)', borderColor: 'rgba(255,255,255,0.10)' },
 

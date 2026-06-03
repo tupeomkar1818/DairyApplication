@@ -1,10 +1,16 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
 import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
-import { Button, Card, Dialog, Portal, Snackbar, Text, TextInput } from 'react-native-paper';
+import { Button, Card, Dialog, Portal, Text, TextInput } from 'react-native-paper';
 
+import { CustomerDetailOverview } from '@/src/components/admin/CustomerDetailOverview';
+import { CustomerDetailProfileCard } from '@/src/components/admin/CustomerDetailProfileCard';
 import { CustomerSubscriptionTab } from '@/src/components/admin/CustomerSubscriptionTab';
+import { AppSnackbar } from '@/src/components/shared/AppSnackbar';
+import { DairyTactileScreenBackground } from '@/src/components/shared/DairyTactileScreenBackground';
 import {
   buildCalendarCells,
   type DeliveryDayTone,
@@ -26,6 +32,15 @@ import { useUpdateCustomer } from '@/src/hooks/customers/useCustomers';
 import { useDeliveryBoys } from '@/src/hooks/deliveryBoys';
 import { useProducts } from '@/src/hooks/products/useProducts';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
+import {
+  amraleRadius,
+  amraleSpacing,
+  amraleTypography,
+  dairyGradient,
+  dairyTactileColors,
+  primaryButtonElevation,
+} from '@/src/theme/dairyTactile';
+import { formFieldAttrs, platformShadow } from '@/src/theme/platformStyles';
 
 const COLORS = {
   primary: '#2563EB',
@@ -164,6 +179,53 @@ function fmtYmd(ymd: string): string {
   return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+function formatCustomerDisplayId(id: string): string {
+  const compact = id.replace(/^cust_/, '').replace(/_/g, '').toUpperCase();
+  const tail = compact.slice(-4) || compact.slice(0, 4) || '0000';
+  return `#CUST-${tail}`;
+}
+
+function customerInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return `${parts[0]![0] ?? ''}${parts[parts.length - 1]![0] ?? ''}`.toUpperCase();
+}
+
+function memberBadgeLabel(c: { subscriptionStatus?: string; billingType?: string; status?: string } | null | undefined): string {
+  const billing = String(c?.billingType ?? '').trim();
+  if (billing === 'Prepaid') return 'Premium Member';
+  const sub = String(c?.subscriptionStatus ?? '').trim();
+  if (sub === 'Active') return 'Active Member';
+  if (sub) return sub;
+  return String(c?.status ?? 'Member');
+}
+
+function formatMobileDisplay(mobile: string): string {
+  const digits = mobile.replace(/\D/g, '');
+  if (digits.length === 10) return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  return mobile.trim() || '—';
+}
+
+function overviewAddressTags(c: {
+  societyName?: string;
+  specialDeliveryInstructions?: string;
+} | null | undefined): string[] {
+  if (!c) return [];
+  const tags: string[] = [];
+  if (c.societyName?.trim()) tags.push('RESIDENTIAL');
+  if (c.specialDeliveryInstructions?.trim()) tags.push('GATE ACCESS REQUIRED');
+  return tags;
+}
+
+function billingTypeDisplay(c: { billingType?: string; paymentType?: string } | null | undefined): string {
+  const billing = String(c?.billingType ?? '').trim();
+  if (billing === 'Prepaid') return 'Prepaid Wallet';
+  if (billing) return billing;
+  const pay = String(c?.paymentType ?? '').trim();
+  return pay || '—';
+}
+
 function badgeTone(status: string): { bg: string; fg: string; border: string } {
   switch (status) {
     case 'Paid':
@@ -210,7 +272,14 @@ function TabPill({
         pressed && styles.pressed,
       ]}
     >
-      <Text variant="labelLarge" style={[active ? styles.tabTextActive : styles.tabTextInactive, textSizeStyle]} numberOfLines={1}>
+      <Text
+        style={[
+          active ? styles.tabTextActive : styles.tabTextInactive,
+          textSizeStyle,
+          { fontFamily: active ? amraleTypography.fontFamily.bold : amraleTypography.fontFamily.semiBold },
+        ]}
+        numberOfLines={1}
+      >
         {label}
       </Text>
     </Pressable>
@@ -257,8 +326,34 @@ function TableRow({
   );
 }
 
+function DeferredTabPlaceholder({
+  label,
+  sectionCard,
+  textMain,
+  textSub,
+}: {
+  label: string;
+  sectionCard: object;
+  textMain: object;
+  textSub: object;
+}) {
+  return (
+    <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
+      <Card.Content style={styles.sectionContent}>
+        <Text variant="titleSmall" style={[styles.bold, textMain]}>
+          {label}
+        </Text>
+        <Text variant="bodySmall" style={textSub}>
+          Loading…
+        </Text>
+      </Card.Content>
+    </Card>
+  );
+}
+
 export default function AdminCustomerDetailDashboard() {
   const scheme = useColorScheme();
+  const navigation = useNavigation();
   const { headerPaddingTop, scrollPaddingBottom } = useScreenSafeInsets();
   const { width, height } = useWindowDimensions();
   const params = useLocalSearchParams<{ id?: string }>();
@@ -268,10 +363,11 @@ export default function AdminCustomerDetailDashboard() {
   const products = useProducts();
   const deliveryBoys = useDeliveryBoys();
   const [tab, setTab] = useState<TabKey>('overview');
+  const deferredTab = useDeferredValue(tab);
+  const [readyTab, setReadyTab] = useState<TabKey>('overview');
   const dailyOrders = useCustomerDailyProductOrders(id);
 
   const c = customer.data;
-  const title = c?.name ?? 'Customer';
 
   const sectionCard = scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight;
   const textMain = scheme === 'dark' ? styles.textOnDark : styles.textOnLight;
@@ -354,41 +450,50 @@ export default function AdminCustomerDetailDashboard() {
   const [complaintActionStatus, setComplaintActionStatus] = useState<'Open' | 'In Progress' | 'Resolved' | 'Closed'>('Open');
   const [complaintActionNote, setComplaintActionNote] = useState('');
 
+  const setActiveTab = useCallback((nextTab: TabKey) => {
+    startTransition(() => {
+      setTab((currentTab) => (currentTab === nextTab ? currentTab : nextTab));
+    });
+  }, []);
+
   useEffect(() => {
     setSelectedPaymentMode(customerDefaultPaymentMode);
   }, [customerDefaultPaymentMode, paymentMonth]);
 
-  const shouldComputeBillingUi = tab === 'billing';
-  const shouldComputePaymentUi = tab === 'paymentHistory';
+  useEffect(() => {
+    if (tab !== 'deliveryHistory' && deliverySelectedDayYmd) {
+      setDeliverySelectedDayYmd(null);
+    }
+  }, [tab, deliverySelectedDayYmd]);
+
+  useEffect(() => {
+    if (tab === deferredTab) {
+      setReadyTab(tab);
+      return;
+    }
+    const fallback = setTimeout(() => setReadyTab(tab), 120);
+    return () => clearTimeout(fallback);
+  }, [tab, deferredTab]);
+
+  const isTabReady = tab === readyTab;
+
+  // Heavy month/billing loops only for the visible tab after the switch settles.
+  const shouldComputeBillingUi = tab === 'billing' && isTabReady;
+  const shouldComputePaymentUi = tab === 'paymentHistory' && isTabReady;
   const shouldComputeBillingTimeline = shouldComputeBillingUi || shouldComputePaymentUi;
-
-  // Defer heavy billing-related inputs so typing / tab switches stay responsive;
-  // the billing loops recompute when the main thread is idle.
-  const deferredDailyOrderLines = useDeferredValue(dailyOrders.lines);
-  const deferredCustomer = useDeferredValue(c);
-
-  const billingSubscriptionTotal = useMemo(() => {
-    if (!deferredCustomer) return 0;
-    if (!shouldComputeBillingUi) return 0;
-    return computeSubscriptionBillingTotalForMonth(
-      billingMonth,
-      (deferredCustomer.subscriptionPlans ?? []) as any[],
-      deferredDailyOrderLines as any[],
-      (deferredCustomer.deliveries ?? []) as any[],
-    );
-  }, [deferredCustomer, billingMonth, deferredDailyOrderLines, shouldComputeBillingUi]);
+  const shouldComputeDeliveryUi = tab === 'deliveryHistory' && isTabReady;
 
   const billingDiscount = useMemo(() => Math.max(0, Number(c?.discountAmount ?? 0)), [c?.discountAmount]);
 
   const billingTimeline = useMemo(() => {
-    if (!deferredCustomer) return [];
+    if (!c) return [];
     if (!shouldComputeBillingTimeline) return [];
 
     const monthsDesc = billingMonthOptions.length ? billingMonthOptions : [monthKey];
     const monthsAsc = monthsDesc.slice().reverse();
 
     // Payments are applied FIFO to the oldest outstanding bill to keep Billing + Payments consistent.
-    const payments = [...(deferredCustomer.payments ?? [])]
+    const payments = [...(c.payments ?? [])]
       .map((p) => ({
         date: String((p as any).paymentDate ?? ''),
         amount: Math.max(0, Number((p as any).amountPaid ?? 0)),
@@ -418,9 +523,9 @@ export default function AdminCustomerDetailDashboard() {
         Math.round(
           computeSubscriptionBillingTotalForMonth(
             m,
-            (deferredCustomer.subscriptionPlans ?? []) as any[],
-            deferredDailyOrderLines as any[],
-            (deferredCustomer.deliveries ?? []) as any[],
+            (c.subscriptionPlans ?? []) as any[],
+            (dailyOrders.lines ?? []) as any[],
+            (c.deliveries ?? []) as any[],
           ) - billingDiscount,
         ),
       );
@@ -459,7 +564,7 @@ export default function AdminCustomerDetailDashboard() {
     }
 
     return out.reverse(); // keep newest-first for UI (matches month options)
-  }, [billingDiscount, billingMonthOptions, deferredCustomer, deferredDailyOrderLines, monthKey, shouldComputeBillingTimeline]);
+  }, [billingDiscount, billingMonthOptions, c, dailyOrders.lines, monthKey, shouldComputeBillingTimeline]);
 
   const billingSummaryForSelectedMonth = useMemo(() => {
     const row = billingTimeline.find((x) => x.month === billingMonth);
@@ -667,14 +772,6 @@ export default function AdminCustomerDetailDashboard() {
     );
   }, [billingMonth, c, dailyOrders.lines, productPriceByName, shouldComputeBillingUi]);
 
-  const billingStatusForMonth = useMemo(() => billingSummaryForSelectedMonth.status, [billingSummaryForSelectedMonth.status]);
-
-  const overviewBillingStatus = useMemo(() => {
-    const pending = Math.max(0, Math.round(Number(c?.pendingAmount ?? 0)));
-    const currentMonth = pending > 0 ? 'Pending' : 'Paid';
-    return { lastMonth: '—', currentMonth } as const;
-  }, [c?.pendingAmount]);
-
   function billCalcDateForMonth(yyyyMm: string): string {
     return fmtYmd(lastDayYmdForMonth(yyyyMm));
   }
@@ -683,37 +780,6 @@ export default function AdminCustomerDetailDashboard() {
     const last = lastDayYmdForMonth(yyyyMm);
     return fmtYmd(addDaysYmd(last, 45));
   }
-
-  const lastPaymentRecord = useMemo(() => {
-    const list = [...(c?.payments ?? [])].sort(
-      (a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime(),
-    );
-    return list[0];
-  }, [c]);
-
-  const memoItems = useMemo(() => {
-    const items: Array<{ when: string; who: 'Admin' | 'Customer' | 'Delivery' | 'System'; text: string; tone: { bg: string; fg: string; border: string } }> = [];
-    for (const p of c?.payments ?? []) {
-      items.push({
-        when: fmtDate(p.paymentDate),
-        who: 'Admin',
-        text: `Payment received: ${money(p.amountPaid)} via ${p.paymentMode}${p.transactionId ? ` (${p.transactionId})` : ''}`,
-        tone: { bg: 'rgba(37,99,235,0.14)', fg: '#1D4ED8', border: 'rgba(37,99,235,0.22)' },
-      });
-    }
-    for (const a of c?.audit ?? []) {
-      items.push({
-        when: fmtDate(a.date),
-        who: (a.updatedBy ?? 'Admin') === 'Customer' ? 'Customer' : 'Admin',
-        text: a.action,
-        tone: (a.updatedBy ?? 'Admin') === 'Customer'
-          ? { bg: 'rgba(34,197,94,0.14)', fg: '#166534', border: 'rgba(34,197,94,0.22)' }
-          : { bg: 'rgba(37,99,235,0.14)', fg: '#1D4ED8', border: 'rgba(37,99,235,0.22)' },
-      });
-    }
-    // newest first (string dates are fine for mock UI)
-    return items.slice(0, 30);
-  }, [c]);
 
   // Responsive breakpoints (admin dashboard)
   const isMobile = width < 640;
@@ -733,8 +799,7 @@ export default function AdminCustomerDetailDashboard() {
   );
 
   const deliveryDayTotals = useMemo(() => {
-    // Avoid heavy work unless Delivery tab is active or the delivery dialog is open.
-    if (tab !== 'deliveryHistory' && !deliverySelectedDayYmd) return new Map<string, number>();
+    if (!shouldComputeDeliveryUi) return new Map<string, number>();
     if (!c) return new Map<string, number>();
     const plans = c.subscriptionPlans ?? [];
     const map = new Map<string, number>();
@@ -752,7 +817,7 @@ export default function AdminCustomerDetailDashboard() {
       map.set(ymd, Math.round(subTotal + addonTotal));
     }
     return map;
-  }, [c, deliveryAddonLinesForMonth, deliveryMonthDays, productPriceByName, tab, deliverySelectedDayYmd]);
+  }, [c, deliveryAddonLinesForMonth, deliveryMonthDays, productPriceByName, shouldComputeDeliveryUi]);
 
   const deliveryStatusForDayYmd = useCallback((ymd: string): 'Delivered' | 'Not delivered' | 'Mixed' | '—' => {
     if (!c) return '—';
@@ -766,7 +831,7 @@ export default function AdminCustomerDetailDashboard() {
   }, [c]);
 
   const deliveryCalendarCells = useMemo(() => {
-    if (tab !== 'deliveryHistory' && !deliverySelectedDayYmd) return [];
+    if (!shouldComputeDeliveryUi) return [];
     const todayYmd = new Date().toISOString().slice(0, 10);
     const plans = c?.subscriptionPlans ?? [];
     const addonLines = dailyOrders.lines ?? [];
@@ -785,7 +850,7 @@ export default function AdminCustomerDetailDashboard() {
       (ymd) => addonLines.some((l) => l.dateYmd === ymd),
       getTone,
     );
-  }, [c?.subscriptionPlans, dailyOrders.lines, deliveryMonth, deliveryDayTotals, deliveryStatusForDayYmd, tab, deliverySelectedDayYmd]);
+  }, [c?.subscriptionPlans, dailyOrders.lines, deliveryMonth, deliveryDayTotals, deliveryStatusForDayYmd, shouldComputeDeliveryUi]);
 
   const deliveryCalendarLegendFooter = useMemo(
     () => (
@@ -823,14 +888,14 @@ export default function AdminCustomerDetailDashboard() {
   );
 
   const deliverySelectedDayModel = useMemo(() => {
-    if (!c || !deliverySelectedDayYmd) return null;
+    if (!shouldComputeDeliveryUi || !c || !deliverySelectedDayYmd) return null;
     const ymd = deliverySelectedDayYmd;
     const plans = (c.subscriptionPlans ?? []).filter((p) => subscriptionPlanActiveOnDateYmd(p as any, ymd));
     const addons = (dailyOrders.lines ?? []).filter((l) => l.dateYmd === ymd);
     const status = deliveryStatusForDayYmd(ymd);
     const total = Math.round(deliveryDayTotals.get(ymd) ?? 0);
     return { ymd, plans, addons, status, total };
-  }, [c, dailyOrders.lines, deliveryDayTotals, deliverySelectedDayYmd, deliveryStatusForDayYmd]);
+  }, [c, dailyOrders.lines, deliveryDayTotals, deliverySelectedDayYmd, deliveryStatusForDayYmd, shouldComputeDeliveryUi]);
 
   async function setDeliveryStatusForDay(ymd: string, next: 'Delivered' | 'Missed') {
     if (!c) return;
@@ -873,61 +938,51 @@ export default function AdminCustomerDetailDashboard() {
   const tabPillSizeStyle = isDesktop ? styles.tabPillH44 : isTablet ? styles.tabPillH40 : styles.tabPillH36;
   const tabTextSizeStyle = isDesktop ? styles.tabText14 : isTablet ? styles.tabText13 : styles.tabText12;
 
+  const displayId = useMemo(() => (id ? formatCustomerDisplayId(id) : '—'), [id]);
+  const profileInitials = useMemo(() => customerInitials(summary.name === '—' ? '' : summary.name), [summary.name]);
+  const overviewFooterPad = tab === 'overview' ? 88 : 24;
+
+  const openEdit = useCallback(() => {
+    router.push({ pathname: '/(admin)/customers-edit', params: { id } });
+  }, [id]);
+
+  const handleBack = useCallback(() => {
+    if (navigation.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace('/(admin)/customers');
+  }, [navigation]);
+
   return (
-    <View style={[styles.bg, scheme === 'dark' ? styles.bgDark : styles.bgLight]}>
-      <View
-        style={[
-          styles.appBar,
-          scheme === 'dark' ? styles.appBarDark : styles.appBarLight,
-          isMobile ? styles.appBarMobile : null,
-          { paddingTop: headerPaddingTop },
-        ]}
-      >
-        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
-          <MaterialCommunityIcons name="arrow-left" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
+    <DairyTactileScreenBackground>
+    <View style={styles.screenRoot}>
+      <View style={[styles.detailHeader, { paddingTop: headerPaddingTop }]}>
+        <Pressable onPress={handleBack} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Go back">
+          <MaterialCommunityIcons name="arrow-left" size={22} color={dairyTactileColors.primaryContainer} />
         </Pressable>
-
-        <View style={[styles.headerMid, isMobile ? styles.headerMidMobile : null]}>
-          <View style={styles.headerNameRow}>
-            <Text variant="titleMedium" style={[styles.headerTitle, textMain]} numberOfLines={1}>
-              {summary.name}
-            </Text>
-            {(() => {
-              const t = badgeTone(summary.status);
-              return (
-                <View style={[styles.chip, { backgroundColor: t.bg, borderColor: t.border }]}>
-                  <Text variant="labelSmall" style={{ color: t.fg, fontWeight: '800' }}>
-                    {summary.status}
-                  </Text>
-                </View>
-              );
-            })()}
-          </View>
-          <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-            {summary.mobile}
-          </Text>
-        </View>
-
-        <Pressable
-          onPress={() => router.replace({ pathname: '/(admin)/customers', params: { editId: id } })}
-          style={({ pressed }) => [styles.editPill, sectionCard, pressed && styles.pressed]}
-        >
-          <MaterialCommunityIcons name="pencil-outline" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
-          <Text variant="labelLarge" style={textMain}>
-            Edit
-          </Text>
-        </Pressable>
+        <Text style={styles.detailHeaderTitle} numberOfLines={1}>
+          Customer Details
+        </Text>
+        <View style={styles.headerSpacer} />
       </View>
 
-      <View style={[styles.tabsBar, scheme === 'dark' ? styles.tabsBarDark : styles.tabsBarLight]}>
+      <CustomerDetailProfileCard
+        name={summary.name}
+        memberBadge={memberBadgeLabel(c)}
+        initials={profileInitials}
+        onEdit={openEdit}
+      />
+
+      <View style={styles.tabsBar}>
         {isTablet ? (
           <View style={[styles.tabsRowWrap, { gap: isMobile ? 6 : 8 }]}>
-            <TabPill label="Overview" active={tab === 'overview'} onPress={() => startTransition(() => setTab('overview'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Subscription" active={tab === 'subscription'} onPress={() => startTransition(() => setTab('subscription'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Billing" active={tab === 'billing'} onPress={() => startTransition(() => setTab('billing'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Payments" active={tab === 'paymentHistory'} onPress={() => startTransition(() => setTab('paymentHistory'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Customer Delivery" active={tab === 'deliveryHistory'} onPress={() => startTransition(() => setTab('deliveryHistory'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Complaints" active={tab === 'complaints'} onPress={() => startTransition(() => setTab('complaints'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Overview" active={tab === 'overview'} onPress={() => setActiveTab('overview')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Subscription" active={tab === 'subscription'} onPress={() => setActiveTab('subscription')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Billing" active={tab === 'billing'} onPress={() => setActiveTab('billing')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Payments" active={tab === 'paymentHistory'} onPress={() => setActiveTab('paymentHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Customer Delivery" active={tab === 'deliveryHistory'} onPress={() => setActiveTab('deliveryHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Complaints" active={tab === 'complaints'} onPress={() => setActiveTab('complaints')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
           </View>
         ) : (
           <ScrollView
@@ -936,118 +991,63 @@ export default function AdminCustomerDetailDashboard() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={[styles.tabsRowScroll, isMobile ? styles.tabsRowScrollMobile : null]}
           >
-            <TabPill label="Overview" active={tab === 'overview'} onPress={() => startTransition(() => setTab('overview'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Subscription" active={tab === 'subscription'} onPress={() => startTransition(() => setTab('subscription'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Billing" active={tab === 'billing'} onPress={() => startTransition(() => setTab('billing'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Payments" active={tab === 'paymentHistory'} onPress={() => startTransition(() => setTab('paymentHistory'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Customer Delivery" active={tab === 'deliveryHistory'} onPress={() => startTransition(() => setTab('deliveryHistory'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Complaints" active={tab === 'complaints'} onPress={() => startTransition(() => setTab('complaints'))} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Overview" active={tab === 'overview'} onPress={() => setActiveTab('overview')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Subscription" active={tab === 'subscription'} onPress={() => setActiveTab('subscription')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Billing" active={tab === 'billing'} onPress={() => setActiveTab('billing')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Payments" active={tab === 'paymentHistory'} onPress={() => setActiveTab('paymentHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Customer Delivery" active={tab === 'deliveryHistory'} onPress={() => setActiveTab('deliveryHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+            <TabPill label="Complaints" active={tab === 'complaints'} onPress={() => setActiveTab('complaints')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
           </ScrollView>
         )}
       </View>
 
-      <ScrollView contentContainerStyle={[styles.container, { padding: pagePadding, gap: contentGap }]} showsVerticalScrollIndicator={false}>
-        {tab === 'overview' ? (
-          <View style={styles.sectionStack}>
-            <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
-              <Card.Content style={styles.sectionContent}>
-                <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Overview
-                </Text>
-                <Text variant="bodySmall" style={textSub}>
-                  Snapshot across Subscription, Billing, Payments, and Delivery.
-                </Text>
-
-                {(() => {
-                  const lastMonthKey = shiftMonth(monthKey, -1);
-                  const fmtPaidUnpaid = (s: string | undefined) => (s === 'Pending' ? 'Unpaid' : s ?? '—');
-                  const appAccess = (c as any)?.appAccessEnabled !== false ? 'Allowed' : 'Blocked';
-
-                  const overviewRows = [
-                    { label: 'Full name', value: c?.name ?? '—', lines: 2 },
-                    { label: 'Mobile number', value: c?.mobile ?? '—' },
-                    { label: 'Alternate mobile number', value: c?.alternateMobile ?? '—' },
-                    { label: 'App access', value: appAccess },
-                    { label: 'Status', value: summary.status },
-                    { label: 'Full address', value: summary.address, lines: 4 }, // wrap naturally
-                    { label: 'Assigned delivery boy', value: summary.assignedDeliveryBoy, lines: 2 },
-                    { label: 'Delivery route', value: summary.routeName, lines: 2 },
-                    { label: 'Billing type', value: String((c as any)?.billingType ?? '—') },
-                    { label: 'Subscription', value: c?.subscriptionStatus ?? '—' },
-                    { label: `Billing (last month · ${monthLabel(lastMonthKey)})`, value: fmtPaidUnpaid(overviewBillingStatus.lastMonth) },
-                    { label: `Billing (current month · ${monthLabel(monthKey)})`, value: fmtPaidUnpaid(overviewBillingStatus.currentMonth) },
-                  ] as Array<{ label: string; value: string; lines?: number }>;
-
-                  return (
-                    isMobile ? (
-                      <View style={{ gap: 8 }}>
-                        {overviewRows.map((r) => (
-                          <View key={r.label} style={[styles.overviewItemCard, sectionCard]}>
-                            <Text variant="bodySmall" style={textSub} numberOfLines={2}>
-                              {r.label}
-                            </Text>
-                            <Text
-                              variant="bodyMedium"
-                              style={[styles.bold, textMain, isMobile ? { fontSize: 13, lineHeight: 18 } : null]}
-                              numberOfLines={r.lines ?? 1}
-                            >
-                              {r.value}
-                            </Text>
-                          </View>
-                        ))}
-                      </View>
-                    ) : (
-                      <View style={styles.tableWrap}>
-                        {isDesktop ? (
-                          <View style={{ width: '100%', maxWidth: '100%' }}>
-                            <TableRow header cells={[{ text: 'Field', grow: true }, { text: 'Value', grow: true }]} />
-                            {overviewRows.map((r) => (
-                              <TableRow
-                                key={r.label}
-                                cells={[
-                                  { text: r.label, grow: true, lines: 2 },
-                                  { text: r.value, grow: true, lines: r.lines ?? 1 },
-                                ]}
-                              />
-                            ))}
-                          </View>
-                        ) : (
-                          <TableScroll>
-                            <View style={[styles.tableMin, { minWidth: 720 }]}>
-                              <TableRow header cells={[{ text: 'Field', grow: true }, { text: 'Value', grow: true }]} />
-                              {overviewRows.map((r) => (
-                                <TableRow
-                                  key={r.label}
-                                  cells={[
-                                    { text: r.label, grow: true, lines: 2 },
-                                  { text: r.value, grow: true, lines: r.lines ?? 1 },
-                                  ]}
-                                />
-                              ))}
-                            </View>
-                          </TableScroll>
-                        )}
-                      </View>
-                    )
-                  );
-                })()}
-              </Card.Content>
-            </Card>
-          </View>
-        ) : null}
-
+      <View style={styles.tabBody}>
         {tab === 'subscription' ? (
-          <CustomerSubscriptionTab
-            customer={c}
-            customerId={id}
-            isMobile={isMobile}
-            isTablet={isTablet}
-            isDesktop={isDesktop}
-            scheme={scheme}
+          <ScrollView
+            style={styles.tabScroll}
+            contentContainerStyle={[styles.container, { padding: pagePadding, gap: contentGap, paddingBottom: scrollPaddingBottom(overviewFooterPad) }]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {c ? (
+              <CustomerSubscriptionTab
+                customer={c}
+                customerId={id}
+                isMobile={isMobile}
+                isTablet={isTablet}
+                isDesktop={isDesktop}
+                scheme={scheme}
+              />
+            ) : (
+              <DeferredTabPlaceholder label="Subscription" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
+            )}
+          </ScrollView>
+        ) : (
+          <ScrollView
+            style={styles.tabScroll}
+            contentContainerStyle={[styles.container, { padding: pagePadding, gap: contentGap, paddingBottom: scrollPaddingBottom(overviewFooterPad) }]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+        {tab === 'overview' && c ? (
+          <CustomerDetailOverview
+            displayId={displayId}
+            fullName={c.name ?? '—'}
+            mobile={formatMobileDisplay(c.mobile ?? '')}
+            appAccess={(c as any)?.appAccessEnabled !== false ? 'Allowed' : 'Blocked'}
+            status={summary.status}
+            address={summary.address}
+            addressTags={overviewAddressTags(c)}
+            assignedDeliveryBoy={summary.assignedDeliveryBoy}
+            deliveryRoute={summary.routeName}
+            billingType={billingTypeDisplay(c)}
           />
         ) : null}
 
         {tab === 'billing' ? (
+          !isTabReady ? (
+            <DeferredTabPlaceholder label="Billing" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
+          ) : (
           <View style={styles.sectionStack}>
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
@@ -1287,9 +1287,13 @@ export default function AdminCustomerDetailDashboard() {
               </Card.Content>
             </Card>
           </View>
+          )
         ) : null}
 
         {tab === 'paymentHistory' ? (
+          !isTabReady ? (
+            <DeferredTabPlaceholder label="Payments" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
+          ) : (
           <View style={styles.sectionStack}>
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
@@ -1526,9 +1530,13 @@ export default function AdminCustomerDetailDashboard() {
               </Card.Content>
             </Card>
           </View>
+          )
         ) : null}
 
         {tab === 'deliveryHistory' ? (
+          !isTabReady ? (
+            <DeferredTabPlaceholder label="Customer Delivery" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
+          ) : (
           <View style={styles.sectionStack}>
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
@@ -1586,6 +1594,7 @@ export default function AdminCustomerDetailDashboard() {
               </Card.Content>
             </Card>
           </View>
+          )
         ) : null}
 
         {tab === 'complaints' ? (
@@ -1734,7 +1743,29 @@ export default function AdminCustomerDetailDashboard() {
         ) : null}
 
         {/* Orders, Audit, Memo History tabs removed */}
-      </ScrollView>
+          </ScrollView>
+        )}
+      </View>
+
+      {tab === 'overview' ? (
+        <View style={[styles.overviewFooter, { paddingBottom: scrollPaddingBottom(12) }]}>
+          <Pressable
+            onPress={() => setActiveTab('subscription')}
+            accessibilityRole="button"
+            style={({ pressed }) => [pressed && styles.pressed]}
+          >
+            <LinearGradient
+              colors={[...dairyGradient.colors]}
+              start={dairyGradient.start}
+              end={dairyGradient.end}
+              style={[styles.addSubscriptionBtn, primaryButtonElevation()]}
+            >
+              <Text style={styles.addSubscriptionBtnText}>Add Order Subscription</Text>
+              <MaterialCommunityIcons name="arrow-right" size={22} color={dairyTactileColors.onPrimary} />
+            </LinearGradient>
+          </Pressable>
+        </View>
+      ) : null}
 
       <Portal>
         <Dialog
@@ -1769,6 +1800,7 @@ export default function AdminCustomerDetailDashboard() {
               </View>
 
               <TextInput
+                {...formFieldAttrs('complaint-admin-note')}
                 mode="outlined"
                 label="Admin note"
                 value={complaintActionNote}
@@ -1911,6 +1943,7 @@ export default function AdminCustomerDetailDashboard() {
 
                   {paymentDialogPayKind === 'partial' ? (
                     <TextInput
+                      {...formFieldAttrs('payment-partial-amount')}
                       mode="outlined"
                       keyboardType="numeric"
                       label="Amount paid now"
@@ -2039,8 +2072,9 @@ export default function AdminCustomerDetailDashboard() {
             { maxWidth: deliveryDialogMaxW, width: deliveryDialogMaxW },
           ]}
         >
-          <Dialog.Title style={styles.deliveryDialogTitle}>Day orders</Dialog.Title>
-          <Dialog.Content style={styles.deliveryDialogContent}>
+          <View style={styles.deliveryDialogClip}>
+            <Dialog.Title style={styles.deliveryDialogTitle}>Day orders</Dialog.Title>
+            <Dialog.Content style={styles.deliveryDialogContent}>
             {deliverySelectedDayModel ? (
               <ScrollView
                 style={{ maxHeight: deliveryDialogScrollMaxH }}
@@ -2149,47 +2183,55 @@ export default function AdminCustomerDetailDashboard() {
                 Loading…
               </Text>
             )}
-          </Dialog.Content>
-          <Dialog.Actions style={styles.deliveryDialogActions}>
-            <Button compact onPress={() => setDeliverySelectedDayYmd(null)}>
-              Close
-            </Button>
-          </Dialog.Actions>
+            </Dialog.Content>
+            <Dialog.Actions style={styles.deliveryDialogActions}>
+              <Button compact onPress={() => setDeliverySelectedDayYmd(null)}>
+                Close
+              </Button>
+            </Dialog.Actions>
+          </View>
         </Dialog>
 
-        <Snackbar
+        <AppSnackbar
           visible={toast.visible}
+          message={toast.message}
           onDismiss={() => setToast((t) => ({ ...t, visible: false }))}
           duration={3500}
-          action={{ label: 'OK', onPress: () => setToast((t) => ({ ...t, visible: false })) }}
-        >
-          {toast.message}
-        </Snackbar>
+        />
       </Portal>
 
     </View>
+    </DairyTactileScreenBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  screenRoot: { flex: 1 },
   bg: { flex: 1 },
+  tabBody: { flex: 1, minHeight: 0 },
+  tabScroll: { flex: 1 },
   bgLight: { backgroundColor: COLORS.bg },
   bgDark: { backgroundColor: '#0B1220' },
 
-  appBar: { paddingHorizontal: 16, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  appBarLight: { backgroundColor: 'transparent' },
-  appBarDark: { backgroundColor: 'transparent' },
-  appBarMobile: { flexDirection: 'column', alignItems: 'stretch', gap: 10 },
-  iconBtn: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  headerMid: { flex: 1, minWidth: 0, gap: 2, alignItems: 'flex-start', justifyContent: 'center' },
-  headerMidMobile: { width: '100%', alignItems: 'flex-start' },
-  headerNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 },
-  headerTitle: { fontWeight: '900', flexShrink: 1 },
-  editPill: { height: 40, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' },
+  detailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: amraleSpacing.marginMobile,
+    paddingBottom: amraleSpacing.sm,
+    gap: amraleSpacing.sm,
+  },
+  detailHeaderTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontFamily: amraleTypography.fontFamily.bold,
+    fontSize: 18,
+    lineHeight: 24,
+    color: dairyTactileColors.onSurface,
+  },
+  headerSpacer: { width: 40 },
+  iconBtn: { width: 40, height: 40, borderRadius: amraleRadius.md, alignItems: 'center', justifyContent: 'center' },
 
-  tabsBar: { paddingHorizontal: 16, paddingBottom: 10 },
-  tabsBarLight: { backgroundColor: 'transparent' },
-  tabsBarDark: { backgroundColor: 'transparent' },
+  tabsBar: { paddingHorizontal: amraleSpacing.marginMobile, paddingBottom: amraleSpacing.sm, marginTop: amraleSpacing.sm },
 
   container: { padding: 16, paddingBottom: 24, gap: 12 },
 
@@ -2206,16 +2248,47 @@ const styles = StyleSheet.create({
   tabPillH44: { height: 44 },
   tabPillH40: { height: 40, paddingHorizontal: 10 },
   tabPillH36: { height: 36, paddingHorizontal: 10, maxWidth: 140 },
-  tabPillActive: { backgroundColor: 'rgba(37,99,235,0.14)', borderColor: 'rgba(37,99,235,0.22)' },
-  tabPillInactive: { backgroundColor: 'rgba(148,163,184,0.08)', borderColor: 'rgba(148,163,184,0.18)' },
-  tabTextActive: { color: '#1D4ED8', fontWeight: '900' },
-  tabTextInactive: { color: 'rgba(30,41,59,0.70)', fontWeight: '800' },
+  tabPillActive: {
+    backgroundColor: dairyTactileColors.primaryContainer,
+    borderColor: dairyTactileColors.primaryContainer,
+  },
+  tabPillInactive: {
+    backgroundColor: dairyTactileColors.surfaceContainer,
+    borderColor: dairyTactileColors.outlineVariant,
+  },
+  tabTextActive: { color: dairyTactileColors.onPrimary, fontSize: 13 },
+  tabTextInactive: { color: dairyTactileColors.onSurface, fontSize: 13, opacity: 0.85 },
   tabText14: { fontSize: 14 },
   tabText13: { fontSize: 13 },
   tabText12: { fontSize: 12 },
 
+  overviewFooter: {
+    paddingHorizontal: amraleSpacing.marginMobile,
+    paddingTop: amraleSpacing.sm,
+    backgroundColor: 'transparent',
+  },
+  addSubscriptionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    minHeight: 52,
+    borderRadius: amraleRadius.pill,
+    paddingHorizontal: amraleSpacing.lg,
+  },
+  addSubscriptionBtnText: {
+    fontFamily: amraleTypography.fontFamily.bold,
+    fontSize: 16,
+    lineHeight: 22,
+    color: dairyTactileColors.onPrimary,
+  },
+
   sectionStack: { gap: 12 },
-  sectionCard: { borderRadius: 16, borderWidth: 1, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
+  sectionCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    ...platformShadow({ shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } }),
+  },
   sectionContent: { gap: 10 },
   overviewGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   overviewCard: { flexGrow: 1, flexBasis: 420, minWidth: 0 },
@@ -2232,11 +2305,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(148,163,184,0.18)',
     backgroundColor: 'rgba(148,163,184,0.06)',
     gap: 6,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 1,
+    ...platformShadow({
+      shadowColor: '#000',
+      shadowOpacity: 0.04,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 1,
+    }),
   },
 
   memoItem: { flexDirection: 'row', gap: 10, paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', backgroundColor: 'rgba(148,163,184,0.06)', paddingHorizontal: 10 },
@@ -2300,7 +2375,8 @@ const styles = StyleSheet.create({
   subtleOnLight: { color: 'rgba(30,41,59,0.70)' },
   subtleOnDark: { color: 'rgba(255,255,255,0.78)' },
 
-  deliveryDialogSurface: { alignSelf: 'center', marginHorizontal: 12, borderRadius: 14, overflow: 'hidden' },
+  deliveryDialogSurface: { alignSelf: 'center', marginHorizontal: 12, borderRadius: 14 },
+  deliveryDialogClip: { overflow: 'hidden', borderRadius: 14 },
   deliveryDialogTitle: { paddingTop: 4, paddingBottom: 6, fontSize: 16, lineHeight: 20 },
   deliveryDialogContent: { paddingTop: 0, paddingHorizontal: 0, paddingBottom: 0 },
   deliveryDialogActions: { paddingHorizontal: 8, paddingVertical: 4, minHeight: 44, justifyContent: 'flex-end' },

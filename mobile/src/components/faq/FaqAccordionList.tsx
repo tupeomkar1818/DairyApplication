@@ -5,8 +5,14 @@ import { LayoutAnimation, Platform, Pressable, StyleSheet, Text, UIManager, View
 import type { FaqItem } from '@/src/domain/faq/entities';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
+const androidLayoutAnimationSetter = UIManager.setLayoutAnimationEnabledExperimental;
+const supportsExperimentalLayoutAnimation =
+  Platform.OS === 'android' &&
+  typeof androidLayoutAnimationSetter === 'function' &&
+  !(globalThis as { nativeFabricUIManager?: unknown }).nativeFabricUIManager;
+
+if (supportsExperimentalLayoutAnimation) {
+  androidLayoutAnimationSetter(true);
 }
 
 type Props = {
@@ -17,7 +23,9 @@ export function FaqAccordionList({ items }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(items[0]?.id ?? null);
 
   function toggle(id: string) {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    if (Platform.OS !== 'android' || supportsExperimentalLayoutAnimation) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    }
     setExpandedId((prev) => (prev === id ? null : id));
   }
 

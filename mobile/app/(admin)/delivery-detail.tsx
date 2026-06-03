@@ -3439,7 +3439,7 @@ const styles = StyleSheet.create({
   topStatLabel: { fontWeight: '800', flex: 1, minWidth: 0, paddingRight: 6 },
   topStatValue: { marginTop: 4, fontWeight: '900', flexShrink: 1 },
 
-  sectionCard: { borderRadius: 16, borderWidth: 1, overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
+  sectionCard: { borderRadius: 16, borderWidth: 1, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
   sectionContent: { gap: 10 },
   kvGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },
   kvRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingVertical: 6 },

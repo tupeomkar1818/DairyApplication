@@ -2,7 +2,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AuthPrimaryButton } from '@/src/components/auth/AuthPrimaryButton';
-import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { amraleRadius, amraleSpacing, amraleTypography, dairyTactileColors } from '@/src/theme/dairyTactile';
 
 export type DeleteCustomerConfirmDialogProps = {
   visible: boolean;
@@ -33,7 +33,7 @@ export function DeleteCustomerConfirmDialog({
 
         <View style={styles.card} accessibilityViewIsModal>
           <View style={styles.iconCircle}>
-            <MaterialCommunityIcons name="trash-can-outline" size={28} color={amraleColors.error} />
+            <MaterialCommunityIcons name="trash-can-outline" size={28} color={dairyTactileColors.error} />
           </View>
 
           <Text style={styles.title}>Delete customer?</Text>
@@ -46,7 +46,7 @@ export function DeleteCustomerConfirmDialog({
           <View style={styles.primaryWrap}>
             {loading ? (
               <View style={styles.loadingBtn}>
-                <ActivityIndicator color={amraleColors.white} />
+                <ActivityIndicator color={dairyTactileColors.onPrimary} />
               </View>
             ) : (
               <AuthPrimaryButton label="Delete" onPress={onConfirm} variant="filled" compact />
@@ -77,18 +77,18 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(26, 43, 75, 0.52)',
+    backgroundColor: 'rgba(11, 29, 45, 0.48)',
   },
   card: {
     width: '100%',
     maxWidth: 360,
-    backgroundColor: amraleColors.white,
+    backgroundColor: dairyTactileColors.surfaceContainerLowest,
     borderRadius: amraleRadius.xxl,
     paddingHorizontal: amraleSpacing.lg,
     paddingTop: amraleSpacing.xl,
     paddingBottom: amraleSpacing.lg,
     alignItems: 'center',
-    shadowColor: amraleColors.text,
+    shadowColor: dairyTactileColors.primaryContainer,
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.14,
     shadowRadius: 24,
@@ -99,7 +99,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#FEE2E2',
+    backgroundColor: dairyTactileColors.errorContainer,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: amraleSpacing.md,
@@ -107,7 +107,7 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: amraleTypography.fontFamily.bold,
     fontSize: 22,
-    color: amraleColors.text,
+    color: dairyTactileColors.onSurface,
     textAlign: 'center',
     marginBottom: amraleSpacing.sm,
   },
@@ -115,14 +115,14 @@ const styles = StyleSheet.create({
     fontFamily: amraleTypography.fontFamily.regular,
     fontSize: 15,
     lineHeight: 22,
-    color: amraleColors.textMuted,
+    color: dairyTactileColors.onSurfaceVariant,
     textAlign: 'center',
     marginBottom: amraleSpacing.lg,
     paddingHorizontal: amraleSpacing.xs,
   },
   messageBold: {
     fontFamily: amraleTypography.fontFamily.bold,
-    color: amraleColors.text,
+    color: dairyTactileColors.onSurface,
   },
   primaryWrap: {
     width: '100%',
@@ -132,10 +132,10 @@ const styles = StyleSheet.create({
     width: '100%',
     minHeight: 54,
     borderRadius: amraleRadius.lg,
-    backgroundColor: amraleColors.blue,
+    backgroundColor: dairyTactileColors.primaryContainer,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: amraleColors.blue,
+    shadowColor: dairyTactileColors.primaryContainer,
     shadowOpacity: 0.35,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
@@ -145,7 +145,7 @@ const styles = StyleSheet.create({
     width: '100%',
     minHeight: 52,
     borderRadius: amraleRadius.lg,
-    backgroundColor: amraleColors.inputBgLight,
+    backgroundColor: dairyTactileColors.surfaceContainerLow,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: amraleSpacing.xs,
@@ -156,7 +156,7 @@ const styles = StyleSheet.create({
   cancelText: {
     fontFamily: amraleTypography.fontFamily.semiBold,
     fontSize: 16,
-    color: amraleColors.textMuted,
+    color: dairyTactileColors.onSurfaceVariant,
     textAlign: 'center',
   },
   cancelDisabled: {
