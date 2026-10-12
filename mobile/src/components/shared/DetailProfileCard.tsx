@@ -24,6 +24,9 @@ export type DetailProfileCardProps = {
   /** Accessibility label of the edit button, e.g. "Edit customer". */
   editLabel?: string;
   onEdit: () => void;
+  /** Lets the dairy forget this person’s app PIN, so they sign in with their own number again. */
+  onResetPin?: () => void;
+  resetPinLabel?: string;
 };
 
 /**
@@ -39,6 +42,8 @@ function DetailProfileCardInner({
   badgeIcon = 'check-decagram',
   editLabel,
   onEdit,
+  onResetPin,
+  resetPinLabel,
 }: DetailProfileCardProps) {
   const t = useStrings('common');
   return (
@@ -63,6 +68,17 @@ function DetailProfileCardInner({
           ) : null}
         </View>
       </View>
+
+      {onResetPin ? (
+        <Pressable
+          onPress={onResetPin}
+          accessibilityRole="button"
+          accessibilityLabel={resetPinLabel ?? t.actions.resetPin}
+          style={({ pressed }) => [styles.editBtn, pressed && styles.pressed]}
+        >
+          <MaterialCommunityIcons name="lock-reset" size={20} color={dairyTactileColors.primaryContainer} />
+        </Pressable>
+      ) : null}
 
       <Pressable
         onPress={onEdit}

@@ -31,6 +31,8 @@ export type Principal = {
   /** The customer or delivery boy record this login belongs to. */
   linkedRecordId?: string;
   createdAt: string;
+  /** True until they have chosen a PIN: they signed in with their own mobile number (see `auth/pin.ts`). */
+  mustSetPin: boolean;
 };
 
 type UserRow = {
@@ -210,12 +212,21 @@ export async function principalOf(context: Pick<RequestContext, 'request' | 'env
   if (!token) return null;
 
   const row = await context.env.DB.prepare(
-    `select s.id as session_id, s.expires_at, s.created_at, u.id as user_id, u.mobile, u.role, u.status
+    `select s.id as session_id, s.expires_at, s.created_at, u.id as user_id, u.mobile, u.role, u.status, u.pin_hash
        from sessions s join users u on u.id = s.user_id
       where s.token_hash = ?`,
   )
     .bind(await sha256Hex(token, pepper(context.env)))
-    .first<{ session_id: string; expires_at: string; created_at: string; user_id: string; mobile: string; role: Role; status: string }>();
+    .first<{
+      session_id: string;
+      expires_at: string;
+      created_at: string;
+      user_id: string;
+      mobile: string;
+      role: Role;
+      status: string;
+      pin_hash: string | null;
+    }>();
 
   if (!row) return null;
   if (new Date(row.expires_at).getTime() <= Date.now()) {
@@ -231,6 +242,7 @@ export async function principalOf(context: Pick<RequestContext, 'request' | 'env
     role: row.role,
     linkedRecordId: await linkedRecordId(context.env, { id: row.user_id, mobile: row.mobile, role: row.role, display_name: '', status: row.status, created_at: row.created_at }),
     createdAt: row.created_at,
+    mustSetPin: !row.pin_hash,
   };
 }
 
@@ -238,10 +250,22 @@ export async function logout(env: Env, principal: Principal): Promise<void> {
   await env.DB.prepare('delete from sessions where token_hash = ?').bind(await sha256Hex(principal.sessionId, pepper(env))).run();
 }
 
-/** Sign-in required. */
-export async function requireUser(context: Pick<RequestContext, 'request' | 'env'>): Promise<Principal> {
+/**
+ * Sign-in required.
+ *
+ * Somebody who signed in with their own mobile number has not chosen a PIN yet, and until they do there is
+ * nothing for them to do but choose one — their account is open to anybody who knows that number. So every
+ * other route turns them away, and the app takes them straight to the PIN screen.
+ */
+export async function requireUser(
+  context: Pick<RequestContext, 'request' | 'env'>,
+  options: { allowWithoutPin?: boolean } = {},
+): Promise<Principal> {
   const principal = await principalOf(context);
   if (!principal) throw ApiError.unauthorized();
+  if (principal.mustSetPin && !options.allowWithoutPin) {
+    throw new ApiError(403, 'PIN_NOT_SET', 'Choose a 4-digit PIN to finish signing in.');
+  }
   return principal;
 }
 

@@ -1,7 +1,10 @@
 import type {
   AuthSessionResponse,
+  LoginRequest,
+  LoginResponse,
   RequestOtpRequest,
   RequestOtpResponse,
+  SetPinRequest,
   VerifyOtpRequest,
   VerifyOtpResponse,
 } from '@/src/domain/auth/dtos';
@@ -15,6 +18,28 @@ import { forgetPush, registerForPush } from '@/src/infrastructure/pushRegistrati
  * kept exactly where the on-phone sign-in keeps it, so every screen reads the session the same way.
  */
 export class AuthServiceApi implements IAuthService {
+  /** A number and a password: the PIN, or their own number the first time. No SMS is involved. */
+  async login(data: LoginRequest): Promise<LoginResponse> {
+    const result = await api.post<LoginResponse>(
+      '/auth/login',
+      { mobileNumber: data.mobileNumber, secret: data.secret },
+      { anonymous: true },
+    );
+    await saveAuthSession(result.session);
+    // The server sends the evening reminder to this phone, so it needs to know which phone it is.
+    void registerForPush();
+    return result;
+  }
+
+  async setPin(data: SetPinRequest): Promise<void> {
+    await api.post<unknown>('/auth/pin', data);
+  }
+
+  /** The dairy only: it opens that person up to signing in with their own number again. */
+  async resetPin(mobileNumber: string): Promise<void> {
+    await api.post<unknown>('/auth/pin/reset', { mobileNumber });
+  }
+
   async requestOtp(data: RequestOtpRequest): Promise<RequestOtpResponse> {
     return api.post<RequestOtpResponse>('/auth/otp/request', { mobileNumber: data.mobileNumber }, { anonymous: true });
   }

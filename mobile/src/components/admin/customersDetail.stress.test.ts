@@ -222,10 +222,16 @@ vi.mock('@/src/hooks/deliveryBoys', () => ({
 // The screen reaches the service registry through the event helpers; this test only renders, so it is stubbed.
 vi.mock('@/src/infrastructure/service-registry', () => ({
   services: {
+    auth: { resetPin: async () => undefined },
     notifications: { list: async () => [], add: async () => undefined },
     announcements: { list: async () => [], save: async () => undefined },
     chat: { list: async () => [], send: async () => undefined },
   },
+}));
+
+// The screen lets the dairy forget somebody’s PIN; this test renders without a query client.
+vi.mock('@/src/hooks/auth', () => ({
+  useResetPin: () => ({ mutateAsync: async () => undefined, isPending: false }),
 }));
 
 vi.mock('@/src/hooks/offers/useOffers', () => ({

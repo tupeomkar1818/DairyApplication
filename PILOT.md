@@ -5,18 +5,26 @@ writes the same records instead of keeping its own. This is what to do, in what 
 
 Going back is one line: set `EXPO_PUBLIC_SERVICE_MODE=mock` and restart the app. Nothing on the server is lost.
 
-## Before anybody else can sign in
+## How everybody signs in
 
-**Only people whose sign-in code you can read can get in.** No SMS goes out yet (MSG91 and the DLT registration are
-not done), so the code is written to the Worker's log instead:
+No SMS and no codes. Each person signs in with their **mobile number and a 4-digit PIN of their own**:
 
-```bash
-cd server && npm run logs
-```
+1. **The first time**, they type their own mobile number in both boxes — the number is the password.
+2. The app then asks them to **choose a PIN**. They pick any four digits and type them twice. Nothing else in the
+   app opens until they have.
+3. **From then on** it is their number and that PIN. Their mobile number stops working as a password the moment a
+   PIN is chosen.
 
-Leave that running, ask for a code in the app, and the line reads `[otp] 8208682688 -> 123456`. That works for any
-number the dairy has added — but it means a customer cannot sign in by themselves. Until MSG91 is live, the pilot is
-the dairy's own people, with somebody at the computer reading codes out.
+So tell a new customer only this: *"Open the app, put your mobile number in both boxes, then choose a 4-digit PIN
+you will remember."*
+
+Things to know:
+
+- **Only numbers the dairy has added can sign in at all.** A stranger gets "No such address."
+- **Five wrong PINs locks that person out for 15 minutes.** Waiting is enough; nothing is lost.
+- **Forgotten PIN?** Open that customer in the admin app and press **Reset app PIN** on their card. They then sign
+  in with their own mobile number again and choose a new one. Only the dairy can do this.
+- **Nobody at the dairy can see a PIN**, not even in the database — only the person knows it.
 
 Everything else below works today.
 
@@ -63,7 +71,7 @@ customer(s) about tomorrow`). Both the dairy's and the customers' notification l
 
 | missing | what the pilot sees |
 | --- | --- |
-| MSG91 / DLT | no SMS: codes are read from `npm run logs`, so customers cannot sign in unaided |
+| MSG91 / DLT | no SMS at all: sign-in does not need it, but changing one’s own mobile number in the app does |
 | R2 not enabled | no offer posters, announcement pictures or profile photos |
 | no EAS project id | no push: reminders appear in the app, not on the phone's lock screen |
 | `dairy.matdarraja.in` CNAME | the website is live at `amrale-dairy-site.pages.dev` only |

@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 import type { IAuthService } from '@/src/domain/auth/service.interface';
+import type { LoginRequest, LoginResponse, SetPinRequest } from '@/src/domain/auth/dtos';
+import { readAuthSessionResponse } from '@/src/infrastructure/auth/sessionRead';
 import type { AuthSessionResponse, RequestOtpRequest, RequestOtpResponse, VerifyOtpRequest, VerifyOtpResponse } from '@/src/domain/auth/dtos';
 import type { AuthSession, OtpChallenge, User } from '@/src/domain/auth/entities';
 import type { Customer } from '@/src/domain/customers/entities';
@@ -235,6 +237,59 @@ async function sessionDeleteItem(key: string): Promise<void> {
 }
 
 export class AuthServiceMock implements IAuthService {
+  /**
+   * A number and a password: the PIN, or their own mobile number the first time.
+   *
+   * On a phone keeping its own records the PIN is kept with the login row. Everything on this phone is already
+   * in the open to anyone holding it — the PIN is what stops the wrong person opening the app, not a secret
+   * being guarded from the phone itself.
+   */
+  async login(data: LoginRequest): Promise<LoginResponse> {
+    await sleep(DEFAULT_DELAY_MS);
+    const user = await resolveLoginUser(data.mobileNumber, true);
+    const users = await loadUsers();
+    const stored = users.find((u) => u.id === user.id) ?? user;
+    const given = String(data.secret ?? '').replace(/\s+/g, '');
+
+    if (stored.pin) {
+      if (given !== stored.pin) throw new DomainError('PIN_INVALID', strings('auth').errors.pinWrong);
+    } else if (given !== data.mobileNumber) {
+      throw new DomainError('PASSWORD_INVALID', strings('auth').errors.firstTimeWrong);
+    }
+
+    const session = await this.createSessionForUser(stored.id, stored.mobileNumber, stored.role);
+    return { session, mustSetPin: !stored.pin };
+  }
+
+  async setPin(data: SetPinRequest): Promise<void> {
+    await sleep(DEFAULT_DELAY_MS);
+    const pin = String(data.pin ?? '').trim();
+    if (!/^\d{4}$/.test(pin)) throw new DomainError('PIN_INVALID', strings('auth').errors.pinFourDigits);
+
+    const session = await readAuthSessionResponse();
+    if (!session) throw new DomainError('SESSION_NOT_FOUND', strings('auth').errors.sessionGone);
+
+    const users = await loadUsers();
+    const index = users.findIndex((u) => u.id === session.userId);
+    if (index < 0) throw new DomainError('SESSION_NOT_FOUND', strings('auth').errors.sessionGone);
+    // Changing a PIN needs the one in use; choosing the first does not — the mobile number proved the phone.
+    if (users[index]!.pin && users[index]!.pin !== String(data.currentPin ?? '').trim()) {
+      throw new DomainError('PIN_INVALID', strings('auth').errors.pinWrong);
+    }
+    users[index] = { ...users[index]!, pin, updatedAt: nowIso() };
+    await writeJson(USERS_STORE_KEY, users);
+  }
+
+  /** The dairy forgets somebody’s PIN: they sign in with their own number again and choose a new one. */
+  async resetPin(mobileNumber: string): Promise<void> {
+    await sleep(DEFAULT_DELAY_MS);
+    const users = await loadUsers();
+    const index = users.findIndex((u) => u.mobileNumber === mobileNumber);
+    if (index < 0) return;
+    users[index] = { ...users[index]!, pin: undefined, updatedAt: nowIso() };
+    await writeJson(USERS_STORE_KEY, users);
+  }
+
   async requestOtp(data: RequestOtpRequest): Promise<RequestOtpResponse> {
     await sleep(DEFAULT_DELAY_MS);
     await resolveLoginUser(data.mobileNumber, false);

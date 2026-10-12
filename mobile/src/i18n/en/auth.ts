@@ -20,11 +20,29 @@ export const auth = {
   },
   login: {
     title: 'Sign in',
-    subtitle: "Enter your registered mobile number. We'll send you a 6-digit OTP.",
+    subtitle: 'Enter your registered mobile number and your PIN.',
     getOtp: 'Get OTP',
+    signIn: 'Sign in',
+    pin: 'PIN',
+    pinPlaceholder: '4-digit PIN',
+    firstTime: 'Signing in for the first time? Use your own mobile number as the PIN — you will choose a PIN next.',
+    forgotPin: 'Forgotten your PIN? Ask the dairy to reset it.',
     privacyNote: 'Your number is used only to sign you in.',
     whoSignsIn: 'Customers, delivery partners and the dairy team all sign in here.',
     newCustomer: 'New customer? Contact the dairy',
+  },
+
+  /** Choosing the four digits they will sign in with from now on. */
+  setPin: {
+    title: 'Choose your PIN',
+    subtitle: 'Four digits, to sign in from now on. Keep them to yourself.',
+    newPin: 'New PIN',
+    confirmPin: 'Enter it again',
+    save: 'Save PIN',
+    changeTitle: 'Change your PIN',
+    currentPin: 'PIN you use now',
+    saved: 'Your PIN is saved.',
+    saveFailed: 'Could not save that PIN. Please try again.',
   },
   otp: {
     changeNumber: 'Change number',
@@ -81,6 +99,11 @@ export const auth = {
     tooManyAttempts: 'Maximum OTP attempts reached. Please resend OTP.',
     invalidOtpEntered: 'Invalid OTP entered',
     resendOtpIn: (time: string) => `Resend OTP in ${time}`,
+    firstTimeWrong: 'The first time, your password is your own mobile number.',
+    pinWrong: 'That PIN is not right.',
+    pinFourDigits: 'Choose a 4-digit PIN.',
+    pinMismatch: 'Both PINs must be the same.',
+    sessionGone: 'Please sign in again.',
   },
   /** One mobile number is one person: refusing a number that already belongs to someone else. */
   accountLinks: {

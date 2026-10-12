@@ -27,7 +27,11 @@ export type DomainErrorCode =
   | 'OFFER_CODE_EMPTY'
   | 'OFFER_CODE_UNKNOWN'
   | 'OFFER_CODE_ENDED'
-  | 'OFFER_CODE_ALREADY_APPLIED';
+  | 'OFFER_CODE_ALREADY_APPLIED'
+  | 'PASSWORD_INVALID'
+  | 'PIN_INVALID'
+  | 'PIN_LOCKED'
+  | 'PIN_NOT_SET';
 
 export class DomainError extends Error {
   readonly code: DomainErrorCode;

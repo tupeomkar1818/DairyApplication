@@ -9,6 +9,7 @@ import { CustomerDetailOverview } from '@/src/components/admin/CustomerDetailOve
 import type { CustomerFormTab } from '@/src/components/admin/customerFormShared';
 import { AdminListEmptyState } from '@/src/components/shared/adminListUi';
 import { DetailProfileCard } from '@/src/components/shared/DetailProfileCard';
+import { useResetPin } from '@/src/hooks/auth';
 import { DetailStatusPill } from '@/src/components/shared/detailUi';
 import { PeriodStepper } from '@/src/components/shared/PeriodStepper';
 import { CustomerSubscriptionTab } from '@/src/components/admin/CustomerSubscriptionTab';
@@ -531,6 +532,22 @@ export default function AdminCustomerDetailDashboard() {
   const showToast = useCallback((message: string) => {
     setToast({ visible: true, message });
   }, []);
+
+  // Somebody who has forgotten their PIN: the dairy forgets it too, and they sign in with their own mobile
+  // number again and choose a new one.
+  const shared = useStrings('common');
+  const resetPin = useResetPin();
+  const resetTheirPin = useCallback(
+    async (mobile: string) => {
+      try {
+        await resetPin.mutateAsync(mobile);
+        showToast(shared.actions.pinReset);
+      } catch {
+        showToast(shared.errors.couldNotSave);
+      }
+    },
+    [resetPin, shared, showToast],
+  );
   // Stable so AppSnackbar's auto-dismiss timer is not restarted by every render of this screen.
   const dismissToast = useCallback(() => {
     setToast((t) => ({ ...t, visible: false }));
@@ -1045,6 +1062,7 @@ export default function AdminCustomerDetailDashboard() {
           editLabel={t.editCustomer}
           subtitle={[displayId, c.mobile ? formatMobileDisplay(c.mobile) : ''].filter(Boolean).join(' · ')}
           onEdit={openEdit}
+          onResetPin={c.mobile ? () => void resetTheirPin(c.mobile) : undefined}
         />
       </View>
 

@@ -27,5 +27,24 @@ export interface AuthSessionResponse {
 
 export interface VerifyOtpResponse {
   session: AuthSessionResponse;
+  /** True when they have not chosen a PIN yet: the app asks for one before anything else. */
+  mustSetPin?: boolean;
+}
+
+/** Signing in with a number and a password: the PIN, or their own mobile number the first time. */
+export interface LoginRequest {
+  mobileNumber: string;
+  secret: string;
+}
+
+export interface LoginResponse {
+  session: AuthSessionResponse;
+  mustSetPin: boolean;
+}
+
+/** Choosing the first PIN, or changing one (which needs the one in use). */
+export interface SetPinRequest {
+  pin: string;
+  currentPin?: string;
 }
 

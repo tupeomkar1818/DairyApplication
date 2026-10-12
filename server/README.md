@@ -14,7 +14,8 @@ dairy.
 ## Why these
 
 The website is already on this account, D1 and R2 cost nothing at the dairy's size, and Workers run close to India.
-The one thing Cloudflare does not hand us is sign-in, so OTP and sessions are written here (see `auth.md`).
+The one thing Cloudflare does not hand us is sign-in, so PINs, codes and sessions are written here (see
+**Signing in**).
 
 ## The shape of the API
 
@@ -23,7 +24,7 @@ One route per thing the app needs, grouped the way the app's services are groupe
 
 | Area | Routes |
 | --- | --- |
-| Auth | `POST /auth/otp/request`, `POST /auth/otp/verify`, `POST /auth/logout`, `GET /auth/me` |
+| Auth | `POST /auth/login`, `POST /auth/pin`, `POST /auth/pin/reset` (the dairy), `POST /auth/otp/request`, `POST /auth/otp/verify`, `POST /auth/logout`, `GET /auth/me` |
 | Customers | `GET/POST /customers`, `GET/PATCH/DELETE /customers/:id` (a customer patches only their own, see **Customer self-service**), `GET /me/customer` |
 | Products | `GET/POST /products`, `GET/PATCH/DELETE /products/:id`, categories |
 | Subscriptions | `PATCH /customers/:id/plans`, `POST /customers/:id/days` (skip, quantity, add-on) |
@@ -47,7 +48,8 @@ records; it re-checks only what must not be trusted to a phone: who you are, wha
 ## Order of work
 
 1. **Groundwork** — this Worker, the D1 schema, health check, local dev. *(done)*
-2. **Sign-in** — OTP by SMS (MSG91 still to come), sessions, roles. *(done)*
+2. **Sign-in** — mobile number and a 4-digit PIN, sessions, roles; OTP by SMS kept for when MSG91 is through.
+   *(done)*
 3. **Customers and products** — first area end to end; the app's mock service for these is replaced. *(done)*
 4. **The rest of the data** — subscriptions, days, deliveries, billing, payments *(done)*, delivery boys *(done)*,
    offers *(done)*, customer self-service *(done)*, announcements, chat and notifications *(done)*.
@@ -84,8 +86,33 @@ products, the delivery team, offers, announcements, chat and notifications. Ever
 on the phone, so the app works while the rest is built. Back to the way it was: `EXPO_PUBLIC_SERVICE_MODE=mock`.
 
 Signing in needs a number the dairy knows: the admin login created by `migrations/0003_admin_login.sql`, or a
-customer or delivery boy the admin has added. With `SMS_PROVIDER=log` no SMS is sent — the code is written to the
-Worker's log and shown in the app's demo banner.
+customer or delivery boy the admin has added.
+
+## Signing in
+
+No SMS is needed. Somebody signs in with their mobile number and a 4-digit PIN they choose themselves
+(`src/auth/pin.ts`):
+
+- **The first time**, their password *is* their own mobile number. `POST /auth/login` answers
+  `{ session, mustSetPin: true }`, and the app takes them straight to **Choose your PIN**.
+- **Until a PIN exists** that session may do nothing else: every other route answers `403 PIN_NOT_SET`. Only
+  `GET /auth/me`, `POST /auth/pin` and `POST /auth/logout` are open to it, because anybody who knows that number
+  could have signed in as them.
+- **`POST /auth/pin`** stores it, and from that moment the mobile number stops working as a password. Changing a
+  PIN later through the same route asks for the one in use.
+- **Wrong tries** count: five in a row and the login is locked for 15 minutes (`PIN_LOCKED`), the right PIN
+  included. A sign-in that works clears the count.
+- **Forgotten PINs** are the dairy's to clear — `POST /auth/pin/reset` from an admin, or the *Reset app PIN*
+  button on a customer’s detail screen. They then sign in with their own number again and choose a new one. Every
+  reset is written to the Worker's log, with who it was for.
+- **The PIN itself is never stored**, only `sha256('pin:' + pin, OTP_PEPPER)`. Any four digits are allowed: these
+  are milk rounds, and somebody who cannot remember an awkward PIN simply stops using the app.
+
+`npm run e2e:pin` walks all of it through a local `npm run dev` — the first sign-in, the routes that stay shut,
+the number going dead, the five tries, the lockout, the dairy’s reset.
+
+The OTP routes are still here and still work, for the day MSG91 and the DLT registration are through: with
+`SMS_PROVIDER=log` no SMS is sent and the code is written to the Worker's log instead.
 
 ## Customer self-service
 
@@ -315,11 +342,12 @@ keep a picture as they picked it, exactly as they did before. `npm run e2e:media
 
 Deploy a new version: `npm run deploy`. Apply new migrations to the live database first: `npm run db:migrate`.
 
-### Signing in while there is no SMS provider
+### SMS
 
-`SMS_PROVIDER=log` and `OTP_DEV_ECHO=false` on the live server: the code is written to the Worker's log and
-**never** returned in the answer, so a stranger who knows the dairy's number cannot sign in. To read a code while
-testing, run `npm run logs` and ask for the code from the app — the line reads `[otp] 8208682688 -> 123456`.
+Nobody needs it to sign in — see **Signing in**. Where a code is still asked for (changing one's own mobile
+number), `SMS_PROVIDER=log` and `OTP_DEV_ECHO=false` on the live server mean the code is written to the
+Worker's log and **never** returned in the answer. To read one while testing, run `npm run logs` — the line
+reads `[otp] 8208682688 -> 123456`.
 
 When the MSG91 account and the DLT registration are through:
 

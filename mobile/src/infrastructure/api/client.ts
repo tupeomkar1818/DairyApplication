@@ -39,6 +39,10 @@ const KNOWN_CODES: readonly string[] = [
   'OFFER_CODE_UNKNOWN',
   'OFFER_CODE_ENDED',
   'OFFER_CODE_ALREADY_APPLIED',
+  'PASSWORD_INVALID',
+  'PIN_INVALID',
+  'PIN_LOCKED',
+  'PIN_NOT_SET',
 ];
 
 export function apiBaseUrl(): string {

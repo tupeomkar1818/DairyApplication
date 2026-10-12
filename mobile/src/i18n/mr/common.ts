@@ -14,6 +14,8 @@ export const common: typeof En = {
     delete: 'हटवा',
     remove: 'काढा',
     edit: 'बदला',
+    resetPin: 'अ‍ॅपचा PIN रीसेट करा',
+    pinReset: 'त्यांचा PIN रीसेट झाला. ते स्वतःच्या मोबाइल नंबरने साइन इन करून नवीन PIN निवडतील.',
     add: 'जोडा',
     close: 'बंद करा',
     back: 'मागे',

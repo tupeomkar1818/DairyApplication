@@ -9,6 +9,7 @@ import { useDeliveryBoy } from '@/src/hooks/deliveryBoys';
 import { useDeliveryBoys, useUpdateDeliveryBoy } from '@/src/hooks/deliveryBoys';
 import { DeferredTextInput } from '@/src/components/DeferredTextInput';
 import type { DeliveryBoyFormSection } from '@/src/components/admin/DeliveryBoyFormScreen';
+import { AppSnackbar } from '@/src/components/shared/AppSnackbar';
 import { DetailProfileCard } from '@/src/components/shared/DetailProfileCard';
 import { PeriodStepper } from '@/src/components/shared/PeriodStepper';
 import {
@@ -53,6 +54,7 @@ import {
   totalAdvanceSalaryForMonthRecord,
 } from '@/src/domain/deliveryBoys/salary';
 import { isoDateOnly } from '@/src/domain/deliveryBoys/periodRange';
+import { useResetPin } from '@/src/hooks/auth';
 import { services } from '@/src/infrastructure/service-registry';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography, dairyTactileColors } from '@/src/theme/dairyTactile';
 import { strings, type Dictionary } from '@/src/i18n/strings';
@@ -321,6 +323,27 @@ export default function AdminDeliveryBoyDetailDashboard() {
   );
 
   const [error, setError] = useState<string | null>(null);
+  const [pinToast, setPinToast] = useState<{ visible: boolean; message: string }>({ visible: false, message: '' });
+
+  // A delivery boy who has forgotten their PIN: the dairy forgets it too, and they sign in with their own
+  // mobile number again and choose a new one.
+  const resetPin = useResetPin();
+  const resetTheirPin = useCallback(
+    async (mobile: string) => {
+      try {
+        await resetPin.mutateAsync(mobile);
+        setPinToast({ visible: true, message: c.actions.pinReset });
+      } catch {
+        setPinToast({ visible: true, message: c.errors.couldNotSave });
+      }
+    },
+    [c, resetPin],
+  );
+  // Stable so AppSnackbar’s auto-dismiss timer is not restarted by every render of this screen.
+  const dismissPinToast = useCallback(() => {
+    setPinToast((t) => ({ ...t, visible: false }));
+  }, []);
+
   const [picker, setPicker] = useState<null | { kind: 'backup' | 'replacement' }>(null);
   const [attendanceSelected, setAttendanceSelected] = useState<null | { dateIso: string }>(null);
   const [attendanceMonthPickerOpen, setAttendanceMonthPickerOpen] = useState(false);
@@ -1549,6 +1572,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
             editLabel={t.header.editDeliveryBoy}
             subtitle={[b.mobileNumber ? formatMobileDisplay(b.mobileNumber) : '', b.primaryRouteName].filter(Boolean).join(' · ')}
             onEdit={() => openEditSection()}
+            onResetPin={b.mobileNumber ? () => void resetTheirPin(b.mobileNumber) : undefined}
           />
         </View>
       ) : null}
@@ -3283,6 +3307,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
           </Dialog.Actions>
         </Dialog>
 
+        <AppSnackbar
+          visible={pinToast.visible}
+          message={pinToast.message}
+          onDismiss={dismissPinToast}
+          duration={3500}
+        />
       </Portal>
     </View>
   );

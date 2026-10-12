@@ -16,6 +16,8 @@ export const common = {
     delete: 'Delete',
     remove: 'Remove',
     edit: 'Edit',
+    resetPin: 'Reset app PIN',
+    pinReset: 'Their PIN is forgotten. They sign in with their own mobile number and choose a new one.',
     add: 'Add',
     close: 'Close',
     back: 'Back',

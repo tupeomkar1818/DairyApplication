@@ -1,6 +1,34 @@
-import type { RequestOtpRequest, RequestOtpResponse, VerifyOtpRequest, VerifyOtpResponse, AuthSessionResponse } from '@/src/domain/auth/dtos';
+import type {
+  AuthSessionResponse,
+  LoginRequest,
+  LoginResponse,
+  RequestOtpRequest,
+  RequestOtpResponse,
+  SetPinRequest,
+  VerifyOtpRequest,
+  VerifyOtpResponse,
+} from '@/src/domain/auth/dtos';
 
 export interface IAuthService {
+  /**
+   * POST /api/auth/login — a mobile number and a password.
+   *
+   * The first time somebody signs in, the password is their own mobile number and `mustSetPin` comes back true:
+   * they choose a four-digit PIN before anything else, and that is the password from then on.
+   *
+   * @throws MOBILE_NOT_REGISTERED | USER_INACTIVE | PASSWORD_INVALID | PIN_INVALID | PIN_LOCKED
+   */
+  login(data: LoginRequest): Promise<LoginResponse>;
+
+  /**
+   * POST /api/auth/pin — chooses the first PIN, or changes one (`currentPin` is then required).
+   * @throws PIN_INVALID | PIN_LOCKED
+   */
+  setPin(data: SetPinRequest): Promise<void>;
+
+  /** POST /api/auth/pin/reset — the dairy forgets somebody's PIN, so they sign in with their number again. */
+  resetPin(mobileNumber: string): Promise<void>;
+
   /**
    * POST /api/auth/otp/request
    * Login is allowed for existing users and for admin-created customers / delivery boys (matched by mobile)

@@ -5,7 +5,16 @@ import { create } from 'zustand';
 
 import type { LogoutConfirmDialogProps } from '@/src/components/auth/LogoutConfirmDialog';
 
-import type { AuthSessionResponse, RequestOtpRequest, RequestOtpResponse, VerifyOtpRequest, VerifyOtpResponse } from '@/src/domain/auth/dtos';
+import type {
+  AuthSessionResponse,
+  LoginRequest,
+  LoginResponse,
+  RequestOtpRequest,
+  RequestOtpResponse,
+  SetPinRequest,
+  VerifyOtpRequest,
+  VerifyOtpResponse,
+} from '@/src/domain/auth/dtos';
 import { strings } from '@/src/i18n/strings';
 import { services } from '@/src/infrastructure/service-registry';
 
@@ -31,6 +40,39 @@ export function useAuthSession() {
       return session;
     },
     staleTime: 30_000,
+  });
+}
+
+/**
+ * Signing in with a number and a PIN — or, the first time, with their own mobile number, which is when
+ * `mustSetPin` comes back true and the app asks them to choose one.
+ */
+export function useLogin() {
+  const qc = useQueryClient();
+  const setSession = useAuthStore((s) => s.setSession);
+
+  return useMutation<LoginResponse, unknown, LoginRequest>({
+    mutationFn: (data) => services.auth.login(data),
+    onSuccess: (res) => {
+      // Never show a previous user's cached profile to the newly signed-in user.
+      qc.removeQueries({ queryKey: ['profile'] });
+      qc.setQueryData<AuthSessionResponse | null>(AUTH_SESSION_QUERY_KEY, res.session);
+      setSession(res.session);
+    },
+  });
+}
+
+/** Choosing the first PIN, or changing one. */
+export function useSetPin() {
+  return useMutation<void, unknown, SetPinRequest>({
+    mutationFn: (data) => services.auth.setPin(data),
+  });
+}
+
+/** The dairy forgets somebody's PIN for them, so they can sign in with their own number again. */
+export function useResetPin() {
+  return useMutation<void, unknown, string>({
+    mutationFn: (mobileNumber) => services.auth.resetPin(mobileNumber),
   });
 }
 

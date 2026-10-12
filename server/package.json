@@ -13,6 +13,7 @@
     "db:reset:local": "wrangler d1 execute amrale-dairy --local --command \"delete from sessions; delete from otp_challenges; delete from subscription_plans; delete from customers; delete from product_packs; delete from products; delete from users where role != 0x61646d696e;\"",
     "e2e": "bash scripts/e2e.sh",
     "e2e:auth": "bash scripts/e2e-auth.sh",
+    "e2e:pin": "bash scripts/e2e-pin.sh",
     "logs": "wrangler tail amrale-dairy-api --format pretty",
     "e2e:billing": "bash scripts/e2e-billing.sh",
     "e2e:team": "bash scripts/e2e-team.sh",
