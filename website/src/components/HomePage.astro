@@ -1,0 +1,1122 @@
+---
+import Icon from './Icon.astro';
+import OffersSection from './OffersSection.astro';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { mapEmbedUrl, products, site, whatsappLink, yearsServing } from '../data/site';
+import { fill, ui, type Lang } from '../i18n/ui';
+
+interface Props {
+  lang: Lang;
+}
+
+const { lang } = Astro.props;
+const t = ui[lang];
+
+const kindIcon = { daily: 'milk', fresh: 'cube', sweet: 'sweet' } as const;
+const productIcon: Record<string, 'milk' | 'bowl' | 'cube' | 'sweet'> = { milk: 'milk', curd: 'bowl', paneer: 'cube' };
+const promiseIcons = ['shield', 'truck', 'clock', 'wallet'] as const;
+---
+
+<BaseLayout lang={lang} title={t.meta.homeTitle} description={t.meta.homeDescription}>
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <p class="pill mr">{site.taglineMarathi}</p>
+        <h1>
+          {t.hero.titleLine1}
+          <span class="highlight">{t.hero.titleLine2}</span>
+        </h1>
+        <p class="lead">{t.hero.lead}</p>
+        <div class="hero-actions">
+          <a class="btn btn-yellow" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">
+            <Icon name="whatsapp" />
+            {t.actions.orderWhatsapp}
+          </a>
+          <a class="btn btn-outline-light" href={`tel:${site.phoneDial}`}>
+            <Icon name="phone" />
+            {t.actions.call} {site.phoneDisplay}
+          </a>
+        </div>
+        <ul class="hero-points">
+          {
+            t.hero.points.map((p) => (
+              <li>
+                <Icon name="check" size={18} /> {p}
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+
+      <div class="hero-visual" aria-hidden="true">
+        <div class="logo-ring">
+          <img src="/images/amrale-logo.png" alt="" width="360" height="360" />
+        </div>
+        <div class="badge-years">
+          <strong>{yearsServing}</strong>
+          <span>{t.hero.yearsLabel}</span>
+        </div>
+        <span class="float-chip chip-1 mr">दूध</span>
+        <span class="float-chip chip-2 mr">पनीर</span>
+        <span class="float-chip chip-3 mr">श्रीखंड</span>
+      </div>
+    </div>
+
+    <svg class="hero-wave" viewBox="0 0 1440 120" preserveAspectRatio="none" aria-hidden="true">
+      <path
+        d="M0 64c96-22 180 18 276 12s156-52 252-46 150 58 246 60 168-44 264-50 162 40 258 44 126-20 144-26v122H0z"
+        fill="#fffbf1"
+      ></path>
+    </svg>
+  </section>
+
+  <!-- Promises -->
+  <section class="promises" aria-label={t.promises.label}>
+    <div class="container promise-grid">
+      {
+        t.promises.items.map((p, i) => (
+          <div class="promise">
+            <span class="promise-icon">
+              <Icon name={promiseIcons[i] ?? 'check'} />
+            </span>
+            <div>
+              <h2>{p.title}</h2>
+              <p>{fill(p.text, { years: yearsServing })}</p>
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <!-- Offers: hidden unless the offers file has an offer running today -->
+  <OffersSection lang={lang} />
+
+  <!-- Products -->
+  <section class="section" id="products">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">{t.products.eyebrow}</span>
+        <h2>{t.products.title}</h2>
+        <p class="mr categories">{site.categoriesMarathi.join('  ·  ')}</p>
+      </div>
+
+      <figure class="banner">
+        <img src="/images/amrale-products-banner.png" alt={t.products.bannerAlt} width="1024" height="393" loading="lazy" />
+      </figure>
+
+      <ul class="product-grid">
+        {
+          products.map((p) => (
+            <li class={`product product-${p.kind}`}>
+              <span class="product-icon">
+                <Icon name={productIcon[p.id] ?? kindIcon[p.kind]} size={26} />
+              </span>
+              <span class="product-tag">{t.products.tags[p.kind]}</span>
+              <h3>
+                <span class="mr">{p.nameMarathi}</span>
+                <span class="en">{p.name}</span>
+              </h3>
+              <p>{p.description[lang]}</p>
+            </li>
+          ))
+        }
+      </ul>
+
+      <div class="center-cta">
+        <a class="btn btn-blue" href={whatsappLink(t.whatsapp.prices)} target="_blank" rel="noopener">
+          {t.products.askPrices}
+          <Icon name="arrow-right" />
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section class="section how" id="how-it-works">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">{t.how.eyebrow}</span>
+        <h2>{t.how.title}</h2>
+        <p>{t.how.intro}</p>
+      </div>
+      <ol class="steps">
+        {
+          t.how.steps.map((s, i) => (
+            <li class="step">
+              <span class="step-num">{i + 1}</span>
+              <h3>{s.title}</h3>
+              <p>{s.text}</p>
+            </li>
+          ))
+        }
+      </ol>
+    </div>
+  </section>
+
+  <!-- About -->
+  <section class="section" id="about">
+    <div class="container about-grid">
+      <div class="about-copy">
+        <span class="eyebrow">{t.about.eyebrow}</span>
+        <h2>{t.about.title}</h2>
+        <p class="mr about-marathi">{lang === 'mr' ? site.legalName : site.legalNameMarathi}</p>
+        <p>{t.about.body}</p>
+        <p>{t.about.visit}</p>
+      </div>
+      <div class="about-card">
+        <p class="about-years"><strong>{yearsServing}</strong> {t.about.years}</p>
+        <p class="about-since">{t.about.sinceToday}</p>
+        <div class="about-divider"></div>
+        <p class="about-address">
+          <Icon name="pin" size={20} />
+          <span>{t.contact.address}</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- App -->
+  <section class="section app" id="app">
+    <div class="container app-grid">
+      <div class="app-copy">
+        <span class="eyebrow eyebrow-light">{t.app.eyebrow}</span>
+        <h2>{t.app.title}</h2>
+        <p>{t.app.intro}</p>
+        <ul class="app-list">
+          {
+            t.app.features.map((f) => (
+              <li>
+                <Icon name="check" size={20} />
+                {f}
+              </li>
+            ))
+          }
+        </ul>
+        <a class="btn btn-yellow" href={whatsappLink(t.whatsapp.app)} target="_blank" rel="noopener">
+          <Icon name="phone-app" />
+          {t.app.cta}
+        </a>
+      </div>
+
+      <div class="phone" aria-hidden="true">
+        <div class="phone-screen">
+          <div class="ph-top">
+            <span class="ph-brand">{t.brand.name}</span>
+            <span class="ph-dot"></span>
+          </div>
+          <p class="ph-hello">{t.app.mock.hello}</p>
+          <div class="ph-card ph-blue">
+            <span class="ph-label">{t.app.mock.tomorrow}</span>
+            <span class="ph-value">{t.app.mock.item}</span>
+            <span class="ph-note">{t.app.mock.changeBy}</span>
+          </div>
+          <div class="ph-row">
+            <div class="ph-tile"><Icon name="calendar" size={20} /><span>{t.app.mock.myDays}</span></div>
+            <div class="ph-tile"><Icon name="wallet" size={20} /><span>{t.app.mock.myBills}</span></div>
+          </div>
+          <div class="ph-card">
+            <span class="ph-label">{t.app.mock.totalToPay}</span>
+            <span class="ph-value ph-dark">₹1,024</span>
+            <span class="ph-pay">{t.app.mock.payBill}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Contact -->
+  <section class="section" id="contact">
+    <div class="container">
+      <div class="section-head">
+        <span class="eyebrow">{t.contact.eyebrow}</span>
+        <h2>{t.contact.title}</h2>
+        <p>{t.contact.intro}</p>
+      </div>
+
+      <div class="contact-grid">
+        <ul class="contact-list">
+          <li>
+            <a class="contact-card" href={`tel:${site.phoneDial}`}>
+              <span class="contact-icon icon-blue"><Icon name="phone" /></span>
+              <span><small>{t.contact.call}</small><strong>{site.phoneDisplay}</strong></span>
+            </a>
+          </li>
+          <li>
+            <a class="contact-card" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">
+              <span class="contact-icon icon-green"><Icon name="whatsapp" /></span>
+              <span><small>{t.contact.whatsapp}</small><strong>{site.phoneDisplay}</strong></span>
+            </a>
+          </li>
+          <li>
+            <a class="contact-card" href={`mailto:${site.email}`}>
+              <span class="contact-icon icon-amber"><Icon name="mail" /></span>
+              <span><small>{t.contact.email}</small><strong>{site.email}</strong></span>
+            </a>
+          </li>
+          <li>
+            <a class="contact-card" href={site.mapShareUrl} target="_blank" rel="noopener">
+              <span class="contact-icon icon-rose"><Icon name="pin" /></span>
+              <span><small>{t.contact.visit}</small><strong>{t.contact.address}</strong></span>
+            </a>
+          </li>
+        </ul>
+        <div class="map">
+          <iframe title={t.contact.mapTitle} src={mapEmbedUrl} loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Closing call to action -->
+  <section class="closing">
+    <div class="container closing-inner">
+      <div>
+        <p class={`closing-mr ${lang === 'en' ? 'mr' : ''}`} lang={lang === 'en' ? 'mr-IN' : 'en-IN'}>{t.closing.kicker}</p>
+        <h2>{t.closing.title}</h2>
+      </div>
+      <div class="closing-actions">
+        <a class="btn btn-whatsapp" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">
+          <Icon name="whatsapp" />
+          {t.actions.orderWhatsapp}
+        </a>
+        <a class="btn btn-blue" href={`tel:${site.phoneDial}`}>
+          <Icon name="phone" />
+          {t.actions.callUs}
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
+
+<style>
+  /* Hero */
+  .hero {
+    position: relative;
+    overflow: hidden;
+    color: #fff;
+    background:
+      radial-gradient(1200px 520px at 85% 10%, rgba(255, 255, 255, 0.12), transparent 60%),
+      radial-gradient(700px 400px at 0% 100%, rgba(254, 215, 86, 0.12), transparent 60%),
+      linear-gradient(160deg, var(--blue-800) 0%, var(--blue-700) 45%, var(--blue-600) 100%);
+  }
+
+  .hero-grid {
+    display: grid;
+    gap: 48px;
+    align-items: center;
+    padding-block: 56px 120px;
+  }
+
+  .pill {
+    display: inline-block;
+    padding: 4px 14px 2px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--yellow);
+  }
+
+  .hero h1 {
+    margin-top: 18px;
+    font-size: clamp(38px, 6.4vw, 66px);
+    font-weight: 800;
+    letter-spacing: -0.035em;
+  }
+
+  .highlight {
+    display: block;
+    color: var(--yellow);
+  }
+
+  /* Marathi headlines run longer: a little smaller so they break into two tidy lines. */
+  :global(html[data-lang='mr']) .hero h1 {
+    font-size: clamp(34px, 5.2vw, 56px);
+  }
+
+  :global(html[data-lang='mr']) .badge-years span {
+    font-size: 13px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .lead {
+    margin-top: 18px;
+    max-width: 560px;
+    font-size: clamp(17px, 2vw, 19px);
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 30px;
+  }
+
+  .hero-points {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    margin: 26px 0 0;
+    padding: 0;
+    list-style: none;
+    font-size: 15px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .hero-points li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .hero-points :global(svg) {
+    color: var(--yellow);
+  }
+
+  .hero-visual {
+    position: relative;
+    justify-self: center;
+    /* Smaller on phones so the buttons and the first products are not far down the page. */
+    width: min(100%, 300px);
+    aspect-ratio: 1;
+  }
+
+  .logo-ring {
+    position: absolute;
+    inset: 8%;
+    border-radius: 50%;
+    padding: 10px;
+    background: conic-gradient(from 200deg, var(--yellow), var(--yellow-deep), var(--yellow));
+    box-shadow: 0 30px 80px rgba(10, 18, 60, 0.45);
+  }
+
+  .logo-ring img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  .badge-years {
+    position: absolute;
+    left: 0;
+    bottom: 10%;
+    display: grid;
+    place-items: center;
+    width: 112px;
+    height: 112px;
+    border-radius: 50%;
+    background: var(--milk);
+    color: var(--blue-900);
+    text-align: center;
+    box-shadow: var(--shadow);
+    line-height: 1;
+    rotate: -8deg;
+  }
+
+  .badge-years strong {
+    font-size: 40px;
+    font-weight: 800;
+    margin-top: 16px;
+  }
+
+  .badge-years span {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 18px;
+    padding-inline: 12px;
+  }
+
+  .float-chip {
+    position: absolute;
+    padding: 6px 16px 3px;
+    border-radius: 999px;
+    background: var(--yellow);
+    color: var(--blue-950);
+    font-size: 20px;
+    font-weight: 700;
+    box-shadow: 0 10px 24px rgba(10, 18, 60, 0.3);
+    animation: bob 5s ease-in-out infinite;
+  }
+
+  .chip-1 {
+    top: 4%;
+    right: 6%;
+  }
+
+  .chip-2 {
+    top: 46%;
+    right: -2%;
+    animation-delay: -1.6s;
+  }
+
+  .chip-3 {
+    top: 10%;
+    left: 0;
+    animation-delay: -3.2s;
+  }
+
+  @keyframes bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-8px);
+    }
+  }
+
+  .hero-wave {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    width: 100%;
+    height: 90px;
+  }
+
+  @media (min-width: 900px) {
+    .hero-grid {
+      grid-template-columns: 1.15fr 0.85fr;
+      padding-block: 88px 150px;
+    }
+    .hero-visual {
+      width: min(100%, 420px);
+    }
+  }
+
+  /* Promises */
+  .promises {
+    position: relative;
+    margin-top: -36px;
+    z-index: 2;
+  }
+
+  .promise-grid {
+    display: grid;
+    gap: 12px;
+  }
+
+  .promise {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 20px;
+    border-radius: var(--radius);
+    background: var(--milk);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .promise-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    background: var(--yellow-soft);
+    color: var(--blue-800);
+  }
+
+  .promise h2 {
+    font-size: 17px;
+    font-weight: 800;
+    color: var(--blue-950);
+  }
+
+  .promise p {
+    margin-top: 2px;
+    font-size: 15px;
+    color: var(--muted);
+  }
+
+  @media (min-width: 640px) {
+    .promise-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (min-width: 1040px) {
+    .promise-grid {
+      grid-template-columns: repeat(4, 1fr);
+    }
+  }
+
+  /* Products */
+  .categories {
+    font-size: 22px;
+    color: var(--blue-700);
+  }
+
+  .banner {
+    margin: 0 0 28px;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+  }
+
+  .banner img {
+    width: 100%;
+    height: auto;
+  }
+
+  .product-grid {
+    display: grid;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .product {
+    position: relative;
+    display: grid;
+    gap: 8px;
+    align-content: start;
+    padding: 24px;
+    border-radius: var(--radius);
+    background: var(--milk);
+    border: 1px solid var(--line);
+    transition:
+      transform 0.2s ease,
+      box-shadow 0.2s ease;
+  }
+
+  .product:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow);
+  }
+
+  .product-icon {
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 16px;
+    background: var(--blue-50);
+    color: var(--blue-700);
+    margin-bottom: 6px;
+  }
+
+  .product-sweet .product-icon {
+    background: var(--yellow-soft);
+    color: #9a6400;
+  }
+
+  .product-tag {
+    position: absolute;
+    top: 24px;
+    right: 24px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: var(--blue-50);
+    color: var(--blue-700);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .product-sweet .product-tag {
+    background: var(--yellow-soft);
+    color: #8a5a00;
+  }
+
+  .product h3 {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+  }
+
+  .product h3 .mr {
+    font-size: 28px;
+    color: var(--blue-900);
+  }
+
+  .product h3 .en {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+
+  .product p {
+    font-size: 15px;
+    color: var(--muted);
+  }
+
+  .center-cta {
+    display: flex;
+    justify-content: center;
+    margin-top: 32px;
+  }
+
+  @media (min-width: 640px) {
+    .product-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (min-width: 1000px) {
+    .product-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  /* How it works */
+  .how {
+    background: var(--milk);
+    border-block: 1px solid var(--line);
+  }
+
+  .steps {
+    display: grid;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: step;
+  }
+
+  .step {
+    position: relative;
+    padding: 26px 24px 24px;
+    border-radius: var(--radius);
+    background: var(--cream);
+    border: 1px solid var(--line);
+  }
+
+  .step-num {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin-bottom: 14px;
+    border-radius: 50%;
+    background: var(--blue-700);
+    color: #fff;
+    font-weight: 800;
+  }
+
+  .step h3 {
+    font-size: 19px;
+    font-weight: 800;
+    color: var(--blue-950);
+  }
+
+  .step p {
+    margin-top: 6px;
+    font-size: 15px;
+    color: var(--muted);
+  }
+
+  @media (min-width: 640px) {
+    .steps {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (min-width: 1040px) {
+    .steps {
+      grid-template-columns: repeat(4, 1fr);
+    }
+    .step:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      top: 45px;
+      right: -12px;
+      width: 8px;
+      height: 8px;
+      border-top: 2px solid var(--blue-100);
+      border-right: 2px solid var(--blue-100);
+      rotate: 45deg;
+    }
+  }
+
+  /* About */
+  .about-grid {
+    display: grid;
+    gap: 36px;
+    align-items: center;
+  }
+
+  .about-copy {
+    display: grid;
+    gap: 14px;
+  }
+
+  .about-copy h2 {
+    font-size: clamp(30px, 4.2vw, 44px);
+    font-weight: 800;
+    color: var(--blue-950);
+  }
+
+  .about-marathi {
+    font-size: 24px;
+    color: var(--blue-700);
+  }
+
+  .about-copy p:not(.about-marathi) {
+    max-width: 600px;
+    font-size: 17px;
+    color: var(--muted);
+  }
+
+  .about-card {
+    padding: 32px;
+    border-radius: var(--radius-lg);
+    background: linear-gradient(150deg, var(--yellow) 0%, #ffe38a 100%);
+    color: var(--blue-950);
+    box-shadow: var(--shadow);
+  }
+
+  .about-years {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .about-years strong {
+    font-size: clamp(72px, 10vw, 104px);
+    font-weight: 800;
+    letter-spacing: -0.05em;
+  }
+
+  .about-since {
+    margin-top: 8px;
+    font-size: 17px;
+    font-weight: 700;
+  }
+
+  .about-divider {
+    height: 1px;
+    margin: 22px 0;
+    background: rgba(22, 34, 90, 0.2);
+  }
+
+  .about-address {
+    display: flex;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .about-address :global(svg) {
+    flex: none;
+    margin-top: 2px;
+  }
+
+  @media (min-width: 900px) {
+    .about-grid {
+      grid-template-columns: 1.3fr 0.7fr;
+      gap: 64px;
+    }
+  }
+
+  /* App */
+  .app {
+    color: #fff;
+    background: linear-gradient(160deg, var(--blue-900), var(--blue-700));
+  }
+
+  .app-grid {
+    display: grid;
+    gap: 48px;
+    align-items: center;
+  }
+
+  .app-copy {
+    display: grid;
+    gap: 16px;
+    justify-items: start;
+  }
+
+  .eyebrow-light {
+    color: var(--yellow);
+  }
+
+  .app-copy h2 {
+    font-size: clamp(30px, 4.2vw, 44px);
+    font-weight: 800;
+  }
+
+  .app-copy > p {
+    max-width: 520px;
+    font-size: 18px;
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .app-list {
+    display: grid;
+    gap: 12px;
+    margin: 6px 0 12px;
+    padding: 0;
+    list-style: none;
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .app-list li {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .app-list :global(svg) {
+    flex: none;
+    margin-top: 3px;
+    color: var(--yellow);
+  }
+
+  .phone {
+    justify-self: center;
+    width: 280px;
+    padding: 12px;
+    border-radius: 44px;
+    background: #0d1640;
+    box-shadow:
+      0 40px 80px rgba(5, 10, 40, 0.5),
+      inset 0 0 0 2px rgba(255, 255, 255, 0.08);
+    rotate: 3deg;
+  }
+
+  .phone-screen {
+    display: grid;
+    gap: 12px;
+    padding: 20px 16px 24px;
+    border-radius: 34px;
+    background: #f7f9ff;
+    color: var(--ink);
+  }
+
+  .ph-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .ph-brand {
+    font-size: 17px;
+    font-weight: 800;
+    color: #0055c7;
+  }
+
+  .ph-dot {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--blue-50);
+  }
+
+  .ph-hello {
+    font-size: 18px;
+    font-weight: 800;
+  }
+
+  .ph-card {
+    display: grid;
+    gap: 2px;
+    padding: 14px;
+    border-radius: 16px;
+    background: #fff;
+    border: 1px solid var(--line);
+  }
+
+  .ph-blue {
+    background: #0055c7;
+    border-color: #0055c7;
+    color: #fff;
+  }
+
+  .ph-label {
+    font-size: 12px;
+    font-weight: 600;
+    opacity: 0.8;
+  }
+
+  .ph-value {
+    font-size: 15px;
+    font-weight: 800;
+  }
+
+  .ph-dark {
+    font-size: 24px;
+    color: var(--ink);
+  }
+
+  .ph-note {
+    font-size: 12px;
+    opacity: 0.85;
+  }
+
+  .ph-pay {
+    margin-top: 8px;
+    padding: 8px;
+    border-radius: 10px;
+    background: #0055c7;
+    color: #fff;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .ph-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .ph-tile {
+    display: grid;
+    gap: 6px;
+    padding: 12px;
+    border-radius: 14px;
+    background: #fff;
+    border: 1px solid var(--line);
+    font-size: 13px;
+    font-weight: 700;
+    color: #0055c7;
+  }
+
+  @media (min-width: 900px) {
+    .app-grid {
+      grid-template-columns: 1.2fr 0.8fr;
+    }
+  }
+
+  /* Contact */
+  .contact-grid {
+    display: grid;
+    gap: 20px;
+  }
+
+  .contact-list {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .contact-card {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 18px;
+    border-radius: var(--radius);
+    background: var(--milk);
+    border: 1px solid var(--line);
+    text-decoration: none;
+    transition: box-shadow 0.15s ease;
+  }
+
+  .contact-card:hover {
+    box-shadow: var(--shadow);
+  }
+
+  .contact-card small {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .contact-card strong {
+    display: block;
+    font-size: 16px;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+
+  .contact-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+  }
+
+  .icon-blue {
+    background: var(--blue-50);
+    color: var(--blue-700);
+  }
+
+  .icon-green {
+    background: #ddf5e6;
+    color: #128c4a;
+  }
+
+  .icon-amber {
+    background: #ffebd2;
+    color: #9a4f00;
+  }
+
+  .icon-rose {
+    background: #fde4e8;
+    color: #b4233c;
+  }
+
+  .map {
+    min-height: 320px;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--line);
+    background: var(--blue-50);
+  }
+
+  .map iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 320px;
+    border: 0;
+  }
+
+  @media (min-width: 900px) {
+    .contact-grid {
+      grid-template-columns: 0.9fr 1.1fr;
+    }
+  }
+
+  /* Closing */
+  .closing {
+    padding-block: 56px;
+    background: var(--yellow);
+    color: var(--blue-950);
+  }
+
+  .closing-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+
+  .closing-mr {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--blue-800);
+  }
+
+  .closing h2 {
+    font-size: clamp(28px, 3.6vw, 40px);
+    font-weight: 800;
+  }
+
+  .closing-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+</style>

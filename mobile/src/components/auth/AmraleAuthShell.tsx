@@ -13,8 +13,10 @@ type Props = {
 };
 
 export function AmraleAuthShell({ children, scroll = false, showSplashDecor = true }: Props) {
+  // With `scroll`, the scroll content already pads the page — don't pad the inner column a second time
+  // (that left only ~224px for the OTP content on a 320px phone).
   const body = (
-    <View style={styles.inner}>{children}</View>
+    <View style={[styles.inner, scroll && styles.innerInScroll]}>{children}</View>
   );
 
   return (
@@ -45,6 +47,8 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: amraleColors.blue,
+    // MilkSplashDecor bleeds past the edges; clip it so it never widens the page on phones.
+    overflow: 'hidden',
   },
   contentLayer: { flex: 1, zIndex: 1 },
   scrollContent: {
@@ -62,5 +66,9 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
+  },
+  innerInScroll: {
+    paddingHorizontal: 0,
+    paddingVertical: 0,
   },
 });

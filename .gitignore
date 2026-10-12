@@ -14,3 +14,14 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+# Astro build output and Cloudflare/Vercel local state
+website/dist/
+website/.wrangler/
+website/.vercel/
+.astro/
+server/.wrangler/
+# wrangler leaves a cache wherever it happens to be run from
+.wrangler/
+server/node_modules/
+server/.dev.vars

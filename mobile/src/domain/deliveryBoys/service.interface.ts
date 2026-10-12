@@ -10,7 +10,10 @@ export interface IDeliveryBoyService {
   /** POST /api/delivery-boys */
   create(data: CreateDeliveryBoyRequest): Promise<DeliveryBoyResponse>;
 
-  /** PUT /api/delivery-boys/:id */
+  /**
+   * PUT /api/delivery-boys/:id
+   * @throws DomainError `DELIVERY_BOY_NOT_FOUND` when no delivery boy has this id.
+   */
   update(id: string, data: UpdateDeliveryBoyRequest): Promise<DeliveryBoyResponse>;
 
   /** DELETE /api/delivery-boys/:id */

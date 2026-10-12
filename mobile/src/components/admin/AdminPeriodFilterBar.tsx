@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Dialog, Portal, Text, TextInput } from 'react-native-paper';
 
 import type { PeriodPreset } from '@/src/domain/deliveryBoys/periodRange';
 import { presetLabel } from '@/src/domain/deliveryBoys/periodRange';
+import { useLanguage, useStrings } from '@/src/i18n/useStrings';
 import { useResponsiveLayout } from '@/src/utils/responsiveLayout';
 
 const PRESETS: PeriodPreset[] = ['today', 'thisWeek', 'thisMonth', 'lastMonth', 'last3Months', 'last6Months', 'custom'];
+
+/** Admin tactile screens are light-only; pin the scheme so chip text never switches to dark-mode colors on light surfaces. */
+const ADMIN_TACTILE_SCHEME = 'light' as 'light' | 'dark';
 
 type Props = {
   value: PeriodPreset;
@@ -17,7 +21,11 @@ type Props = {
 };
 
 export function AdminPeriodFilterBar({ value, onChange, customStartIso = '', customEndIso = '', onCustomChange }: Props) {
-  const scheme = useColorScheme();
+  const scheme = ADMIN_TACTILE_SCHEME;
+  const t = useStrings('admin').periodFilter;
+  const tc = useStrings('common');
+  // presetLabel reads the app language; subscribing re-renders the chips when it changes.
+  useLanguage();
   const { isMobile, dialogMaxHeight, width } = useResponsiveLayout();
   const [open, setOpen] = useState(false);
   const [draftStart, setDraftStart] = useState(customStartIso);
@@ -61,16 +69,16 @@ export function AdminPeriodFilterBar({ value, onChange, customStartIso = '', cus
             isMobile && { width: Math.min(width - 24, 520), alignSelf: 'center' as const },
           ]}
         >
-          <Dialog.Title>Custom range</Dialog.Title>
+          <Dialog.Title>{t.customRange}</Dialog.Title>
           <Dialog.Content>
             <Text variant="bodySmall" style={styles.hint}>
-              Enter yyyy-mm-dd
+              {t.dateFormatHint}
             </Text>
-            <TextInput mode="outlined" label="Start" dense value={draftStart} onChangeText={setDraftStart} style={styles.input} />
-            <TextInput mode="outlined" label="End" dense value={draftEnd} onChangeText={setDraftEnd} style={styles.input} />
+            <TextInput mode="outlined" label={t.start} dense value={draftStart} onChangeText={setDraftStart} style={styles.input} />
+            <TextInput mode="outlined" label={t.end} dense value={draftEnd} onChangeText={setDraftEnd} style={styles.input} />
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setOpen(false)}>Cancel</Button>
+            <Button onPress={() => setOpen(false)}>{tc.actions.cancel}</Button>
             <Button
               mode="contained"
               onPress={() => {
@@ -79,7 +87,7 @@ export function AdminPeriodFilterBar({ value, onChange, customStartIso = '', cus
                 setOpen(false);
               }}
             >
-              Apply
+              {tc.actions.apply}
             </Button>
           </Dialog.Actions>
         </Dialog>

@@ -1,9 +1,27 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import type { ICustomerService } from '@/src/domain/customers/service.interface';
-import type { CreateCustomerRequest, CustomerListResponse, CustomerResponse, UpdateCustomerRequest } from '@/src/domain/customers/dtos';
-import type { Customer } from '@/src/domain/customers/entities';
-import { endOfMonthForDate, parsePlanBoundaryToDate } from '@/src/domain/shared/planBoundaryDates';
+import type {
+  CreateCustomerRequest,
+  CustomerListResponse,
+  CustomerResponse,
+  CustomerSubscriptionPlanDto,
+  UpdateCustomerRequest,
+} from '@/src/domain/customers/dtos';
+import type { Customer, CustomerSubscriptionPlan } from '@/src/domain/customers/entities';
+import { planLineTotal, subscriptionPlanActiveDaysInMonth } from '@/src/domain/customers/planSchedule';
+import { DomainError } from '@/src/domain/shared/errors';
+import { strings } from '@/src/i18n/strings';
+import { endOfMonthForDate, formatLocalIsoYmd, parsePlanBoundaryToDate } from '@/src/domain/shared/planBoundaryDates';
+import { assertMobileFree, moveLoginToMobile, removeLoginFor } from '@/src/infrastructure/accountLinks';
 import { readJson, writeJson } from '@/src/infrastructure/storage/storage';
-import { CUSTOMERS_STORE_KEY } from '@/src/infrastructure/storage/keys';
+import {
+  CUSTOMER_BILLING_LEDGER_PREFIX,
+  CUSTOMER_DAILY_PRODUCT_ORDERS_STORE_PREFIX,
+  CUSTOMER_SUBSCRIPTION_CALENDAR_STORE_PREFIX,
+  CUSTOMER_SUBSCRIPTION_PLAN_HISTORY_MEMO_PREFIX,
+  CUSTOMERS_STORE_KEY,
+} from '@/src/infrastructure/storage/keys';
 
 const DEFAULT_DELAY_MS = 250;
 
@@ -33,6 +51,72 @@ function nextDeliveryIso(daysFromNow: number): string {
   return d.toISOString();
 }
 
+/** Local calendar day `daysFromNow` away, as YYYY-MM-DD (plan boundary dates are calendar days, not instants). */
+function localYmdFromToday(daysFromNow: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + daysFromNow);
+  return formatLocalIsoYmd(d);
+}
+
+/**
+ * Older data stored plan boundaries as UTC timestamps (`toISOString`), which shifts the calendar day for non-UTC
+ * users. Convert timestamps to the local YYYY-MM-DD they were created on; leave date-only values untouched.
+ */
+function planBoundaryAsLocalYmd<T extends string | undefined>(value: T): T | string {
+  const t = String(value ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(t)) return value;
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? value : formatLocalIsoYmd(d);
+}
+
+function assertMobileAvailable(items: Customer[], mobile: string, exceptId?: string): void {
+  const m = mobile.trim();
+  if (items.some((c) => c.id !== exceptId && String(c.mobile ?? '').trim() === m)) {
+    throw new DomainError('CUSTOMER_MOBILE_EXISTS', strings('customers').errors.mobileExists);
+  }
+}
+
+/**
+ * Keep each plan line's identity across saves: reuse the incoming id (new id only for new or duplicated ids),
+ * keep the original `createdAt` (issue date shown in subscription history) and refresh `updatedAt`.
+ */
+function withPlanIdentity(
+  plans: CustomerSubscriptionPlanDto[],
+  now: string,
+  previous: CustomerSubscriptionPlan[] = [],
+): CustomerSubscriptionPlan[] {
+  const prevById = new Map(previous.map((p) => [p.id, p] as const));
+  const seen = new Set<string>();
+  return plans.map((p) => {
+    let id = String(p.id ?? '').trim();
+    if (!id || seen.has(id)) id = newId('sub');
+    seen.add(id);
+    return {
+      ...p,
+      id,
+      createdAt: prevById.get(id)?.createdAt ?? p.createdAt ?? now,
+      updatedAt: now,
+    };
+  });
+}
+
+/** Removes a deleted customer's per-customer side stores (calendar, day orders, plan memos, billing ledger). */
+async function removeCustomerScopedStorage(customerId: string): Promise<void> {
+  const keys = [
+    `${CUSTOMER_SUBSCRIPTION_CALENDAR_STORE_PREFIX}:${customerId}`,
+    `${CUSTOMER_DAILY_PRODUCT_ORDERS_STORE_PREFIX}:${customerId}`,
+    `${CUSTOMER_SUBSCRIPTION_PLAN_HISTORY_MEMO_PREFIX}:${customerId}`,
+  ];
+  try {
+    const all = await AsyncStorage.getAllKeys();
+    const ledgerPrefix = `${CUSTOMER_BILLING_LEDGER_PREFIX}:${customerId}:`;
+    keys.push(...all.filter((k) => k.startsWith(ledgerPrefix)));
+  } catch {
+    // Listing keys is best-effort; the exact keys above are still removed.
+  }
+  await AsyncStorage.multiRemove(keys);
+}
+
 const SUBSCRIPTION_STATUSES = new Set(['Active', 'Paused', 'Expired', 'Cancelled', 'Inactive']);
 
 function coerceSubscriptionStatus(v: unknown): 'Active' | 'Paused' | 'Expired' | 'Cancelled' | 'Inactive' {
@@ -43,7 +127,8 @@ function coerceSubscriptionStatus(v: unknown): 'Active' | 'Paused' | 'Expired' |
 function subscriptionPlanEndIsoForStart(startRaw: unknown): string | undefined {
   const start = parsePlanBoundaryToDate(String(startRaw ?? ''));
   if (!start) return undefined;
-  return endOfMonthForDate(start).toISOString();
+  // Local YYYY-MM-DD: `toISOString()` turned local midnight into the previous UTC day (plan ended a day early in IST).
+  return formatLocalIsoYmd(endOfMonthForDate(start));
 }
 
 function normalizeCustomer(c: Customer): Customer {
@@ -52,10 +137,16 @@ function normalizeCustomer(c: Customer): Customer {
     const base = Number(p.originalPrice ?? 0);
     const disc = Number(p.discountedPrice ?? 0);
     const unit = disc > 0 && disc < base ? disc : base;
-    const alignedEnd = subscriptionPlanEndIsoForStart(p.startDate);
+    const startDate = planBoundaryAsLocalYmd(p.startDate);
+    const alignedEnd = subscriptionPlanEndIsoForStart(startDate);
     const hasEnd = p.endDate !== undefined && p.endDate !== null && String(p.endDate).trim() !== '';
     return {
       ...p,
+      startDate,
+      pauseStartDate: planBoundaryAsLocalYmd(p.pauseStartDate),
+      pauseEndDate: planBoundaryAsLocalYmd(p.pauseEndDate),
+      resumeDate: planBoundaryAsLocalYmd(p.resumeDate),
+      deliveryDate: planBoundaryAsLocalYmd(p.deliveryDate),
       numberOfItems: items,
       originalPrice: Number.isFinite(base) ? base : 0,
       discountedPrice: Number.isFinite(disc) ? disc : 0,
@@ -63,7 +154,8 @@ function normalizeCustomer(c: Customer): Customer {
       status: coerceSubscriptionStatus(p.status),
       subscriptionKind: p.subscriptionKind ?? 'Monthly',
       productAdditionTag: p.productAdditionTag ?? 'Regular',
-      endDate: hasEnd ? p.endDate : alignedEnd ?? p.endDate,
+      // An open-ended line has no end on purpose; only a line that simply lacks one takes its start month's end.
+      endDate: hasEnd ? planBoundaryAsLocalYmd(p.endDate) : p.openEnded ? undefined : alignedEnd ?? p.endDate,
     };
   });
   return {
@@ -75,12 +167,17 @@ function normalizeCustomer(c: Customer): Customer {
     dateOfBirth: c.dateOfBirth,
     pendingAmount: Number.isFinite(c.pendingAmount) ? c.pendingAmount : 0,
     nextDueDate: c.nextDueDate ?? nextDeliveryIso(5),
-    lastPaymentDate: c.lastPaymentDate ?? nextDeliveryIso(-25),
+    // Never fabricate a payment date: a customer who has not paid yet shows "—".
+    lastPaymentDate: c.lastPaymentDate,
     routeName: c.routeName ?? '',
     assignedDeliveryBoyId: (c as any).assignedDeliveryBoyId,
     assignedDeliveryBoyName: c.assignedDeliveryBoyName ?? 'Unassigned',
     payments: c.payments ?? [],
+    paymentRequests: c.paymentRequests ?? [],
     extraOrders: c.extraOrders ?? [],
+    offerClaims: c.offerClaims ?? [],
+    subscriptionExceptions: c.subscriptionExceptions ?? [],
+    favouriteProductIds: c.favouriteProductIds ?? [],
     deliveries: c.deliveries ?? [],
     complaints: c.complaints ?? [],
     audit: c.audit ?? [],
@@ -92,175 +189,20 @@ function normalizeCustomer(c: Customer): Customer {
   };
 }
 
-async function ensureSeedCustomers(): Promise<Customer[]> {
+async function loadCustomers(): Promise<Customer[]> {
   const existing = await readCustomers();
   if (existing.length > 0) {
     const normalized = existing.map(normalizeCustomer);
-    await writeCustomers(normalized);
+    // Only persist when normalization changed something: an unconditional write here fires the storage
+    // listener, which invalidates the customer queries, which read again — an endless refetch loop.
+    if (JSON.stringify(normalized) !== JSON.stringify(existing)) {
+      await writeCustomers(normalized);
+    }
     return normalized;
   }
 
-  const now = nowIso();
-  const seeded: Customer[] = [
-    {
-      id: newId('cust'),
-      name: 'Rahul Patil',
-      mobile: '9999999999',
-      dateOfBirth: '14/06/1994',
-      address: 'Near Main Road, Ward 3',
-      societyName: 'Shiv Residency',
-      houseFlatNumber: 'Block B-402',
-      routeName: 'Route A',
-      assignedDeliveryBoyName: 'Unpaid Salary Test',
-      deliveryTime: 'Morning',
-      paymentType: 'Monthly',
-      status: 'Active',
-      subscriptionKind: 'Monthly',
-      subscriptionStatus: 'Active',
-      subscriptionPaymentStatus: 'Paid',
-      subscriptionStartDate: now,
-      subscription: [
-        { productName: 'Cow Milk', quantityLabel: '500 ml' },
-        { productName: 'Buffalo Milk', quantityLabel: '1 Litre' },
-        { productName: 'Curd', quantityLabel: '500 gm' },
-      ],
-      subscriptionPlans: [
-        {
-          id: newId('sub'),
-          productName: 'Cow Milk',
-          numberOfItems: 1,
-          quantityLabel: '500 ml',
-          unitType: 'ml',
-          subscriptionKind: 'Monthly',
-          productAdditionTag: 'Regular',
-          deliveryTime: 'Morning',
-          frequency: 'Daily',
-          startDate: now,
-          originalPrice: 56,
-          discountedPrice: 52,
-          effectiveFinalPrice: 52,
-          paymentStatus: 'Paid',
-          status: 'Active',
-          notes: 'Primary daily line',
-          createdAt: now,
-          updatedAt: now,
-        },
-        {
-          id: newId('sub'),
-          productName: 'Curd',
-          numberOfItems: 1,
-          quantityLabel: '500 gm',
-          unitType: 'gram',
-          subscriptionKind: 'Monthly',
-          productAdditionTag: 'Permanent',
-          deliveryTime: 'Morning',
-          frequency: 'Weekend Only',
-          startDate: now,
-          addedDate: now,
-          originalPrice: 40,
-          discountedPrice: 0,
-          effectiveFinalPrice: 40,
-          paymentStatus: 'Paid',
-          status: 'Active',
-          notes: 'Added permanently — Sundays',
-          createdAt: now,
-          updatedAt: now,
-        },
-        {
-          id: newId('sub'),
-          productName: 'Paneer',
-          numberOfItems: 1,
-          quantityLabel: '200 gm',
-          unitType: 'gram',
-          subscriptionKind: 'Monthly',
-          productAdditionTag: 'Temporary',
-          deliveryTime: 'Evening',
-          frequency: 'Daily',
-          startDate: now,
-          endDate: nextDeliveryIso(14),
-          originalPrice: 120,
-          discountedPrice: 110,
-          effectiveFinalPrice: 110,
-          paymentStatus: 'Pending',
-          status: 'Active',
-          notes: 'Guest supply — temporary window',
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      monthlyBillAmount: 5200,
-      pendingAmount: 0,
-      lastPaymentDate: nextDeliveryIso(-25),
-      nextDueDate: nextDeliveryIso(5),
-      nextDeliveryDate: nextDeliveryIso(1),
-      payments: [
-        {
-          id: newId('pay'),
-          paymentDate: nextDeliveryIso(-25),
-          amountPaid: 5200,
-          paymentMode: 'UPI',
-          transactionId: 'TXN-DEMO-001',
-          collectedBy: 'Admin',
-          pendingBalanceAfter: 0,
-          notes: 'Monthly payment',
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      createdAt: now,
-      updatedAt: now,
-    },
-    {
-      id: newId('cust'),
-      name: 'Sneha Kulkarni',
-      mobile: '8888888888',
-      dateOfBirth: '02/11/1997',
-      address: 'Lane 2, Opp. Temple',
-      societyName: 'Green View',
-      routeName: 'Route B',
-      deliveryTime: 'Evening',
-      paymentType: 'UPI',
-      status: 'Active',
-      subscriptionKind: 'Daily',
-      subscriptionStatus: 'Paused',
-      subscriptionPaymentStatus: 'Pending',
-      subscriptionStartDate: now,
-      subscription: [{ productName: 'Paneer', quantityLabel: '250 gram' }],
-      subscriptionPlans: [
-        {
-          id: newId('sub'),
-          productName: 'Paneer',
-          numberOfItems: 2,
-          quantityLabel: '250 gram',
-          unitType: 'Packet',
-          subscriptionKind: 'Daily',
-          deliveryDate: nextDeliveryIso(1),
-          deliveryTime: 'Evening',
-          frequency: 'Daily',
-          startDate: now,
-          endDate: nextDeliveryIso(5),
-          originalPrice: 90,
-          discountedPrice: 0,
-          effectiveFinalPrice: 90,
-          dailyCost: 90,
-          paymentStatus: 'Pending',
-          status: 'Active',
-          notes: 'Short guest order — 5 days',
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      monthlyBillAmount: 900,
-      pendingAmount: 820,
-      nextDueDate: nextDeliveryIso(2),
-      nextDeliveryDate: nextDeliveryIso(1),
-      createdAt: now,
-      updatedAt: now,
-    },
-  ];
-
-  await writeCustomers(seeded);
-  return seeded;
+  // A fresh store stays empty: every customer is added by the admin.
+  return [];
 }
 
 function computeMonthlyBill(subscription: Customer['subscription']): number {
@@ -269,44 +211,46 @@ function computeMonthlyBill(subscription: Customer['subscription']): number {
   return Math.max(0, subscription.length) * basePerItem;
 }
 
-function computeMonthlyBillFromPlans(plans: Customer['subscriptionPlans']): number {
-  const active = (plans ?? []).filter((p) => p.status === 'Active');
-  const perDay = active.reduce((sum, p) => {
-    const items = Math.max(1, Number((p as any).numberOfItems ?? 1));
-    const base = Number(p.originalPrice ?? 0);
-    const disc = Number(p.discountedPrice ?? 0);
-    const unit = disc > 0 && disc < base ? disc : base;
-    const line = items * (Number.isFinite(unit) ? unit : 0);
-    return sum + line;
-  }, 0);
-  // Simple monthly estimate (30 days); real billing will be based on delivery logs later.
-  return Math.round(perDay * 30);
+function currentMonthKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Estimated bill for the current month: each Active line's per-delivery total × the days that line is active this
+ * month (start/end dates and pause window honoured; Daily-kind lines count only their delivery date). Frequency is
+ * not modelled by the plan schedule (see `subscriptionPlanActiveDaysInMonth`), so every active day counts.
+ * Actual month bills are delivery-based (customerSubscriptionMonthUtils).
+ */
+export function computeMonthlyBillFromPlans(plans: Customer['subscriptionPlans'], monthYyyyMm = currentMonthKey()): number {
+  const total = (plans ?? [])
+    .filter((p) => p.status === 'Active')
+    .reduce((sum, p) => sum + planLineTotal(p) * subscriptionPlanActiveDaysInMonth(p, monthYyyyMm), 0);
+  return Math.round(total);
 }
 
 export class CustomerServiceMock implements ICustomerService {
   async list(): Promise<CustomerListResponse> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedCustomers();
+    const items = await loadCustomers();
     return { items, total: items.length };
   }
 
   async getById(id: string): Promise<CustomerResponse | null> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedCustomers();
+    const items = await loadCustomers();
     return items.find((c) => c.id === id) ?? null;
   }
 
   async create(data: CreateCustomerRequest): Promise<CustomerResponse> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedCustomers();
+    const items = await loadCustomers();
+    assertMobileAvailable(items, data.mobile);
+    // One number, one person: not a delivery partner's or the admin's number either.
+    await assertMobileFree(data.mobile);
     const now = nowIso();
     const subscription = data.subscription ?? [];
-    const subscriptionPlans = (data.subscriptionPlans ?? []).map((p) => ({
-      id: newId('sub'),
-      createdAt: now,
-      updatedAt: now,
-      ...p,
-    }));
+    const subscriptionPlans = withPlanIdentity(data.subscriptionPlans ?? [], now);
     const created: Customer = {
       id: newId('cust'),
       name: data.name.trim(),
@@ -321,6 +265,8 @@ export class CustomerServiceMock implements ICustomerService {
       city: data.city,
       pincode: data.pincode,
       landmark: data.landmark,
+      geoLocation: data.geoLocation,
+      mapLink: data.mapLink,
       routeName: data.routeName,
       assignedDeliveryBoyId: (data as any).assignedDeliveryBoyId,
       assignedDeliveryBoyName: data.assignedDeliveryBoyName,
@@ -362,10 +308,14 @@ export class CustomerServiceMock implements ICustomerService {
 
   async update(id: string, data: UpdateCustomerRequest): Promise<CustomerResponse> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedCustomers();
+    const items = await loadCustomers();
     const idx = items.findIndex((c) => c.id === id);
     if (idx < 0) {
-      throw new Error(`Customer not found: ${id}`);
+      throw new DomainError('CUSTOMER_NOT_FOUND', strings('customers').errors.notFound(id));
+    }
+    if (data.mobile !== undefined) {
+      assertMobileAvailable(items, data.mobile, id);
+      await assertMobileFree(data.mobile, { customerId: id });
     }
     const now = nowIso();
     const current = items[idx]!;
@@ -373,12 +323,7 @@ export class CustomerServiceMock implements ICustomerService {
     const subscription = data.subscription !== undefined ? data.subscription : current.subscription;
     const subscriptionPlans =
       data.subscriptionPlans !== undefined
-        ? data.subscriptionPlans.map((p) => ({
-            id: newId('sub'),
-            createdAt: now,
-            updatedAt: now,
-            ...p,
-          }))
+        ? withPlanIdentity(data.subscriptionPlans, now, current.subscriptionPlans ?? [])
         : current.subscriptionPlans ?? [];
     const updated: Customer = {
       ...current,
@@ -395,13 +340,17 @@ export class CustomerServiceMock implements ICustomerService {
     const next = [...items];
     next[idx] = updated;
     await writeCustomers(next);
+    // The customer keeps their login on the new number.
+    if (updated.mobile !== current.mobile) await moveLoginToMobile(id, updated.mobile);
     return updated;
   }
 
   async delete(id: string): Promise<void> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedCustomers();
+    const items = await loadCustomers();
     await writeCustomers(items.filter((c) => c.id !== id));
+    await removeCustomerScopedStorage(id);
+    await removeLoginFor(id);
   }
 }
 

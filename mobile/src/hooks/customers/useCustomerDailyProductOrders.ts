@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo } from 'react';
 
 import type {
@@ -7,9 +7,15 @@ import type {
   UpsertCustomerDailyProductOrderLineRequest,
 } from '@/src/domain/customers/dtos';
 import { UpsertCustomerDailyProductOrderLineRequestSchema } from '@/src/domain/customers/validations';
-import { loadDailyProductOrderLines, saveDailyProductOrderLines } from '@/src/infrastructure/customerDailyProductOrdersStore';
+import {
+  loadDailyProductOrderLines,
+  updateDailyProductOrderLines,
+} from '@/src/infrastructure/customerDailyProductOrdersStore';
 import { CUSTOMER_DAILY_PRODUCT_ORDERS_STORE_PREFIX } from '@/src/infrastructure/storage/keys';
 import { subscribeStorageKey } from '@/src/infrastructure/storage/storage';
+
+/** Stable empty value while loading / on error — a fresh `[]` per render would re-fire every effect that depends on it. */
+const EMPTY_LINES = Object.freeze([]) as unknown as CustomerDailyProductOrderLineDto[];
 
 function newLineId(): string {
   return `dord_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -41,10 +47,11 @@ export function useCustomerDailyProductOrders(
     refetchOnWindowFocus: false,
   });
 
-  const persist = useCallback(
-    async (next: CustomerDailyProductOrderLineDto[]) => {
+  /** Applies `updater` to the latest stored lines (serialized per customer), then mirrors the result into the cache. */
+  const commit = useCallback(
+    async (updater: (prev: CustomerDailyProductOrderLineDto[]) => CustomerDailyProductOrderLineDto[]) => {
       if (!customerId) return;
-      await saveDailyProductOrderLines(customerId, next);
+      const next = await updateDailyProductOrderLines(customerId, updater);
       qc.setQueryData(queryKey, next);
     },
     [customerId, qc, queryKey],
@@ -54,43 +61,36 @@ export function useCustomerDailyProductOrders(
     async (payload: UpsertCustomerDailyProductOrderLineRequest) => {
       if (!customerId) return;
       const parsed = UpsertCustomerDailyProductOrderLineRequestSchema.parse(payload);
-      const prev = ((query.data ?? []) as CustomerDailyProductOrderLineDto[]) ?? [];
-      const existing = parsed.id ? prev.find((x) => x.id === parsed.id) : undefined;
-      const row: CustomerDailyProductOrderLineDto = {
-        id: parsed.id ?? newLineId(),
-        createdAtIso: existing?.createdAtIso ?? new Date().toISOString(),
-        dateYmd: parsed.dateYmd,
-        productName: parsed.productName,
-        quantityLabel: parsed.quantityLabel,
-        unitType: parsed.unitType,
-        quantity: parsed.quantity,
-      };
-      const without = parsed.id ? prev.filter((x) => x.id !== parsed.id) : prev;
-      const next = [...without, row];
-      await persist(next);
+      await commit((prev) => {
+        const existing = parsed.id ? prev.find((x) => x.id === parsed.id) : undefined;
+        const row: CustomerDailyProductOrderLineDto = {
+          id: parsed.id ?? newLineId(),
+          createdAtIso: existing?.createdAtIso ?? new Date().toISOString(),
+          dateYmd: parsed.dateYmd,
+          productName: parsed.productName,
+          quantityLabel: parsed.quantityLabel,
+          unitType: parsed.unitType,
+          quantity: parsed.quantity,
+        };
+        const without = parsed.id ? prev.filter((x) => x.id !== parsed.id) : prev;
+        return [...without, row];
+      });
     },
-    [customerId, persist, query.data],
+    [commit, customerId],
   );
 
   const remove = useCallback(
     async (id: string) => {
-      if (!customerId) return;
-      const prev = ((query.data ?? []) as CustomerDailyProductOrderLineDto[]) ?? [];
-      const next = prev.filter((x) => x.id !== id);
-      await persist(next);
+      await commit((prev) => prev.filter((x) => x.id !== id));
     },
-    [customerId, persist, query.data],
+    [commit],
   );
 
   const replaceLinesForDate = useCallback(
     async (dateYmd: string, nextForDate: CustomerDailyProductOrderLineDto[]) => {
-      if (!customerId) return;
-      const prev = ((query.data ?? []) as CustomerDailyProductOrderLineDto[]) ?? [];
-      const rest = prev.filter((x) => x.dateYmd !== dateYmd);
-      const next = [...rest, ...nextForDate];
-      await persist(next);
+      await commit((prev) => [...prev.filter((x) => x.dateYmd !== dateYmd), ...nextForDate]);
     },
-    [customerId, persist, query.data],
+    [commit],
   );
 
   const seedDayFromProfilePlans = useCallback(
@@ -109,7 +109,7 @@ export function useCustomerDailyProductOrders(
     [customerId, replaceLinesForDate],
   );
 
-  const safeLines = (query.data ?? []) as CustomerDailyProductOrderLineDto[];
+  const safeLines = query.data ?? EMPTY_LINES;
   const ready = !!customerId ? query.isFetched : true;
 
   // keep API stable for callers

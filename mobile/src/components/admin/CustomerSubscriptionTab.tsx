@@ -1,16 +1,18 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { memo, type ReactNode } from 'react';
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import React, { memo, startTransition, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Button, Card, Dialog, Portal, Text, TextInput } from 'react-native-paper';
 
 import { MilkSubscriptionLineCompactFields } from '@/src/components/admin/MilkSubscriptionLineCompactFields';
-import {
-  emptyMilkLineDraftForPicker,
-  isMilkCatalogProduct,
-  milkLineHasPackComplete,
-} from '@/src/components/admin/milkSubscriptionLineUi';
-import type { CustomerResponse, CustomerSubscriptionPlanDto } from '@/src/domain/customers/dtos';
+import { emptyMilkLineDraftForPicker, milkLineHasPackComplete } from '@/src/components/admin/milkSubscriptionLineUi';
+import type {
+  CustomerDailyProductOrderLineDto,
+  CustomerResponse,
+  CustomerSubscriptionPlanDto,
+} from '@/src/domain/customers/dtos';
+import { effectiveUnitPrice } from '@/src/domain/products/pricing';
+import { estimateMonthTotal } from '@/src/components/customer/myDays';
 import {
   buildSubscriptionMonthOptions,
   monthLabel,
@@ -19,18 +21,39 @@ import {
   planLineTotal,
   shiftMonth,
   subscriptionPlanActiveOnDateYmd,
-  subscriptionPlanShowsInCalendarMonth,
 } from '@/src/components/admin/customerSubscriptionMonthUtils';
 import { buildCustomerSubscriptionHistoryRows } from '@/src/components/admin/buildCustomerSubscriptionHistoryRows';
-import { CustomerSubscriptionHistoryTable } from '@/src/components/admin/CustomerSubscriptionHistoryTable';
+import { CustomerSubscriptionDaySheet, DaySheetAddAddonButton } from '@/src/components/admin/CustomerSubscriptionDaySheet';
+import { CustomerSubscriptionHistoryCards } from '@/src/components/admin/CustomerSubscriptionHistoryCards';
 import { CustomerSubscriptionPlansEditor } from '@/src/components/admin/CustomerSubscriptionPlansEditor';
-import { buildCalendarCells, SubscriptionMonthCalendarGrid } from '@/src/components/admin/SubscriptionMonthCalendarGrid';
 import {
-  useCustomerDailyProductOrders,
-  useCustomerSubscriptionCalendar,
-} from '@/src/hooks/customers';
+  SubscriptionBillingFooter,
+  SubscriptionEmptyBox,
+  SubscriptionMonthPickerBar,
+  SubscriptionTactileCard,
+  SubscriptionTactileSection,
+  subscriptionBillingCycleLabel,
+} from '@/src/components/admin/customerSubscriptionTactileUi';
+import { buildCalendarCells, MemoizedSubscriptionMonthCalendarGrid as SubscriptionMonthCalendarGrid } from '@/src/components/admin/SubscriptionMonthCalendarGrid';
+import {
+  cancelAddOnOrder,
+  findPendingAddOn,
+  placeAddOnOrder,
+  setAddOnItems,
+} from '@/src/components/customer/customerActions';
+import { addOnDateYmd, addOnItemCount, addOnLabel } from '@/src/domain/customers/addOns';
+import { dayEditability, plannedLinesOn } from '@/src/domain/customers/daySchedule';
+import { notifyOrderCancelled, notifyOrderPlaced } from '@/src/domain/notifications/events';
+import { productPacks } from '@/src/domain/products/packs';
+import { useUpdateCustomer } from '@/src/hooks/customers';
+import { useOffers } from '@/src/hooks/offers/useOffers';
+import { strings } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
+import { formatDay } from '@/src/utils/format';
 import { useProducts } from '@/src/hooks/products';
+import { dairyTactileColors } from '@/src/theme/dairyTactile';
 import { platformShadow } from '@/src/theme/platformStyles';
+import { useResponsiveDialogStyle } from '@/src/utils/responsiveLayout';
 
 const COLORS = {
   primary: '#2563EB',
@@ -38,38 +61,10 @@ const COLORS = {
   text: '#1E293B',
 };
 
-function fmtDate(iso: string | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString();
-}
-
 function money(v: number | undefined): string {
   const n = Number(v);
   if (!Number.isFinite(n)) return '—';
   return `₹${Math.round(n)}`;
-}
-
-function subscriptionStatusTone(status: string): { bg: string; fg: string; border: string } {
-  switch (status) {
-    case 'Active':
-    case 'Paid':
-      return { bg: 'rgba(34,197,94,0.14)', fg: '#166534', border: 'rgba(34,197,94,0.22)' };
-    case 'Paused':
-    case 'Pending':
-    case 'Partial':
-      return { bg: 'rgba(245,158,11,0.16)', fg: '#92400E', border: 'rgba(245,158,11,0.30)' };
-    case 'Advance Paid':
-      return { bg: 'rgba(37,99,235,0.14)', fg: '#1D4ED8', border: 'rgba(37,99,235,0.22)' };
-    case 'Expired':
-    case 'Inactive':
-      return { bg: 'rgba(148,163,184,0.16)', fg: '#475569', border: 'rgba(148,163,184,0.22)' };
-    case 'Cancelled':
-      return { bg: 'rgba(239,68,68,0.14)', fg: '#B91C1C', border: 'rgba(239,68,68,0.22)' };
-    default:
-      return { bg: 'rgba(148,163,184,0.16)', fg: '#475569', border: 'rgba(148,163,184,0.22)' };
-  }
 }
 
 function Kv({ label, value, textSub, textMain }: { label: string; value: string; textSub: object; textMain: object }) {
@@ -85,125 +80,18 @@ function Kv({ label, value, textSub, textMain }: { label: string; value: string;
   );
 }
 
-function SectionTitle({ children, textMain }: { children: ReactNode; textMain: object }) {
-  return (
-    <Text variant="titleSmall" style={[styles.bold, textMain, styles.sectionTitle]}>
-      {children}
-    </Text>
-  );
-}
-
-/** Desktop / tablet: flex row table — no horizontal page scroll */
-function ProductFlexTable({
-  plans,
-  textMain,
-  textSub,
-}: {
-  plans: CustomerSubscriptionPlanDto[];
-  textMain: object;
-  textSub: object;
-}) {
-  const header = ['Product', 'Qty', 'Unit', 'Price', 'Discount', 'Final', 'Frequency', 'Status', 'Tag'];
-  return (
-    <View style={styles.flexTable}>
-      <View style={[styles.flexTr, styles.flexHeader]}>
-        {header.map((h) => (
-          <Text key={h} variant="labelSmall" style={[styles.flexTh, textSub]} numberOfLines={2}>
-            {h}
-          </Text>
-        ))}
-      </View>
-      {plans.map((p, i) => (
-        <View key={`${p.productName}_${i}`} style={styles.flexTr}>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={2}>
-            {p.productName}
-          </Text>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-            {String(p.numberOfItems ?? 1)}
-          </Text>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={2}>
-            {p.quantityLabel}
-            {p.unitType ? `\n(${p.unitType})` : ''}
-          </Text>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-            {money(p.originalPrice)}
-          </Text>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-            {p.discountedPrice ? money(p.discountedPrice) : '—'}
-          </Text>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-            {money(planLineTotal(p))}
-          </Text>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={2}>
-            {p.frequency}
-          </Text>
-          <View style={styles.flexTd}>
-            {(() => {
-              const tone = subscriptionStatusTone(p.status);
-              return (
-                <View style={[styles.miniChip, { backgroundColor: tone.bg, borderColor: tone.border }]}>
-                  <Text variant="labelSmall" style={{ color: tone.fg, fontWeight: '800', fontSize: 10 }} numberOfLines={1}>
-                    {p.status}
-                  </Text>
-                </View>
-              );
-            })()}
-          </View>
-          <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={2}>
-            {p.productAdditionTag ?? 'Regular'}
-          </Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-function ProductMobileCard({ p, textMain, textSub }: { p: CustomerSubscriptionPlanDto; textMain: object; textSub: object }) {
-  const tone = subscriptionStatusTone(p.status);
-  return (
-    <View style={styles.mobileProductCard}>
-      <View style={styles.mobileProductTop}>
-        <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={2}>
-          {p.productName}
-        </Text>
-        <View style={[styles.miniChip, { backgroundColor: tone.bg, borderColor: tone.border }]}>
-          <Text variant="labelSmall" style={{ color: tone.fg, fontWeight: '800' }}>
-            {p.status}
-          </Text>
-        </View>
-      </View>
-      <Kv label="Quantity" value={String(p.numberOfItems ?? 1)} textMain={textMain} textSub={textSub} />
-      <Kv label="Unit" value={p.unitType ? `${p.quantityLabel} (${p.unitType})` : p.quantityLabel} textMain={textMain} textSub={textSub} />
-      <Kv label="Price" value={money(p.originalPrice)} textMain={textMain} textSub={textSub} />
-      <Kv label="Discount" value={p.discountedPrice ? money(p.discountedPrice) : '—'} textMain={textMain} textSub={textSub} />
-      <Kv label="Final cost" value={money(planLineTotal(p))} textMain={textMain} textSub={textSub} />
-      <Kv label="Delivery frequency" value={p.frequency} textMain={textMain} textSub={textSub} />
-      <Kv label="Temporary / permanent" value={p.productAdditionTag ?? 'Regular'} textMain={textMain} textSub={textSub} />
-    </View>
-  );
-}
-
-function placeholderAlert(title: string) {
-  Alert.alert(title, 'This action will connect to subscription workflows when the backend is wired.');
-}
-
 function todayYmdLocal(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function entryKindLabel(kind: string): string {
-  switch (kind) {
-    case 'subscription_line':
-      return 'Subscription';
-    case 'add_on_product':
-      return 'Add-on';
-    case 'base_online_catalog':
-      return 'Base';
-    default:
-      return kind;
-  }
-}
+/** An add-on as the day sheet lists it: the shared order row, with what the admin needs to see about it. */
+type DayAddOnLine = CustomerDailyProductOrderLineDto & {
+  /** Price per pack saved with the order — what the bill charges. */
+  price: number;
+  status: 'Pending' | 'Delivered' | 'Cancelled';
+  placedBy?: 'customer' | 'admin';
+};
 
 export type CustomerSubscriptionTabProps = {
   customer: CustomerResponse | null | undefined;
@@ -212,6 +100,10 @@ export type CustomerSubscriptionTabProps = {
   isTablet: boolean;
   isDesktop: boolean;
   scheme: 'light' | 'dark' | null | undefined;
+  onViewDetailedBill?: () => void;
+  /** Month to show. Pass it (with `onMonthChange`) to drive this tab from the screen's shared month stepper. */
+  month?: string;
+  onMonthChange?: (next: string) => void;
 };
 
 function CustomerSubscriptionTabInner({
@@ -221,13 +113,22 @@ function CustomerSubscriptionTabInner({
   isTablet,
   isDesktop,
   scheme,
+  onViewDetailedBill,
+  month,
+  onMonthChange,
 }: CustomerSubscriptionTabProps) {
+  const t = useStrings('subscriptionEditor');
+  const common = useStrings('common');
   const monthKey = useMemo(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }, []);
 
-  const [subscriptionMonth, setSubscriptionMonth] = useState(monthKey);
+  // Controlled by the screen when `month` is passed; the local state is the standalone fallback.
+  const [ownMonth, setOwnMonth] = useState(monthKey);
+  const subscriptionMonth = month ?? ownMonth;
+  const setSubscriptionMonth = onMonthChange ?? setOwnMonth;
+  const monthIsControlled = month !== undefined;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [dayDialogOpen, setDayDialogOpen] = useState(false);
   const [selectedDayYmd, setSelectedDayYmd] = useState<string | null>(null);
@@ -246,16 +147,38 @@ function CustomerSubscriptionTabInner({
   /** Add-on add blocked when no subscription lines on that date (Paper Dialog, not Alert). */
   const [addonAddBlockedDialogOpen, setAddonAddBlockedDialogOpen] = useState(false);
 
-  const calendar = useCustomerSubscriptionCalendar(customerId);
-  const dayOrders = useCustomerDailyProductOrders(customerId);
   const products = useProducts();
+  const offers = useOffers();
+  const updateCustomer = useUpdateCustomer();
+  const [addOnError, setAddOnError] = useState<string | null>(null);
+
+  /**
+   * Add-ons live on the customer record — the rows the customer's My days, the delivery run sheet and the bill read —
+   * so what the admin adds here is what the van carries and what gets billed.
+   */
+  const dayOrders = useMemo(() => {
+    const lines: DayAddOnLine[] = (c?.extraOrders ?? [])
+      .filter((o) => o.status !== 'Cancelled')
+      .map((o) => ({
+        id: o.id,
+        createdAtIso: o.createdAt,
+        dateYmd: addOnDateYmd(o),
+        productName: o.productName,
+        quantityLabel: o.quantityLabel,
+        unitType: o.unit,
+        quantity: addOnItemCount(o),
+        price: Math.max(0, Number(o.price ?? 0)),
+        status: o.status,
+        placedBy: o.placedBy,
+      }));
+    return { lines, ready: true };
+  }, [c?.extraOrders]);
 
   const sectionCard = scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight;
   const textMain = scheme === 'dark' ? styles.textOnDark : styles.textOnLight;
   const textSub = scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight;
 
   const adminProducts = useMemo(() => (products.data?.items ?? []).filter((p) => p.isActive), [products.data?.items]);
-  const milkCatalogAll = useMemo(() => adminProducts.filter(isMilkCatalogProduct), [adminProducts]);
   const customerSubscriptionProductNames = useMemo(() => {
     const names = new Set<string>();
     for (const item of c?.subscription ?? []) names.add(item.productName);
@@ -270,25 +193,25 @@ function CustomerSubscriptionTabInner({
     [c?.subscriptionStartDate, monthKey],
   );
 
-  const subscriptionPlansForMonth = useMemo((): CustomerSubscriptionPlanDto[] => {
-    const plans = c?.subscriptionPlans ?? [];
-    return plans.filter((p) => subscriptionPlanShowsInCalendarMonth(subscriptionMonth, p));
-  }, [c?.subscriptionPlans, subscriptionMonth]);
-
   const oldestMonth = subscriptionMonthOptions[subscriptionMonthOptions.length - 1] ?? monthKey;
   const prevDisabled = subscriptionMonth <= oldestMonth;
   const nextDisabled = subscriptionMonth >= monthKey;
 
   useEffect(() => {
-    setSubscriptionMonth(monthKey);
-  }, [customerId, monthKey]);
+    // Reset to the current month for a new customer — but never when the screen owns the month, or switching to
+    // this tab would snap the shared month back to today.
+    if (monthIsControlled) return;
+    setOwnMonth(monthKey);
+  }, [customerId, monthIsControlled, monthKey]);
 
   useEffect(() => {
+    // Only snap to a month with plans when this tab owns the month; a shared month belongs to the whole screen.
+    if (monthIsControlled) return;
     if (!subscriptionMonthOptions.length) return;
     if (!subscriptionMonthOptions.includes(subscriptionMonth)) {
       setSubscriptionMonth(subscriptionMonthOptions[0]!);
     }
-  }, [subscriptionMonthOptions, subscriptionMonth]);
+  }, [monthIsControlled, subscriptionMonthOptions, subscriptionMonth, setSubscriptionMonth]);
 
   useEffect(() => {
     setDayDialogOpen(false);
@@ -311,25 +234,36 @@ function CustomerSubscriptionTabInner({
     }
   }, [dayOrderFormMode]);
 
+  // Read through refs: a refetch (new `dayOrders.lines` / product list / customer object) must not re-initialise —
+  // and so wipe — the add-on draft being edited. The draft is initialised only when the form opens or switches line.
+  const dayOrderLinesRef = useRef(dayOrders.lines);
+  dayOrderLinesRef.current = dayOrders.lines;
+  const adminProductsRef = useRef(adminProducts);
+  adminProductsRef.current = adminProducts;
+  const customerRef = useRef(c);
+  customerRef.current = c;
+  const hasCustomer = !!c;
+
   useEffect(() => {
-    if (!c || dayOrderFormMode === null) {
+    const cust = customerRef.current;
+    if (!cust || dayOrderFormMode === null) {
       setMilkAddonDraft(null);
       return;
     }
-    const dt = c.deliveryTime ?? 'Morning';
-    const fq = c.subscriptionFrequency ?? 'Daily';
+    const dt = cust.deliveryTime ?? 'Morning';
+    const fq = cust.subscriptionFrequency ?? 'Daily';
     if (dayOrderFormMode === 'add') {
       setMilkAddonDraft(emptyMilkLineDraftForPicker(dt, fq));
       return;
     }
     if (dayOrderFormMode === 'edit' && dayOrderEditingId) {
-      const line = dayOrders.lines.find((l) => l.id === dayOrderEditingId);
+      const line = dayOrderLinesRef.current.find((l) => l.id === dayOrderEditingId);
       if (!line) {
         setMilkAddonDraft(null);
         return;
       }
-    const prod = adminProducts.find((p) => p.name === line.productName);
-      const up = Number(prod?.price ?? 0);
+      const prod = adminProductsRef.current.find((p) => p.name === line.productName);
+      const up = prod ? effectiveUnitPrice(prod) : 0;
       setMilkAddonDraft({
         ...emptyMilkLineDraftForPicker(dt, fq),
         productName: line.productName,
@@ -341,19 +275,74 @@ function CustomerSubscriptionTabInner({
         effectiveFinalPrice: up,
       });
     }
-  }, [adminProducts, c?.id, c?.deliveryTime, c?.subscriptionFrequency, dayOrderFormMode, dayOrderEditingId, dayOrders.lines]);
+  }, [dayOrderFormMode, dayOrderEditingId, hasCustomer]);
 
   const todayYmd = todayYmdLocal();
 
   const calendarCells = useMemo(() => {
-    const plans = c?.subscriptionPlans ?? [];
-    const hasProfile = (ymd: string) => plans.some((p) => subscriptionPlanActiveOnDateYmd(p, ymd));
-    const hasExtra = (ymd: string) =>
-      calendar.entries.some(
-        (e) => e.dateYmd === ymd && (e.kind === 'subscription_line' || e.kind === 'add_on_product'),
-      ) || dayOrders.lines.some((l) => l.dateYmd === ymd);
+    // The same day rules as the customer's My days and the run sheet: a skipped day has no subscription dot.
+    const hasProfile = (ymd: string) => (c ? plannedLinesOn(c, ymd).length > 0 : false);
+    const hasExtra = (ymd: string) => dayOrders.lines.some((l) => l.dateYmd === ymd);
     return buildCalendarCells(subscriptionMonth, todayYmd, hasProfile, hasExtra);
-  }, [c?.subscriptionPlans, subscriptionMonth, todayYmd, calendar.entries, dayOrders.lines]);
+  }, [c, subscriptionMonth, todayYmd, dayOrders.lines]);
+
+  const selectedDayEditability = c && selectedDayYmd ? dayEditability(c, selectedDayYmd, 'admin') : null;
+  const selectedDayEditable = !!selectedDayEditability?.editable;
+
+  /** Adds or changes an add-on with the rules the customer app uses; the dairy is not held to the evening cut-off. */
+  async function saveAddOn(input: { id?: string; dateYmd: string; productName: string; quantityLabel: string; quantity: number }) {
+    if (!c) return;
+    setAddOnError(null);
+    const norm = (s: unknown) => String(s ?? '').trim().toLowerCase();
+    const product = (products.data?.items ?? []).find((p) => norm(p.name) === norm(input.productName));
+    if (!product) throw new Error(strings('subscriptionEditor').tab.productGone);
+    const pack = productPacks(product).find((p) => norm(p.label) === norm(input.quantityLabel));
+    if (!pack) throw new Error(strings('subscriptionEditor').tab.pickPackSize(product.name));
+
+    const existing = input.id ? (c.extraOrders ?? []).find((o) => o.id === input.id) : undefined;
+    const isSamePack = (o: { productName: string; quantityLabel: string; packId?: string }) =>
+      norm(o.productName) === norm(product.name) && (o.packId ? o.packId === pack.id : norm(o.quantityLabel) === norm(pack.label));
+
+    let extraOrders: NonNullable<CustomerResponse['extraOrders']>;
+    if (existing && isSamePack(existing)) {
+      extraOrders = setAddOnItems(c, existing.id, input.quantity, { actor: 'admin' }).extraOrders;
+    } else {
+      const base = existing ? { ...c, extraOrders: cancelAddOnOrder(c, existing.id, { actor: 'admin' }).extraOrders } : c;
+      // One row per product and pack a day, as in the customer app: adding the same pack again adds to it.
+      const open = findPendingAddOn(base, input.dateYmd, product.name, pack);
+      extraOrders = open
+        ? setAddOnItems(base, open.id, addOnItemCount(open) + input.quantity, { actor: 'admin' }).extraOrders
+        : placeAddOnOrder(base, { product, pack, numberOfItems: input.quantity, dateYmd: input.dateYmd, actor: 'admin', offers: offers.all }).extraOrders;
+    }
+
+    await updateCustomer.mutateAsync({ id: c.id, data: { extraOrders } });
+    notifyOrderPlaced({
+      customerId: c.id,
+      customerName: c.name,
+      by: 'admin',
+      deliveryBoyId: c.assignedDeliveryBoyId,
+      itemLabel: addOnLabel({ productName: product.name, quantityLabel: pack.label, numberOfItems: input.quantity }),
+      dateYmd: input.dateYmd,
+      extraOrders,
+    });
+  }
+
+  async function removeAddOn(orderId: string) {
+    if (!c) return;
+    setAddOnError(null);
+    const { extraOrders, order } = cancelAddOnOrder(c, orderId, { actor: 'admin' });
+    if (!order) return;
+    await updateCustomer.mutateAsync({ id: c.id, data: { extraOrders } });
+    notifyOrderCancelled({
+      customerId: c.id,
+      customerName: c.name,
+      by: 'admin',
+      deliveryBoyId: c.assignedDeliveryBoyId,
+      itemLabel: addOnLabel(order),
+      dateYmd: addOnDateYmd(order),
+      extraOrders,
+    });
+  }
 
   const resetDayOrderForm = () => {
     setDayOrderFormMode(null);
@@ -363,14 +352,17 @@ function CustomerSubscriptionTabInner({
   };
 
   const openDay = (ymd: string) => {
-    setSelectedDayYmd(ymd);
-    setLastSelectedDayYmd(ymd);
-    setDayDialogOpen(true);
-    setAddMode(null);
-    setAddTitle('');
-    setAddSubtitle('');
-    setAddonFormAccordionOpen(true);
-    resetDayOrderForm();
+    startTransition(() => {
+      setSelectedDayYmd(ymd);
+      setLastSelectedDayYmd(ymd);
+      setDayDialogOpen(true);
+      setAddMode(null);
+      setAddTitle('');
+      setAddSubtitle('');
+      setAddonFormAccordionOpen(true);
+      setAddOnError(null);
+      resetDayOrderForm();
+    });
   };
 
   const closeDayDialog = () => {
@@ -391,11 +383,6 @@ function CustomerSubscriptionTabInner({
   }, [c?.subscriptionPlans, selectedDayYmd]);
 
   const hasSubscriptionLinesOnSelectedDay = profilePlansForSelectedDay.length > 0;
-
-  const storedForSelectedDay = useMemo(() => {
-    if (!selectedDayYmd) return [];
-    return calendar.entries.filter((e) => e.dateYmd === selectedDayYmd);
-  }, [calendar.entries, selectedDayYmd]);
 
   const dayOrderLinesForSelectedDay = useMemo(() => {
     if (!selectedDayYmd) return [];
@@ -419,10 +406,20 @@ function CustomerSubscriptionTabInner({
     [c?.subscriptionPlans, c?.subscription],
   );
 
+  // Scoped to the selected month so the amounts reconcile with that month's bill.
   const subscriptionHistoryRows = useMemo(
-    () => (c ? buildCustomerSubscriptionHistoryRows(c, dayOrders.ready ? dayOrders.lines : []) : []),
-    [c, dayOrders.ready, dayOrders.lines],
+    () => (c ? buildCustomerSubscriptionHistoryRows(c, [], subscriptionMonth) : []),
+    [c, subscriptionMonth],
   );
+
+  const subscriptionHistoryTotal = useMemo(
+    () => subscriptionHistoryRows.reduce((sum, r) => sum + Math.max(0, Number(r.calculatedAmount ?? 0)), 0),
+    [subscriptionHistoryRows],
+  );
+
+  // The whole month as planned: each line within its own dates, after the customer's skips and quantity changes,
+  // plus one-off orders — the same day amounts the customer sees on My days.
+  const estimatedMonthlyTotal = useMemo(() => (c ? estimateMonthTotal(c, subscriptionMonth) : 0), [c, subscriptionMonth]);
 
   const plansWithPause = useMemo(
     () => (c?.subscriptionPlans ?? []).filter((p) => p.pauseStartDate || p.pauseReason || p.pauseEndDate || p.resumeDate),
@@ -432,9 +429,13 @@ function CustomerSubscriptionTabInner({
   const titleColor = scheme === 'dark' ? 'white' : COLORS.text;
   const gapMain = isTablet ? 10 : isDesktop ? 14 : 12;
 
-  const { width: winW, height: winH } = useWindowDimensions();
-  const subscriptionDialogMaxW = Math.max(260, Math.min(winW - 24, 600));
-  const daySheetScrollMaxH = Math.max(200, Math.min(Math.round(winH * 0.72), winH - 140));
+  const { height: winH } = useWindowDimensions();
+  // Window-capped dialog widths (16px gutter on phones) + viewport max height; replaces Paper's default margin.
+  const daySheetDialogStyle = useResponsiveDialogStyle(600);
+  const monthPickerDialogStyle = useResponsiveDialogStyle(480);
+  const confirmDialogStyle = useResponsiveDialogStyle(420);
+  // Header (~90px) + footer (~60px) sit outside the scroll area: keep the whole sheet inside the viewport.
+  const daySheetScrollMaxH = Math.max(160, Math.min(Math.round(winH * 0.72), winH - 200));
   const monthPickerScrollMaxH = Math.max(180, Math.min(Math.round(winH * 0.5), winH - 200));
 
   if (!c) {
@@ -443,7 +444,7 @@ function CustomerSubscriptionTabInner({
         <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
           <Card.Content>
             <Text variant="bodyMedium" style={textSub}>
-              Loading subscription…
+              {t.tab.loading}
             </Text>
           </Card.Content>
         </Card>
@@ -451,53 +452,49 @@ function CustomerSubscriptionTabInner({
     );
   }
 
+  const calendarLegend = (
+    <Text variant="bodySmall" style={textSub}>
+      {t.tab.calendarLegend}
+    </Text>
+  );
+
   const mainColumn = (
     <View style={[styles.mainCol, { gap: gapMain }]}>
-      <CustomerSubscriptionPlansEditor customer={c} customerId={customerId} />
-      <CustomerSubscriptionHistoryTable
-        rows={subscriptionHistoryRows}
-        isMobile={isMobile}
-        scheme={scheme}
-        textMain={textMain}
-        textSub={textSub}
-        sectionCardStyle={[styles.sectionCard, sectionCard]}
+      <CustomerSubscriptionPlansEditor
+        customer={c}
+        customerId={customerId}
+        variant="tactile"
+        month={subscriptionMonth}
+        onMonthChange={setSubscriptionMonth}
       />
-      <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
-        <Card.Content style={styles.cardInner}>
-          <SectionTitle textMain={textMain}>Product subscription</SectionTitle>
-          <Text variant="bodySmall" style={textSub}>
-            Month-wise view: only plans that overlap {monthLabel(subscriptionMonth)} ({subscriptionMonth}). Last six steps from today, not before
-            subscription start. Tap the month to pick another; pause-only months may show no rows.
-          </Text>
-          <View style={styles.monthNavRow}>
-            <Pressable
-              disabled={prevDisabled}
-              onPress={() => setSubscriptionMonth(shiftMonth(subscriptionMonth, -1))}
-              style={({ pressed }) => [styles.monthNavBtn, prevDisabled ? styles.monthNavBtnDisabled : null, pressed && styles.pressed]}
-            >
-              <MaterialCommunityIcons name="chevron-left" size={22} color={titleColor} />
-            </Pressable>
-            <Pressable onPress={() => setPickerOpen(true)} style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}>
-              <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                {monthLabel(subscriptionMonth)}
-              </Text>
-              <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                {subscriptionMonth}
-              </Text>
-            </Pressable>
-            <Pressable
-              disabled={nextDisabled}
-              onPress={() => setSubscriptionMonth(shiftMonth(subscriptionMonth, 1))}
-              style={({ pressed }) => [styles.monthNavBtn, nextDisabled ? styles.monthNavBtnDisabled : null, pressed && styles.pressed]}
-            >
-              <MaterialCommunityIcons name="chevron-right" size={22} color={titleColor} />
-            </Pressable>
-          </View>
-          {!calendar.ready || !dayOrders.ready ? (
-            <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
-              Loading calendar…
-            </Text>
-          ) : null}
+
+      <CustomerSubscriptionHistoryCards
+        rows={subscriptionHistoryRows}
+        monthLabel={monthLabel(subscriptionMonth)}
+        monthTotal={subscriptionHistoryTotal}
+      />
+
+      <SubscriptionTactileSection
+        title={t.tab.productSubscriptionTitle}
+        subtitle={
+          monthIsControlled
+            ? t.tab.productSubscriptionSubtitleShared(monthLabel(subscriptionMonth))
+            : t.tab.productSubscriptionSubtitle(monthLabel(subscriptionMonth))
+        }
+      >
+        <SubscriptionTactileCard>
+          {monthIsControlled ? null : (
+            <SubscriptionMonthPickerBar
+              monthLabelText={monthLabel(subscriptionMonth)}
+              // The label above already names the month; this line says what tapping it does.
+              monthKeyText={t.tab.tapToChangeMonth}
+              prevDisabled={prevDisabled}
+              nextDisabled={nextDisabled}
+              onPrev={() => setSubscriptionMonth(shiftMonth(subscriptionMonth, -1))}
+              onNext={() => setSubscriptionMonth(shiftMonth(subscriptionMonth, 1))}
+              onOpenPicker={() => setPickerOpen(true)}
+            />
+          )}
           <SubscriptionMonthCalendarGrid
             monthYyyyMm={subscriptionMonth}
             cells={calendarCells}
@@ -505,129 +502,72 @@ function CustomerSubscriptionTabInner({
             textSub={textSub}
             onPressDay={openDay}
             isDark={scheme === 'dark'}
+            selectedDayYmd={lastSelectedDayYmd}
+            legendFooter={calendarLegend}
           />
-          <Text variant="labelLarge" style={[textMain, styles.bold, { marginTop: 10 }]}>
-            Orders / deliveries (from selected dates)
-          </Text>
-          <Text variant="bodySmall" style={[textSub, { marginBottom: 8 }]}>
-            Shows all add-on products saved in {monthLabel(subscriptionMonth)}.
-          </Text>
-          {monthAddonLines.length ? (
-            isMobile ? (
-              <View style={styles.cardStack}>
-                {monthAddonLines.map((l) => {
-                  const prod = adminProducts.find((p) => p.name === l.productName);
-                  const pricePerDelivery = Number(prod?.price ?? 0);
-                  const amount = Math.round(Math.max(0, pricePerDelivery) * Math.max(0, Number(l.quantity ?? 0)));
-                  return (
-                    <View
-                      key={l.id}
-                      style={[
-                        styles.mobileProductCard,
-                        {
-                          borderColor: scheme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(148,163,184,0.35)',
-                          backgroundColor: scheme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(148,163,184,0.06)',
-                        },
-                      ]}
-                    >
-                      <Text variant="labelLarge" style={[textMain, styles.bold]} numberOfLines={2}>
-                        {l.productName}
-                      </Text>
-                      <Kv
-                        label="Pack / size"
-                        value={l.unitType ? `${l.quantityLabel} (${l.unitType})` : l.quantityLabel}
-                        textMain={textMain}
-                        textSub={textSub}
-                      />
-                      <Kv label="Qty" value={String(l.quantity)} textMain={textMain} textSub={textSub} />
-                      <Kv label="Price / delivery" value={money(pricePerDelivery)} textMain={textMain} textSub={textSub} />
-                      <Kv label="Ordered issue date" value={fmtDate(l.createdAtIso)} textMain={textMain} textSub={textSub} />
-                      <Kv label="Order date" value={fmtDate(l.dateYmd)} textMain={textMain} textSub={textSub} />
-                      <Kv label="Delivered (last)" value="—" textMain={textMain} textSub={textSub} />
-                      <Kv label="Qty delivered" value="0" textMain={textMain} textSub={textSub} />
-                      <Kv label="Times" value="0" textMain={textMain} textSub={textSub} />
-                      <Kv label="Amount" value={money(amount)} textMain={textMain} textSub={textSub} />
-                    </View>
-                  );
-                })}
-              </View>
-            ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled>
-                <View style={styles.flexTable}>
-                  <View style={[styles.flexTr, styles.flexHeader]}>
-                    {[
-                      'Product',
-                      'Pack / size',
-                      'Qty',
-                      'Price / delivery',
-                      'Ordered issue date',
-                      'Order date',
-                      'Delivered (last)',
-                      'Qty delivered',
-                      'Times',
-                      'Amount',
-                    ].map((h, i) => (
-                      <Text
-                        key={h}
-                        variant="labelSmall"
-                        style={[styles.flexTh, i === 0 ? { flex: 1.4 } : null, textSub]}
-                        numberOfLines={2}
-                      >
-                        {h}
-                      </Text>
-                    ))}
-                  </View>
-                  {monthAddonLines.map((l) => {
-                    const prod = adminProducts.find((p) => p.name === l.productName);
-                    const pricePerDelivery = Number(prod?.price ?? 0);
-                    const amount = Math.round(Math.max(0, pricePerDelivery) * Math.max(0, Number(l.quantity ?? 0)));
-                    return (
-                      <View key={l.id} style={styles.flexTr}>
-                        <Text variant="bodySmall" style={[styles.flexTd, { flex: 1.4 }, textMain]} numberOfLines={2}>
-                          {l.productName}
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={2}>
-                          {l.quantityLabel}
-                          {l.unitType ? ` (${l.unitType})` : ''}
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          {String(l.quantity)}
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          {money(pricePerDelivery)}
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          {fmtDate(l.createdAtIso)}
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          {fmtDate(l.dateYmd)}
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          —
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          0
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain]} numberOfLines={1}>
-                          0
-                        </Text>
-                        <Text variant="bodySmall" style={[styles.flexTd, textMain, styles.bold]} numberOfLines={1}>
-                          {money(amount)}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </View>
-              </ScrollView>
-            )
-          ) : (
-            <Text variant="bodySmall" style={textSub}>
-              No add-on products saved in {monthLabel(subscriptionMonth)}.
-            </Text>
-          )}
-        </Card.Content>
-      </Card>
+        </SubscriptionTactileCard>
+      </SubscriptionTactileSection>
 
+      <SubscriptionTactileSection
+        title={t.tab.addOnsTitle}
+        subtitle={t.tab.addOnsSubtitle(monthLabel(subscriptionMonth))}
+      >
+        {monthAddonLines.length ? (
+          <View style={styles.cardGrid}>
+            {monthAddonLines.map((l) => {
+              // The price saved with the order — what the bill charges, even if the catalogue price moved since.
+              const pricePerDelivery = l.price;
+              const amount = Math.round(pricePerDelivery * Math.max(0, Number(l.quantity ?? 0)));
+              return (
+                <View
+                  key={l.id}
+                  style={[
+                    styles.mobileProductCard,
+                    styles.gridCard,
+                    {
+                      borderColor: scheme === 'dark' ? 'rgba(255,255,255,0.12)' : dairyTactileColors.outlineVariant,
+                      backgroundColor: scheme === 'dark' ? 'rgba(255,255,255,0.04)' : dairyTactileColors.surfaceContainerLowest,
+                    },
+                  ]}
+                >
+                  <Text variant="labelLarge" style={[textMain, styles.bold]} numberOfLines={2}>
+                    {l.productName}
+                  </Text>
+                  <Kv
+                    label={t.fields.packSize}
+                    value={l.unitType ? `${l.quantityLabel} (${l.unitType})` : l.quantityLabel}
+                    textMain={textMain}
+                    textSub={textSub}
+                  />
+                  <Kv label={t.fields.qty} value={String(l.quantity)} textMain={textMain} textSub={textSub} />
+                  <Kv label={t.fields.pricePerDelivery} value={money(pricePerDelivery)} textMain={textMain} textSub={textSub} />
+                  <Kv label={common.fields.amount} value={money(amount)} textMain={textMain} textSub={textSub} />
+                  <Kv label={common.dates.date} value={formatDay(l.dateYmd, { weekday: true })} textMain={textMain} textSub={textSub} />
+                  <Kv
+                    label={common.fields.status}
+                    value={t.tab.addOnStatusLine(
+                      l.status === 'Delivered' ? common.states.delivered : t.tab.toDeliver,
+                      l.placedBy === 'admin' ? t.tab.byDairy : t.tab.byCustomer,
+                    )}
+                    textMain={textMain}
+                    textSub={textSub}
+                  />
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <SubscriptionEmptyBox message={t.tab.noAddOns(monthLabel(subscriptionMonth))} />
+        )}
+      </SubscriptionTactileSection>
+
+      {onViewDetailedBill ? (
+        <SubscriptionBillingFooter
+          estimatedTotalLabel={money(estimatedMonthlyTotal)}
+          billingCycleLabel={subscriptionBillingCycleLabel(subscriptionMonth)}
+          onViewDetailedBill={onViewDetailedBill}
+        />
+      ) : null}
     </View>
   );
 
@@ -636,200 +576,124 @@ function CustomerSubscriptionTabInner({
       {mainColumn}
 
       <Portal>
-        <Dialog
+        <CustomerSubscriptionDaySheet
           visible={dayDialogOpen}
-          onDismiss={closeDayDialog}
-          style={[styles.subscriptionDialogSurface, { maxWidth: subscriptionDialogMaxW, width: subscriptionDialogMaxW }]}
-        >
-          <Dialog.Title>{selectedDayYmd ? fmtDate(selectedDayYmd) : 'Day'}</Dialog.Title>
-          <Dialog.Content style={[styles.subscriptionDialogContent, { maxHeight: daySheetScrollMaxH }]}>
-            <ScrollView
-              style={{ maxHeight: daySheetScrollMaxH }}
-              contentContainerStyle={styles.daySheetScrollContent}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator
-              keyboardShouldPersistTaps="handled"
-              {...(Platform.OS === 'android' ? { persistentScrollbar: true } : {})}
-            >
-              <Text variant="bodySmall" style={textSub}>
-                Tap a date to see subscription lines active that day. You can add new add-on products only when that section lists at least one line; you can
-                still edit or remove add-ons already saved for the date.
+          onClose={closeDayDialog}
+          selectedDayYmd={selectedDayYmd}
+          profilePlans={profilePlansForSelectedDay}
+          addonLines={dayOrderLinesForSelectedDay}
+          hasSubscriptionLines={hasSubscriptionLinesOnSelectedDay}
+          maxWidth={daySheetDialogStyle.width}
+          scrollMaxHeight={daySheetScrollMaxH}
+          addonFormActive={dayOrderFormMode !== null || !selectedDayEditable}
+          onEditAddon={(lineId) => {
+            setDayOrderFormMode('edit');
+            setDayOrderEditingId(lineId);
+            setAddMode(null);
+          }}
+          onRemoveAddon={(lineId, productName) => setAddonRemoveTarget({ id: lineId, productName })}
+          addonSectionFooter={
+            <>
+            {addOnError ? (
+              <Text variant="bodySmall" style={styles.addOnError} accessibilityLiveRegion="polite">
+                {addOnError}
               </Text>
-              <View style={[styles.daySheetSection, { borderColor: scheme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(37,99,235,0.14)' }]}>
-                <Text variant="labelLarge" style={[textMain, styles.bold]}>
-                  Subscription products on this date
-                </Text>
-                <Text variant="bodySmall" style={[textSub, { marginBottom: 6 }]}>
-                  All subscription lines that are active on {selectedDayYmd ? fmtDate(selectedDayYmd) : 'this day'}.
-                </Text>
-                {profilePlansForSelectedDay.length ? (
-                  profilePlansForSelectedDay.map((p, i) => (
-                    <Text key={`${p.productName}_${i}`} variant="bodySmall" style={[textMain, styles.bold, { marginTop: 4 }]}>
-                      · {formatSubscriptionPlanAsOrderExample(p)} · {p.frequency} · {p.status}
-                    </Text>
-                  ))
-                ) : (
-                  <Text variant="bodySmall" style={[textSub, { marginTop: 4 }]}>
-                    No active subscription line on this date.
+            ) : null}
+            {selectedDayEditability && !selectedDayEditability.editable ? (
+              <Text variant="bodySmall" style={textSub}>
+                {t.tab.lockedDay(selectedDayEditability.reason)}
+              </Text>
+            ) : null}
+            {dayOrderFormMode && milkAddonDraft ? (
+              <View style={styles.addOnFormAccordionCard}>
+                <Pressable
+                  onPress={() => setAddonFormAccordionOpen((o) => !o)}
+                  style={({ pressed }) => [
+                    styles.addOnFormAccordionHeader,
+                    pressed && styles.pressed,
+                    addonFormAccordionOpen && styles.addOnFormAccordionHeaderOpen,
+                  ]}
+                >
+                  <Text variant="labelLarge" style={[textMain, styles.bold]}>
+                    {dayOrderFormMode === 'add' ? t.tab.addAddOnProduct : t.tab.editAddOnProduct}
                   </Text>
-                )}
-              </View>
-              <View style={[styles.daySheetSection, { borderColor: scheme === 'dark' ? 'rgba(255,255,255,0.10)' : 'rgba(37,99,235,0.14)' }]}>
-                <Text variant="labelLarge" style={[textMain, styles.bold]}>
-                  Add-on products (this date)
-                </Text>
-                {dayOrderLinesForSelectedDay.length ? (
-                  dayOrderLinesForSelectedDay.map((line) => (
-                    <View key={line.id} style={styles.addOnProductRow}>
-                      <View style={styles.addOnProductRowText}>
-                        <Text variant="bodyMedium" style={[styles.bold, textMain]} numberOfLines={2}>
-                          {line.productName}
-                        </Text>
-                        <Text variant="bodySmall" style={textSub} numberOfLines={2}>
-                          {line.quantityLabel}
-                          {line.unitType ? ` (${line.unitType})` : ''} · Qty {line.quantity}
-                        </Text>
-                      </View>
-                      <View style={styles.addOnProductRowActions}>
-                        <Button
-                          mode="text"
-                          compact
-                          disabled={dayOrderFormMode !== null}
-                          onPress={() => {
-                            setDayOrderFormMode('edit');
-                            setDayOrderEditingId(line.id);
-                            setAddMode(null);
-                          }}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          mode="text"
-                          compact
-                          disabled={dayOrderFormMode !== null}
-                          onPress={() =>
-                            setAddonRemoveTarget({ id: line.id, productName: line.productName })
-                          }
-                        >
-                          Delete
-                        </Button>
-                      </View>
-                    </View>
-                  ))
-                ) : (
-                  <Text variant="bodySmall" style={[textSub, { marginTop: 4 }]}>
-                    {hasSubscriptionLinesOnSelectedDay
-                      ? 'No add-on products saved for this date yet. Add products below (no start/end date needed).'
-                      : 'No add-on products yet. Add subscription lines for this date above first, then use Add add-on product.'}
-                  </Text>
-                )}
-                {dayOrderFormMode && milkAddonDraft ? (
-                  <View style={styles.addOnFormAccordionCard}>
-                    <Pressable
-                      onPress={() => setAddonFormAccordionOpen((o) => !o)}
-                      style={({ pressed }) => [
-                        styles.addOnFormAccordionHeader,
-                        pressed && styles.pressed,
-                        addonFormAccordionOpen && styles.addOnFormAccordionHeaderOpen,
-                      ]}
-                    >
-                      <Text variant="labelLarge" style={[textMain, styles.bold]}>
-                        {dayOrderFormMode === 'add' ? 'Add add-on product' : 'Edit add-on product'}
+                  <MaterialCommunityIcons
+                    name={addonFormAccordionOpen ? 'chevron-up' : 'chevron-down'}
+                    size={22}
+                    color={scheme === 'dark' ? 'white' : COLORS.text}
+                  />
+                </Pressable>
+                {addonFormAccordionOpen ? (
+                  <View style={styles.addOnFormAccordionBody}>
+                    {!dayAddonProducts.length ? (
+                      <Text variant="bodySmall" style={textSub}>
+                        {t.tab.noActiveProducts}
                       </Text>
-                      <MaterialCommunityIcons
-                        name={addonFormAccordionOpen ? 'chevron-up' : 'chevron-down'}
-                        size={22}
-                        color={scheme === 'dark' ? 'white' : COLORS.text}
+                    ) : (
+                      <MilkSubscriptionLineCompactFields
+                        products={dayAddonProducts}
+                        draft={milkAddonDraft}
+                        onPatch={(patch) => setMilkAddonDraft((d) => (d ? { ...d, ...patch } : d))}
+                        autoOpenProductPicker={dayOrderFormMode === 'add'}
+                        productFilter={() => true}
+                        productFieldLabel={common.fields.product}
+                        productPickerTitle={t.tab.selectProduct}
+                        scheme={scheme}
+                        textMain={textMain}
+                        textSub={textSub}
                       />
-                    </Pressable>
-                    {addonFormAccordionOpen ? (
-                      <View style={styles.addOnFormAccordionBody}>
-                        {!dayAddonProducts.length ? (
-                          <Text variant="bodySmall" style={textSub}>
-                            No active products in the catalogue. Add products under Admin Products first.
-                          </Text>
-                        ) : (
-                          <MilkSubscriptionLineCompactFields
-                            products={dayAddonProducts}
-                            draft={milkAddonDraft}
-                            onPatch={(patch) => setMilkAddonDraft((d) => (d ? { ...d, ...patch } : d))}
-                            autoOpenProductPicker={dayOrderFormMode === 'add'}
-                            productFilter={() => true}
-                            productFieldLabel="Product"
-                            productPickerTitle="Select product"
-                            scheme={scheme}
-                            textMain={textMain}
-                            textSub={textSub}
-                          />
-                        )}
-                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                          <Button
-                            mode="contained"
-                            disabled={!dayAddonProducts.length || !milkLineHasPackComplete(milkAddonDraft, milkCatalogAll)}
-                            onPress={async () => {
-                              if (!selectedDayYmd || !milkAddonDraft) return;
-                              if (dayOrderFormMode === 'add' && !hasSubscriptionLinesOnSelectedDay) {
-                                setAddonAddBlockedDialogOpen(true);
-                                return;
-                              }
-                              if (!milkLineHasPackComplete(milkAddonDraft, milkCatalogAll)) return;
-                              const q = Math.max(1, Math.min(999, Math.floor(Number(milkAddonDraft.numberOfItems ?? 1))));
-                              try {
-                                await dayOrders.upsert({
-                                  id: dayOrderFormMode === 'edit' ? dayOrderEditingId ?? undefined : undefined,
-                                  dateYmd: selectedDayYmd,
-                                  productName: milkAddonDraft.productName.trim(),
-                                  quantityLabel: milkAddonDraft.quantityLabel.trim(),
-                                  unitType: milkAddonDraft.unitType?.trim() || undefined,
-                                  quantity: q,
-                                });
-                                resetDayOrderForm();
-                              } catch (e) {
-                                Alert.alert('Could not save', e instanceof Error ? e.message : String(e));
-                              }
-                            }}
-                          >
-                            Save line
-                          </Button>
-                          <Button mode="outlined" onPress={resetDayOrderForm}>
-                            Cancel
-                          </Button>
-                        </View>
-                      </View>
-                    ) : null}
+                    )}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      <Button
+                        mode="contained"
+                        disabled={!dayAddonProducts.length || !milkLineHasPackComplete(milkAddonDraft, dayAddonProducts)}
+                        onPress={async () => {
+                          if (!selectedDayYmd || !milkAddonDraft) return;
+                          if (!milkLineHasPackComplete(milkAddonDraft, dayAddonProducts)) return;
+                          const q = Math.max(1, Math.min(999, Math.floor(Number(milkAddonDraft.numberOfItems ?? 1))));
+                          try {
+                            await saveAddOn({
+                              id: dayOrderFormMode === 'edit' ? dayOrderEditingId ?? undefined : undefined,
+                              dateYmd: selectedDayYmd,
+                              productName: milkAddonDraft.productName.trim(),
+                              quantityLabel: milkAddonDraft.quantityLabel.trim(),
+                              quantity: q,
+                            });
+                            resetDayOrderForm();
+                          } catch (e) {
+                            setAddOnError(e instanceof Error && e.message ? e.message : t.tab.couldNotSave);
+                          }
+                        }}
+                      >
+                        {t.tab.saveLine}
+                      </Button>
+                      <Button mode="outlined" onPress={resetDayOrderForm}>
+                        {common.actions.cancel}
+                      </Button>
+                    </View>
                   </View>
-                ) : (
-                  <Button
-                    mode="outlined"
-                    style={{ marginTop: 10, alignSelf: 'flex-start' }}
-                    icon="plus"
-                    disabled={hasSubscriptionLinesOnSelectedDay && !dayAddonProducts.length}
-                    onPress={() => {
-                      if (!hasSubscriptionLinesOnSelectedDay) {
-                        setAddonAddBlockedDialogOpen(true);
-                        return;
-                      }
-                      setDayOrderFormMode('add');
-                      setDayOrderEditingId(null);
-                      setAddMode(null);
-                    }}
-                  >
-                    Add add-on product
-                  </Button>
-                )}
+                ) : null}
               </View>
-            </ScrollView>
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={closeDayDialog}>Close</Button>
-          </Dialog.Actions>
-        </Dialog>
+            ) : (
+              <DaySheetAddAddonButton
+                disabled={!dayAddonProducts.length || !selectedDayEditable}
+                onPress={() => {
+                  setAddOnError(null);
+                  setDayOrderFormMode('add');
+                  setDayOrderEditingId(null);
+                  setAddMode(null);
+                }}
+              />
+            )}
+            </>
+          }
+        />
         <Dialog
           visible={pickerOpen}
           onDismiss={() => setPickerOpen(false)}
-          style={[styles.subscriptionDialogSurface, { maxWidth: subscriptionDialogMaxW, width: subscriptionDialogMaxW }]}
+          style={[styles.subscriptionDialogSurface, monthPickerDialogStyle]}
         >
-          <Dialog.Title>Product subscription month</Dialog.Title>
+          <Dialog.Title>{t.tab.monthPickerTitle}</Dialog.Title>
           <Dialog.Content style={[styles.subscriptionDialogContent, { maxHeight: monthPickerScrollMaxH }]}>
             <ScrollView
               style={{ maxHeight: monthPickerScrollMaxH }}
@@ -865,52 +729,38 @@ function CustomerSubscriptionTabInner({
             </ScrollView>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setPickerOpen(false)}>{common.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
         <Dialog
           visible={addonRemoveTarget !== null}
           onDismiss={() => setAddonRemoveTarget(null)}
-          style={[styles.subscriptionDialogSurface, { maxWidth: Math.min(subscriptionDialogMaxW, 420), width: '100%' }]}
+          style={[styles.subscriptionDialogSurface, confirmDialogStyle]}
         >
-          <Dialog.Title>Remove add-on?</Dialog.Title>
+          <Dialog.Title>{t.tab.removeAddOnTitle}</Dialog.Title>
           <Dialog.Content>
             <Text variant="bodyMedium" style={textMain}>
-              {addonRemoveTarget
-                ? `“${addonRemoveTarget.productName}” will be removed for this date only.`
-                : ''}
+              {addonRemoveTarget ? t.tab.removeAddOnBody(addonRemoveTarget.productName) : ''}
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setAddonRemoveTarget(null)}>Cancel</Button>
+            <Button onPress={() => setAddonRemoveTarget(null)}>{common.actions.cancel}</Button>
             <Button
               textColor={scheme === 'dark' ? '#FCA5A5' : '#B91C1C'}
-              onPress={() => {
+              onPress={async () => {
                 const target = addonRemoveTarget;
                 if (!target) return;
-                void dayOrders.remove(target.id);
                 if (dayOrderEditingId === target.id) resetDayOrderForm();
                 setAddonRemoveTarget(null);
+                try {
+                  await removeAddOn(target.id);
+                } catch (e) {
+                  setAddOnError(e instanceof Error && e.message ? e.message : t.tab.couldNotRemove);
+                }
               }}
             >
-              Remove
+              {common.actions.remove}
             </Button>
-          </Dialog.Actions>
-        </Dialog>
-        <Dialog
-          visible={addonAddBlockedDialogOpen}
-          onDismiss={() => setAddonAddBlockedDialogOpen(false)}
-          style={[styles.subscriptionDialogSurface, { maxWidth: Math.min(subscriptionDialogMaxW, 420), width: '100%' }]}
-        >
-          <Dialog.Title>Subscription required</Dialog.Title>
-          <Dialog.Content>
-            <Text variant="bodyMedium" style={textMain}>
-              There are no subscription products on this date. Add or adjust lines in the Product subscription section so this day shows at least one active
-              line under “Subscription products on this date”, then you can add add-on products.
-            </Text>
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => setAddonAddBlockedDialogOpen(false)}>OK</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -922,6 +772,7 @@ export const CustomerSubscriptionTab = memo(CustomerSubscriptionTabInner);
 
 const styles = StyleSheet.create({
   root: { width: '100%', maxWidth: '100%' },
+  addOnError: { color: dairyTactileColors.error, fontWeight: '700' },
   mainCol: { width: '100%', maxWidth: '100%' },
   subscriptionDialogSurface: {
     alignSelf: 'center',
@@ -983,6 +834,9 @@ const styles = StyleSheet.create({
   flexTd: { flex: 1, minWidth: 0, fontSize: 11 },
   miniChip: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   cardStack: { gap: 10 },
+  // Add-on cards: 1 per row on phones/tablet portrait, 2–4 per row on wide screens.
+  cardGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  gridCard: { flexGrow: 1, flexShrink: 1, flexBasis: 260, minWidth: 0, maxWidth: '100%' },
   mobileProductCard: {
     borderRadius: 14,
     borderWidth: 1,
@@ -1010,10 +864,10 @@ const styles = StyleSheet.create({
   addOnProductRowActions: { flexDirection: 'row', flexShrink: 0, alignItems: 'center' },
   addOnFormAccordionCard: {
     marginTop: 12,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.22)',
-    backgroundColor: 'rgba(148,163,184,0.06)',
+    borderColor: dairyTactileColors.outlineVariant,
+    backgroundColor: dairyTactileColors.surfaceContainerLowest,
     overflow: 'hidden',
   },
   addOnFormAccordionHeader: {

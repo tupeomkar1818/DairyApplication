@@ -57,6 +57,29 @@ export function useResponsiveLayout(): ResponsiveLayout {
 }
 
 /**
+ * Size for a react-native-paper `Dialog` (or any centered modal card): capped width on tablets/desktops, a small
+ * side gutter on phones, and a viewport-relative max height so tall content scrolls instead of overflowing.
+ * Paper's Dialog only sets `marginHorizontal: 26` and no max width, so without this it spans the whole window.
+ */
+export function responsiveDialogStyle(
+  width: number,
+  height: number,
+  maxWidth = 480,
+): { alignSelf: 'center'; width: number; maxHeight: number; marginHorizontal: number } {
+  return {
+    alignSelf: 'center',
+    width: Math.max(260, Math.min(width - 32, maxWidth)),
+    maxHeight: Math.max(280, Math.min(Math.round(height * 0.9), height - 24)),
+    marginHorizontal: 0,
+  };
+}
+
+export function useResponsiveDialogStyle(maxWidth = 480) {
+  const { width, height } = useWindowDimensions();
+  return useMemo(() => responsiveDialogStyle(width, height, maxWidth), [width, height, maxWidth]);
+}
+
+/**
  * Card width for a horizontal grid inside a full-bleed page (list screens).
  */
 export function computeListCardWidth(

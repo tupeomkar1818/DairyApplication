@@ -3,9 +3,12 @@ import { useCallback, useEffect, useMemo } from 'react';
 
 import type { AppendSubscriptionCalendarEntryRequest, CustomerSubscriptionCalendarEntryDto } from '@/src/domain/customers/dtos';
 import { AppendSubscriptionCalendarEntryRequestSchema } from '@/src/domain/customers/validations';
-import { loadCalendarEntries, saveCalendarEntries } from '@/src/infrastructure/customerSubscriptionCalendarStore';
+import { loadCalendarEntries, updateCalendarEntries } from '@/src/infrastructure/customerSubscriptionCalendarStore';
 import { subscribeStorageKey } from '@/src/infrastructure/storage/storage';
 import { CUSTOMER_SUBSCRIPTION_CALENDAR_STORE_PREFIX } from '@/src/infrastructure/storage/keys';
+
+/** Stable empty value while loading / on error — a fresh `[]` per render would re-fire every effect that depends on it. */
+const EMPTY_ENTRIES = Object.freeze([]) as unknown as CustomerSubscriptionCalendarEntryDto[];
 
 function newEntryId(): string {
   return `cal_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
@@ -38,6 +41,7 @@ export function useCustomerSubscriptionCalendar(customerId: string | undefined) 
     });
   }, [customerId, qc, queryKey, storageKey]);
 
+  // Mutations read the latest stored entries (serialized per customer) instead of the render-time query snapshot.
   const append = useMutation({
     mutationFn: async (payload: AppendSubscriptionCalendarEntryRequest) => {
       if (!customerId) return;
@@ -49,10 +53,7 @@ export function useCustomerSubscriptionCalendar(customerId: string | undefined) 
         title: parsed.title,
         subtitle: parsed.subtitle,
       };
-      const prev = (query.data ?? []) as CustomerSubscriptionCalendarEntryDto[];
-      const next = [...prev, row];
-      await saveCalendarEntries(customerId, next);
-      return next;
+      return updateCalendarEntries(customerId, (prev) => [...prev, row]);
     },
     onSuccess: (next) => {
       qc.setQueryData(queryKey, next);
@@ -62,17 +63,14 @@ export function useCustomerSubscriptionCalendar(customerId: string | undefined) 
   const remove = useMutation({
     mutationFn: async (id: string) => {
       if (!customerId) return;
-      const prev = (query.data ?? []) as CustomerSubscriptionCalendarEntryDto[];
-      const next = prev.filter((e) => e.id !== id);
-      await saveCalendarEntries(customerId, next);
-      return next;
+      return updateCalendarEntries(customerId, (prev) => prev.filter((e) => e.id !== id));
     },
     onSuccess: (next) => {
       qc.setQueryData(queryKey, next);
     },
   });
 
-  const safeEntries = (query.data ?? []) as CustomerSubscriptionCalendarEntryDto[];
+  const safeEntries = query.data ?? EMPTY_ENTRIES;
   const ready = !!customerId ? query.isFetched : true;
 
   return {

@@ -1,0 +1,244 @@
+---
+import Icon from './Icon.astro';
+import LanguageSwitch from './LanguageSwitch.astro';
+import { site, whatsappLink } from '../data/site';
+import { localePath, ui, type Lang } from '../i18n/ui';
+
+interface Props {
+  lang: Lang;
+}
+
+const { lang } = Astro.props;
+const t = ui[lang];
+
+/** Sections of the home page for now; each becomes its own page as the site grows. */
+const links = [
+  // Shown by the Offers section's script only while an offer is running.
+  { href: localePath(lang, '/#offers'), label: t.nav.offers, offers: true },
+  { href: localePath(lang, '/#products'), label: t.nav.products },
+  { href: localePath(lang, '/#how-it-works'), label: t.nav.how },
+  { href: localePath(lang, '/#about'), label: t.nav.about },
+  { href: localePath(lang, '/#app'), label: t.nav.app },
+  { href: localePath(lang, '/#contact'), label: t.nav.contact },
+];
+---
+
+<header class="header">
+  <div class="container bar">
+    <a class="brand" href={localePath(lang, '/')} aria-label={t.a11y.home}>
+      <img src="/images/amrale-logo.png" alt="" width="48" height="48" />
+      <span class="brand-text">
+        <span class="brand-name">{t.brand.name}</span>
+        <span class="brand-sub">{t.brand.sub}</span>
+      </span>
+    </a>
+
+    <nav class="nav" aria-label={t.a11y.mainNav}>
+      {links.map((l) => <a href={l.href} hidden={l.offers} data-offers-link={l.offers}>{l.label}</a>)}
+    </nav>
+
+    <div class="lang-desktop">
+      <LanguageSwitch lang={lang} />
+    </div>
+
+    <a class="btn btn-yellow cta" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">
+      <Icon name="whatsapp" />
+      <span>{t.actions.orderWhatsapp}</span>
+    </a>
+
+    <details class="menu">
+      <summary aria-label={t.a11y.openMenu}>
+        <Icon name="menu" class="icon-open" />
+        <Icon name="close" class="icon-close" />
+      </summary>
+      <nav class="menu-panel" aria-label={t.a11y.mobileNav}>
+        {links.map((l) => <a href={l.href} hidden={l.offers} data-offers-link={l.offers}>{l.label}</a>)}
+        <a class="btn btn-yellow" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">
+          <Icon name="whatsapp" />
+          {t.actions.orderWhatsapp}
+        </a>
+        <a class="btn btn-blue" href={`tel:${site.phoneDial}`}>
+          <Icon name="phone" />
+          {t.actions.call} {site.phoneDisplay}
+        </a>
+        <LanguageSwitch lang={lang} variant="block" />
+      </nav>
+    </details>
+  </div>
+</header>
+
+<script>
+  // Close the mobile menu once a link inside it is chosen (it points at a section on the same page).
+  document.querySelectorAll<HTMLDetailsElement>('.menu').forEach((menu) => {
+    menu.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => menu.removeAttribute('open')));
+  });
+</script>
+
+<style>
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255, 251, 241, 0.88);
+    backdrop-filter: saturate(1.4) blur(12px);
+    -webkit-backdrop-filter: saturate(1.4) blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 72px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-decoration: none;
+    margin-right: auto;
+    min-width: 0;
+  }
+
+  .brand img {
+    flex: none;
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .brand-text {
+    display: grid;
+    min-width: 0;
+    line-height: 1.15;
+  }
+
+  .brand-name {
+    font-weight: 800;
+    font-size: 19px;
+    color: var(--blue-900);
+  }
+
+  .brand-sub {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .nav {
+    display: none;
+    gap: 2px;
+  }
+
+  .nav a {
+    padding: 8px 11px;
+    border-radius: 999px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .nav a:hover {
+    background: var(--blue-50);
+    color: var(--blue-700);
+  }
+
+  .lang-desktop {
+    display: flex;
+  }
+
+  .cta {
+    display: none;
+    min-height: 44px;
+    padding: 0 18px;
+    font-size: 15px;
+  }
+
+  .menu {
+    position: relative;
+  }
+
+  .menu summary {
+    display: grid;
+    place-items: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    color: var(--blue-900);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .menu summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .menu summary:hover {
+    background: var(--blue-50);
+  }
+
+  /* The icons are rendered by the Icon component, so the selectors reach into it with :global. */
+  .menu :global(.icon-close),
+  .menu[open] :global(.icon-open) {
+    display: none;
+  }
+
+  .menu[open] :global(.icon-close) {
+    display: block;
+  }
+
+  .menu-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 10px);
+    display: grid;
+    gap: 4px;
+    width: min(320px, calc(100vw - 40px));
+    padding: 12px;
+    border-radius: var(--radius);
+    background: var(--milk);
+    box-shadow: var(--shadow);
+    border: 1px solid var(--line);
+  }
+
+  .menu-panel a:not(.btn):not(:global(.switch)) {
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .menu-panel a:not(.btn):not(:global(.switch)):hover {
+    background: var(--blue-50);
+  }
+
+  .menu-panel .btn {
+    margin-top: 6px;
+  }
+
+  /* Phones: the language switch lives in the menu, so the bar keeps room for the name. */
+  @media (max-width: 479px) {
+    .lang-desktop {
+      display: none;
+    }
+  }
+
+  @media (min-width: 760px) {
+    .cta {
+      display: inline-flex;
+    }
+  }
+
+  @media (min-width: 1120px) {
+    .nav {
+      display: flex;
+    }
+    .menu {
+      display: none;
+    }
+  }
+</style>

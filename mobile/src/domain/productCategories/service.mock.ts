@@ -1,6 +1,8 @@
 import type { IProductCategoryService } from '@/src/domain/productCategories/service.interface';
 import type { CreateProductCategoryRequest, ProductCategoryListResponse, ProductCategoryResponse, UpdateProductCategoryRequest } from '@/src/domain/productCategories/dtos';
 import type { ProductCategory } from '@/src/domain/productCategories/entities';
+import { DomainError } from '@/src/domain/shared/errors';
+import { strings } from '@/src/i18n/strings';
 import { readJson, writeJson } from '@/src/infrastructure/storage/storage';
 import { PRODUCT_CATEGORIES_STORE_KEY } from '@/src/infrastructure/storage/keys';
 
@@ -71,7 +73,7 @@ export class ProductCategoryServiceMock implements IProductCategoryService {
     await sleep(DEFAULT_DELAY_MS);
     const items = await ensureSeedCategories();
     const idx = items.findIndex((c) => c.id === id);
-    if (idx < 0) return items[0] as ProductCategoryResponse;
+    if (idx < 0) throw new DomainError('PRODUCT_CATEGORY_NOT_FOUND', strings('products').errors.categoryNotFound);
 
     const now = nowIso();
     const current = items[idx]!;

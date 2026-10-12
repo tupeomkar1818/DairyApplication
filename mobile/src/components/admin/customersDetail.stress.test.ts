@@ -65,6 +65,9 @@ vi.mock('expo-router', () => ({
     back: mocks.routerBack,
   },
   useLocalSearchParams: () => ({ id: 'cust_1' }),
+  useNavigation: () => ({
+    canGoBack: () => true,
+  }),
 }));
 
 vi.mock('expo-linear-gradient', async () => {
@@ -86,7 +89,7 @@ vi.mock('react-native', async () => {
   const host =
     (name: string) =>
     ({ children, ...props }: any) =>
-      ReactModule.createElement(name, props, typeof children === 'function' ? children({ pressed: false }) : children);
+      ReactModule.createElement(name, props, children instanceof Function ? children({ pressed: false }) : children);
 
   return {
     InteractionManager: {
@@ -101,6 +104,8 @@ vi.mock('react-native', async () => {
     },
     Pressable: host('Pressable'),
     ScrollView: host('ScrollView'),
+    // The screen's shared month stepper renders react-native's own Text.
+    Text: host('Text'),
     StyleSheet: {
       create: <T,>(styles: T) => styles,
       hairlineWidth: 1,
@@ -144,10 +149,10 @@ vi.mock('@/src/components/admin/CustomerDetailOverview', async () => {
   };
 });
 
-vi.mock('@/src/components/admin/CustomerDetailProfileCard', async () => {
+vi.mock('@/src/components/shared/DetailProfileCard', async () => {
   const ReactModule = await vi.importActual<typeof import('react')>('react');
   return {
-    CustomerDetailProfileCard: (props: any) => ReactModule.createElement('CustomerDetailProfileCard', props),
+    DetailProfileCard: (props: any) => ReactModule.createElement('DetailProfileCard', props),
   };
 });
 
@@ -214,6 +219,19 @@ vi.mock('@/src/hooks/deliveryBoys', () => ({
   }),
 }));
 
+// The screen reaches the service registry through the event helpers; this test only renders, so it is stubbed.
+vi.mock('@/src/infrastructure/service-registry', () => ({
+  services: {
+    notifications: { list: async () => [], add: async () => undefined },
+    announcements: { list: async () => [], save: async () => undefined },
+    chat: { list: async () => [], send: async () => undefined },
+  },
+}));
+
+vi.mock('@/src/hooks/offers/useOffers', () => ({
+  useOffers: () => ({ all: [], isLoading: false, isError: false, refetch: () => undefined }),
+}));
+
 vi.mock('@/src/hooks/products/useProducts', () => ({
   useProducts: () => ({
     data: {
@@ -237,7 +255,7 @@ import AdminCustomerDetailDashboard from '@/app/(admin)/customers-detail';
 function collectNodeText(node: ReactTestInstance): string {
   return node.children
     .map((child: string | ReactTestInstance) => {
-      if (typeof child === 'string') return child;
+      if (Object.prototype.toString.call(child) === '[object String]') return child;
       return collectNodeText(child);
     })
     .join('')
@@ -246,7 +264,7 @@ function collectNodeText(node: ReactTestInstance): string {
 
 function getTabPressable(root: ReactTestInstance, label: string) {
   const tabPressable = root
-    .findAll((node: ReactTestInstance) => node.type === 'Pressable' && typeof node.props.onPress === 'function')
+    .findAll((node: ReactTestInstance) => node.type === 'Pressable' && node.props.onPress instanceof Function)
     .find((node: ReactTestInstance) => collectNodeText(node) === label);
 
   if (!tabPressable) {

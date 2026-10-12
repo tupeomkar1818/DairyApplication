@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { useStrings } from '@/src/i18n/useStrings';
 
 export type ScreenHeaderProps = {
   title: string;
@@ -26,6 +27,11 @@ export type ScreenHeaderProps = {
   backgroundColor?: string;
   style?: StyleProp<ViewStyle>;
   titleStyle?: StyleProp<TextStyle>;
+  /**
+   * Caps and centers the title row (the header background and border stay full-bleed) so the title lines up with
+   * centered page content on tablets/desktops. Omit for the default full-width row.
+   */
+  contentMaxWidth?: number;
 };
 
 export function ScreenHeader({
@@ -42,8 +48,17 @@ export function ScreenHeader({
   backgroundColor = amraleColors.surface,
   style,
   titleStyle,
+  contentMaxWidth,
 }: ScreenHeaderProps) {
+  const t = useStrings('common');
   const iconColor = backIconColor ?? titleColor;
+  const icon = (
+    <MaterialCommunityIcons
+      name="arrow-left"
+      size={backVariant === 'pill' ? 22 : 24}
+      color={backVariant === 'pill' ? amraleColors.text : iconColor}
+    />
+  );
 
   return (
     <>
@@ -56,22 +71,16 @@ export function ScreenHeader({
           style,
         ]}
       >
-        <View style={styles.row}>
+        <View style={[styles.row, contentMaxWidth != null && [styles.rowCentered, { maxWidth: contentMaxWidth }]]}>
           {onBack ? (
             <Pressable
               onPress={onBack}
-              style={({ pressed }) => [
-                backVariant === 'pill' ? styles.backBtnPill : styles.backBtn,
-                pressed && styles.pressed,
-              ]}
+              style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+              hitSlop={4}
               accessibilityRole="button"
-              accessibilityLabel="Go back"
+              accessibilityLabel={t.a11y.goBack}
             >
-              <MaterialCommunityIcons
-                name="arrow-left"
-                size={backVariant === 'pill' ? 22 : 24}
-                color={backVariant === 'pill' ? amraleColors.text : iconColor}
-              />
+              {backVariant === 'pill' ? <View style={styles.backBtnPill}>{icon}</View> : icon}
             </Pressable>
           ) : null}
           <Text
@@ -107,9 +116,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: amraleSpacing.sm,
   },
+  rowCentered: {
+    width: '100%',
+    alignSelf: 'center',
+  },
+  /** 44px touch target (web ignores hitSlop); the -2 margin keeps the original 40px layout footprint. */
   backBtn: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
+    margin: -2,
     alignItems: 'center',
     justifyContent: 'center',
   },

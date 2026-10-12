@@ -1,0 +1,183 @@
+---
+import Icon from './Icon.astro';
+import LanguageSwitch from './LanguageSwitch.astro';
+import { site, whatsappLink } from '../data/site';
+import { localePath, ui, type Lang } from '../i18n/ui';
+
+interface Props {
+  lang: Lang;
+}
+
+const { lang } = Astro.props;
+const t = ui[lang];
+const year = new Date().getFullYear();
+---
+
+<footer class="footer">
+  <div class="container grid">
+    <div class="about">
+      <a class="brand" href={localePath(lang, '/')}>
+        <img src="/images/amrale-logo.png" alt="" width="56" height="56" loading="lazy" />
+        <span>
+          <strong>{t.brand.name}</strong>
+          <span class="brand-second">{lang === 'mr' ? site.name : site.legalNameMarathi}</span>
+        </span>
+      </a>
+      <p>{t.footer.about}</p>
+      <p class="mr categories">{site.categoriesMarathi.join('  |  ')}</p>
+      <p class="lang"><LanguageSwitch lang={lang} variant="link" /></p>
+    </div>
+
+    <nav aria-label={t.a11y.footerNav}>
+      <h2>{t.footer.explore}</h2>
+      <ul>
+        <li><a href={localePath(lang, '/#products')}>{t.nav.products}</a></li>
+        <li><a href={localePath(lang, '/#how-it-works')}>{t.footer.howDelivery}</a></li>
+        <li><a href={localePath(lang, '/#about')}>{t.nav.about}</a></li>
+        <li><a href={localePath(lang, '/#app')}>{t.nav.app}</a></li>
+        <li><a href={localePath(lang, '/#contact')}>{t.nav.contact}</a></li>
+      </ul>
+    </nav>
+
+    <div>
+      <h2>{t.footer.reach}</h2>
+      <ul class="contact">
+        <li>
+          <Icon name="phone" size={18} />
+          <a href={`tel:${site.phoneDial}`}>{site.phoneDisplay}</a>
+        </li>
+        <li>
+          <Icon name="whatsapp" size={18} />
+          <a href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">{t.footer.whatsappUs}</a>
+        </li>
+        <li>
+          <Icon name="mail" size={18} />
+          <a href={`mailto:${site.email}`}>{site.email}</a>
+        </li>
+        <li>
+          <Icon name="pin" size={18} />
+          <a href={site.mapShareUrl} target="_blank" rel="noopener">{t.contact.address}</a>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="container legal">
+    <p>© {year} {t.brand.name} ({t.brand.legalName}). {t.footer.rights}</p>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    background: var(--blue-950);
+    color: rgba(255, 255, 255, 0.82);
+    padding-top: 64px;
+  }
+
+  .grid {
+    display: grid;
+    gap: 40px;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    text-decoration: none;
+    color: #fff;
+    margin-bottom: 16px;
+  }
+
+  .brand img {
+    border-radius: 16px;
+  }
+
+  .brand strong {
+    display: block;
+    font-size: 20px;
+  }
+
+  .brand-second {
+    font-family: var(--font-marathi);
+    font-size: 16px;
+    color: var(--yellow);
+  }
+
+  :global(html[data-lang='mr']) .brand-second {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .about p {
+    max-width: 380px;
+    font-size: 15px;
+  }
+
+  .categories {
+    margin-top: 12px;
+    font-size: 17px;
+    color: var(--yellow);
+    white-space: pre;
+  }
+
+  .lang {
+    margin-top: 12px;
+  }
+
+  h2 {
+    margin-bottom: 14px;
+    font-size: 14px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #fff;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 10px;
+    font-size: 15px;
+  }
+
+  a {
+    color: rgba(255, 255, 255, 0.86);
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--yellow);
+    text-decoration: underline;
+  }
+
+  .contact li {
+    display: grid;
+    grid-template-columns: 18px 1fr;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .contact :global(svg) {
+    margin-top: 3px;
+    color: var(--yellow);
+  }
+
+  .legal {
+    margin-top: 48px;
+    padding-block: 20px 88px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  @media (min-width: 760px) {
+    .grid {
+      grid-template-columns: 1.4fr 1fr 1.3fr;
+    }
+    .legal {
+      padding-bottom: 24px;
+    }
+  }
+</style>

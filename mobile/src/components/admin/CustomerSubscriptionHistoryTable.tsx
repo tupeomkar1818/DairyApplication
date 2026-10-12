@@ -7,6 +7,9 @@ import type {
   CustomerSubscriptionHistoryRowDto,
   CustomerSubscriptionPlanHistoryMemoDto,
 } from '@/src/domain/customers/dtos';
+import { strings } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
+import { formatDay } from '@/src/utils/format';
 
 function fmtBoundary(value: string | undefined): string {
   if (!value?.trim()) return '—';
@@ -16,7 +19,10 @@ function fmtBoundary(value: string | undefined): string {
     if (dob) return dob;
   }
   const d = new Date(value);
-  if (!Number.isNaN(d.getTime())) return d.toLocaleDateString();
+  if (!Number.isNaN(d.getTime())) {
+    const localYmd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return formatDay(localYmd, { year: true });
+  }
   return value.trim();
 }
 
@@ -33,7 +39,8 @@ function money(v: number): string {
 }
 
 function lineKindLabel(k: CustomerSubscriptionHistoryRowDto['lineKind']): string {
-  return k === 'add_on_product' ? 'Add-on' : 'Basic';
+  const t = strings('subscriptionEditor').history;
+  return k === 'add_on_product' ? t.kindAddOn : t.kindBasic;
 }
 
 export type CustomerSubscriptionHistoryTableProps = {
@@ -53,19 +60,21 @@ export function CustomerSubscriptionHistoryTable({
   textSub,
   sectionCardStyle,
 }: CustomerSubscriptionHistoryTableProps) {
+  const t = useStrings('subscriptionEditor');
+  const common = useStrings('common');
   const header = [
-    'Type',
-    'Product',
-    'Pack / size',
-    'Qty',
-    'Price / delivery',
-    'Issue date',
-    'Start',
-    'End',
-    'Delivered (last)',
-    'Qty delivered',
-    'Times',
-    'Amount',
+    t.historyTable.type,
+    common.fields.product,
+    t.fields.packSize,
+    t.fields.qty,
+    t.fields.pricePerDelivery,
+    t.history.issueDate,
+    t.historyTable.start,
+    t.historyTable.end,
+    t.historyTable.deliveredLast,
+    t.historyTable.qtyDelivered,
+    t.historyTable.times,
+    common.fields.amount,
   ];
 
   const hasRows = rows.length > 0;
@@ -75,11 +84,10 @@ export function CustomerSubscriptionHistoryTable({
       <Card style={sectionCardStyle} mode="elevated">
         <Card.Content style={styles.cardInner}>
           <Text variant="titleSmall" style={[styles.bold, textMain]}>
-            Subscription history
+            {t.history.title}
           </Text>
           <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
-            No subscription plan lines yet. Add basic milk lines under Basic subscription details; delivery counts use saved day orders on the
-            calendar and delivered rows on the customer profile when present.
+            {t.historyTable.empty}
           </Text>
         </Card.Content>
       </Card>
@@ -91,14 +99,12 @@ export function CustomerSubscriptionHistoryTable({
       <Card style={sectionCardStyle} mode="elevated">
         <Card.Content style={styles.cardInner}>
           <Text variant="titleSmall" style={[styles.bold, textMain]}>
-            Subscription history
+            {t.history.title}
           </Text>
           {hasRows ? (
             <>
               <Text variant="bodySmall" style={[textSub, { marginBottom: 10 }]}>
-                Amount = times delivered × price per delivery (plan line total), using calendar and delivery records—not subscription date edits alone. If the same
-                subscription line (matching product, pack, and schedule) was closed and reopened, each day is counted once on the segment with the latest start date.
-                Issue date is when the line was recorded in the system.
+                {t.historyTable.mobileBlurb}
               </Text>
               <View style={styles.cardStack}>
                 {rows.map((r) => (
@@ -116,21 +122,23 @@ export function CustomerSubscriptionHistoryTable({
                       {r.productName}
                     </Text>
                     <Text variant="bodySmall" style={textSub}>
-                      {lineKindLabel(r.lineKind)} · {r.packSizeLabel} · Qty {r.quantity}
+                      {lineKindLabel(r.lineKind)} · {r.packSizeLabel} · {t.daySheet.qty(r.quantity)}
                     </Text>
                     <Text variant="bodySmall" style={textSub}>
-                      Price / delivery {money(r.pricePerDelivery)}
+                      {t.historyTable.priceLine(money(r.pricePerDelivery))}
                     </Text>
                     <Text variant="bodySmall" style={textSub}>
-                      Issue {fmtBoundary(r.subscriptionIssueDate)} · Start {fmtBoundary(r.subscriptionStartDate)} · End{' '}
-                      {fmtBoundary(r.subscriptionEndDate)}
+                      {t.historyTable.datesLine(
+                        fmtBoundary(r.subscriptionIssueDate),
+                        fmtBoundary(r.subscriptionStartDate),
+                        fmtBoundary(r.subscriptionEndDate),
+                      )}
                     </Text>
                     <Text variant="bodySmall" style={textSub}>
-                      Last delivery {fmtYmd(r.lastDeliveredDateYmd)} · Qty delivered {r.totalQuantityDelivered} · Times{' '}
-                      {r.deliveryOccurrenceCount}
+                      {t.historyTable.deliveryLine(fmtYmd(r.lastDeliveredDateYmd), r.totalQuantityDelivered, r.deliveryOccurrenceCount)}
                     </Text>
                     <Text variant="titleSmall" style={[textMain, styles.bold, { marginTop: 4 }]}>
-                      Amount {money(r.calculatedAmount)}
+                      {t.history.amountValue(money(r.calculatedAmount))}
                     </Text>
                   </View>
                 ))}
@@ -146,20 +154,19 @@ export function CustomerSubscriptionHistoryTable({
     <Card style={sectionCardStyle} mode="elevated">
       <Card.Content style={styles.cardInner}>
         <Text variant="titleSmall" style={[styles.bold, textMain]}>
-          Subscription history
+          {t.history.title}
         </Text>
         {hasRows ? (
           <>
             <Text variant="bodySmall" style={[textSub, { marginBottom: 10 }]}>
-              Amount = times delivered × price per delivery. Issue date is system record time for the line; last delivery uses calendar day orders or
-              profile deliveries.
+              {t.historyTable.desktopBlurb}
             </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled>
               <View style={styles.flexTable}>
                 <View style={[styles.flexTr, styles.flexHeader]}>
                   {header.map((h, i) => (
                     <Text
-                      key={h}
+                      key={`col-${i}`}
                       variant="labelSmall"
                       style={[styles.flexTh, i === 1 ? styles.flexThProduct : null, textSub]}
                       numberOfLines={3}

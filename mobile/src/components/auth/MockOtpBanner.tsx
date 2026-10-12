@@ -1,5 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleTypography } from '@/src/theme/dairyTactile';
 
 type Props = {
@@ -12,14 +13,15 @@ type Props = {
 
 /** Visible mock OTP hint for development / mock service mode */
 export function MockOtpBanner({ otp, variant = 'inline', tone = 'light' }: Props) {
+  const t = useStrings('auth');
   if (!/^\d{6}$/.test(otp)) return null;
 
   if (variant === 'banner') {
     return (
-      <View style={styles.banner} accessibilityRole="text" accessibilityLabel={`Mock OTP ${otp}`}>
-        <Text style={styles.label}>MOCK OTP</Text>
+      <View style={styles.banner} accessibilityRole="text" accessibilityLabel={t.mockOtp.accessibilityLabel(otp)}>
+        <Text style={styles.label}>{t.mockOtp.bannerLabel}</Text>
         <Text style={styles.code}>{otp}</Text>
-        <Text style={styles.hint}>Type this code manually in the boxes above</Text>
+        <Text style={styles.hint}>{t.mockOtp.hint}</Text>
       </View>
     );
   }
@@ -30,9 +32,10 @@ export function MockOtpBanner({ otp, variant = 'inline', tone = 'light' }: Props
     <Text
       style={[styles.inlineLine, isDark && styles.inlineLineDark]}
       accessibilityRole="text"
-      accessibilityLabel={`Mock OTP ${otp}`}
+      accessibilityLabel={t.mockOtp.accessibilityLabel(otp)}
     >
-      Mock OTP: <Text style={[styles.inlineCode, isDark && styles.inlineCodeDark]}>{otp}</Text>
+      {`${t.mockOtp.inlineLabel}: `}
+      <Text style={[styles.inlineCode, isDark && styles.inlineCodeDark]}>{otp}</Text>
     </Text>
   );
 }

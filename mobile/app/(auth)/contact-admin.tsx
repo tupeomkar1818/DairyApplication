@@ -5,15 +5,18 @@ import { ContactAdminCard } from '@/src/components/contactAdmin/ContactAdminCard
 import { LoginLightShell } from '@/src/components/auth';
 import { ScreenHeader } from '@/src/components/shared';
 import { useContactAdmin } from '@/src/hooks/contactAdmin';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
 export default function ContactAdminScreen() {
+  const t = useStrings('help');
+  const c = useStrings('common');
   const { data, isLoading, isError, refetch, isRefetching } = useContactAdmin();
 
   return (
     <LoginLightShell alignTop>
       <ScreenHeader
-        title="Contact Us"
+        title={t.contact.title}
         onBack={() => router.back()}
         backVariant="pill"
         titleColor={amraleColors.text}
@@ -29,9 +32,9 @@ export default function ContactAdminScreen() {
         </View>
       ) : isError ? (
         <View style={styles.centered}>
-          <Text style={styles.errorText}>Could not load contact details. Please try again.</Text>
+          <Text style={styles.errorText}>{t.contact.loadError}</Text>
           <Pressable onPress={() => refetch()} style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}>
-            <Text style={styles.retryLabel}>{isRefetching ? 'Loading…' : 'Retry'}</Text>
+            <Text style={styles.retryLabel}>{isRefetching ? c.states.loading : t.retry}</Text>
           </Pressable>
         </View>
       ) : data?.contact ? (
@@ -60,6 +63,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   retryBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: amraleSpacing.lg,
     paddingVertical: amraleSpacing.sm,
     borderRadius: amraleRadius.lg,

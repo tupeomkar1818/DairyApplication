@@ -1,8 +1,6 @@
 export { AmraleAuthShell } from './AmraleAuthShell';
 export { AmraleLogo } from './AmraleLogo';
-export { LoginHeader } from './LoginHeader';
 export { LoginLightShell } from './LoginLightShell';
-export { LoginProductGrid } from './LoginProductGrid';
 export { MilkSplashDecor } from './MilkSplashDecor';
 export { AuthFooterLinks } from './AuthFooterLinks';
 export { AuthPrimaryButton } from './AuthPrimaryButton';

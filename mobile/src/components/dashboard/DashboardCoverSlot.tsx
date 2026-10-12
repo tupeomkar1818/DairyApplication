@@ -1,9 +1,9 @@
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
 import { DashboardCoverBanner } from '@/src/components/dashboard/DashboardCoverBanner';
-import { computeDashboardCoverHeight } from '@/src/components/dashboard/dashboardCoverLayout';
+import { computeDashboardCoverLayout } from '@/src/components/dashboard/dashboardCoverLayout';
 import type { DashboardCoverImage } from '@/src/domain/adminDashboard/entities';
-import { amraleColors } from '@/src/theme/dairyTactile';
+import { amraleColors, amraleRadius, amraleSpacing } from '@/src/theme/dairyTactile';
 import { useResponsiveLayout } from '@/src/utils/responsiveLayout';
 
 type Props = {
@@ -16,17 +16,19 @@ type Props = {
 
 /** Full-viewport-width cover strip — sits outside padded dashboard scroll content. */
 export function DashboardCoverSlot({ cover, loading, editable, onPressEdit, isUpdating }: Props) {
-  const { width: screenWidth } = useResponsiveLayout();
+  const { width: screenWidth, height: screenHeight } = useResponsiveLayout();
 
   if (loading || !cover) {
+    const layout = computeDashboardCoverLayout(screenWidth, screenHeight, cover?.aspectRatio);
     return (
       <View
         style={[
           styles.placeholder,
-          {
-            width: screenWidth,
-            height: computeDashboardCoverHeight(screenWidth, cover?.aspectRatio),
-          },
+          // Same box the loaded banner will take, so the content below does not jump when the image arrives.
+          // Phones use '100%' of the scroll content (= viewport minus any web scrollbar) to avoid side overflow.
+          layout.rounded
+            ? { width: layout.width, height: layout.height, borderRadius: amraleRadius.lg, marginTop: amraleSpacing.md }
+            : { width: '100%', height: layout.height },
         ]}
       >
         <ActivityIndicator color={amraleColors.blue} />

@@ -1,3 +1,5 @@
+import { strings } from '@/src/i18n/strings';
+
 /**
  * Subscription plan start/end boundaries — domain-only parsing for Zod and shared rules.
  * Accepts DD/MM/YYYY (UI) or YYYY-MM-DD (stored / API-shaped).
@@ -36,6 +38,20 @@ export function parsePlanBoundaryToDate(value: string | undefined | null): Date 
   return null;
 }
 
+/** Local-calendar YYYY-MM-DD for a Date (never via `toISOString`, which shifts to UTC). */
+export function formatLocalIsoYmd(d: Date): string {
+  const yyyy = String(d.getFullYear());
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/** DD/MM/YYYY or YYYY-MM-DD… → validated YYYY-MM-DD, else null. */
+export function planBoundaryToIsoYmd(value: string | undefined | null): string | null {
+  const d = parsePlanBoundaryToDate(value);
+  return d ? formatLocalIsoYmd(d) : null;
+}
+
 export function formatPlanBoundaryAsDdMmYyyy(d: Date): string {
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -69,18 +85,18 @@ export function planStartEndMonthRuleIssues(
   const issues: { path: PlanStartEndIssuePath; message: string }[] = [];
   const start = parsePlanBoundaryToDate(startRaw);
   if (!start) {
-    issues.push({ path: 'startDate', message: 'Start date must be a valid DD/MM/YYYY or YYYY-MM-DD' });
+    issues.push({ path: 'startDate', message: strings('customer').planDates.startInvalid });
     return issues;
   }
   const end = parsePlanBoundaryToDate(endRaw ?? '');
   if (!end) {
-    issues.push({ path: 'endDate', message: 'End date is required and must be a valid date' });
+    issues.push({ path: 'endDate', message: strings('customer').planDates.endRequired });
     return issues;
   }
   if (end.getTime() < start.getTime()) {
     issues.push({
       path: 'endDate',
-      message: 'End date must be on or after the start date',
+      message: strings('customer').planDates.endBeforeStart,
     });
   }
   return issues;
@@ -91,14 +107,15 @@ export function isPlanStartEndMonthRuleOk(startRaw: string, endRaw: string | und
 }
 
 /**
- * For duplicate-line closure: use the proposed end date (typically the **new** line’s start, DD/MM) when it is on or
- * after the existing line’s start; otherwise use the existing line’s start so end ≥ start still holds.
+ * For duplicate-line closure: end the existing line the day **before** the new line’s start so the two lines never
+ * overlap (a shared day would be billed twice). Never earlier than the existing line’s own start, so end ≥ start
+ * still holds (same-day replacement leaves a one-day overlap that delivery attribution resolves to the newer line).
  */
-export function duplicateClosureEndDdMmYyyy(startRaw: string, proposedEndDdMmYyyy: string): string {
+export function duplicateClosureEndDdMmYyyy(startRaw: string, newLineStartDdMmYyyy: string): string {
   const start = parsePlanBoundaryToDate(startRaw);
-  const act = parsePlanBoundaryToDate(proposedEndDdMmYyyy);
-  if (!act) return proposedEndDdMmYyyy.trim();
-  if (!start) return proposedEndDdMmYyyy.trim();
-  if (act.getTime() >= start.getTime()) return proposedEndDdMmYyyy.trim();
+  const newStart = parsePlanBoundaryToDate(newLineStartDdMmYyyy);
+  if (!newStart) return newLineStartDdMmYyyy.trim();
+  const dayBefore = new Date(newStart.getFullYear(), newStart.getMonth(), newStart.getDate() - 1);
+  if (!start || dayBefore.getTime() >= start.getTime()) return formatPlanBoundaryAsDdMmYyyy(dayBefore);
   return formatPlanBoundaryAsDdMmYyyy(start);
 }

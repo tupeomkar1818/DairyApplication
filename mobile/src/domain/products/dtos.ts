@@ -1,4 +1,4 @@
-import type { Product } from '@/src/domain/products/entities';
+import type { Product, ProductPack } from '@/src/domain/products/entities';
 import type { DayOfWeek, DeliveryTimeSlot, ProductAvailability, ProductFeature, ProductType, ProductUnit, ProductVariant, TaxPercentage } from '@/src/domain/products/enums';
 
 export interface CreateProductRequest {
@@ -10,6 +10,8 @@ export interface CreateProductRequest {
   unit: ProductUnit;
   variants: ProductVariant[];
   customVariantLabel?: string;
+  /** When given, the packs are the source of truth and the single-price fields above follow the smallest pack. */
+  packs?: ProductPack[];
   description: string;
   availableStock: number;
   minStockAlert?: number;
@@ -35,6 +37,7 @@ export interface UpdateProductRequest {
   unit?: ProductUnit;
   variants?: ProductVariant[];
   customVariantLabel?: string;
+  packs?: ProductPack[];
   description?: string;
   availableStock?: number;
   minStockAlert?: number;

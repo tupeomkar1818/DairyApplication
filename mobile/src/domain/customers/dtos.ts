@@ -1,3 +1,4 @@
+import type { CustomerGeoLocation } from '@/src/domain/customers/location';
 import type { Customer } from '@/src/domain/customers/entities';
 import type {
   BillingType,
@@ -161,12 +162,14 @@ export interface CustomerSubscriptionPlanDto {
   numberOfItems?: number;
   quantityLabel: string;
   unitType?: string;
+  packId?: string;
   subscriptionKind?: SubscriptionKind;
   deliveryDate?: string; // ISO
   deliveryTime: DeliveryTime;
   frequency: DeliveryFrequency;
   startDate: string; // ISO
   endDate?: string; // ISO
+  openEnded?: boolean;
   pauseStartDate?: string; // ISO
   pauseEndDate?: string; // ISO
   resumeDate?: string; // ISO
@@ -197,6 +200,10 @@ export interface CreateCustomerRequest {
   city?: string;
   pincode?: string;
   landmark?: string;
+  /** The customer's door on the map: from a pasted map link (admin) or saved by the delivery boy standing there. */
+  geoLocation?: CustomerGeoLocation;
+  /** A Google Maps link as pasted by the admin — kept for short share links that carry no coordinates. */
+  mapLink?: string;
   routeName?: string;
   assignedDeliveryBoyId?: string;
   assignedDeliveryBoyName?: string;
@@ -242,6 +249,10 @@ export interface UpdateCustomerRequest {
   city?: string;
   pincode?: string;
   landmark?: string;
+  /** The customer's door on the map: from a pasted map link (admin) or saved by the delivery boy standing there. */
+  geoLocation?: CustomerGeoLocation;
+  /** A Google Maps link as pasted by the admin — kept for short share links that carry no coordinates. */
+  mapLink?: string;
   routeName?: string;
   assignedDeliveryBoyId?: string;
   assignedDeliveryBoyName?: string;
@@ -272,9 +283,14 @@ export interface UpdateCustomerRequest {
   subscription?: CustomerSubscriptionItemDto[];
   subscriptionPlans?: CustomerSubscriptionPlanDto[];
 
-  // Operational data (delivery app / admin)
+  // Operational data (delivery app / customer app / admin)
   deliveries?: Customer['deliveries'];
+  extraOrders?: Customer['extraOrders'];
+  subscriptionExceptions?: Customer['subscriptionExceptions'];
+  favouriteProductIds?: Customer['favouriteProductIds'];
   payments?: Customer['payments'];
+  paymentRequests?: Customer['paymentRequests'];
+  offerClaims?: Customer['offerClaims'];
   complaints?: Customer['complaints'];
   complaintActions?: Customer['complaintActions'];
   audit?: Customer['audit'];

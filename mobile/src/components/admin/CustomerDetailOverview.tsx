@@ -1,170 +1,127 @@
-import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { memo, type ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { Text } from 'react-native-paper';
+import { memo } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 
+import { toDdMmYyyyFromFlexibleDate } from '@/src/components/admin/customerFormDates';
+import type { CustomerFormTab } from '@/src/components/admin/customerFormShared';
 import {
-  amraleRadius,
-  amraleSpacing,
-  amraleTypography,
-  dairyTactileColors,
-  tactileCardElevation,
-} from '@/src/theme/dairyTactile';
+  DetailCardAction,
+  DetailInfo,
+  DetailInfoGrid,
+  DetailSectionCard,
+  DetailStatusPill,
+} from '@/src/components/shared/detailUi';
+import type { CustomerResponse } from '@/src/domain/customers/dtos';
+import type { Dictionary } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
+import { amraleRadius, amraleSpacing, amraleTypography, dairyTactileColors } from '@/src/theme/dairyTactile';
 
+/**
+ * Overview tab. It uses the same three sections — and shows every field — as the Add / Edit Customer form, and each
+ * section's Edit link opens the form at that section, so details and form always line up.
+ */
 export type CustomerDetailOverviewProps = {
-  displayId: string;
-  fullName: string;
-  mobile: string;
-  appAccess: 'Allowed' | 'Blocked';
-  status: string;
-  address: string;
-  addressTags: string[];
+  customer: CustomerResponse;
+  /** Resolved from the delivery-boy record when available. */
   assignedDeliveryBoy: string;
   deliveryRoute: string;
   billingType: string;
+  addressTags: string[];
+  onEditSection?: (section: CustomerFormTab) => void;
+  /** Tablets/desktops: fields sit in two columns inside each section. */
+  wide?: boolean;
 };
 
-function IconTile({ name }: { name: keyof typeof MaterialCommunityIcons.glyphMap }) {
-  return (
-    <View style={styles.iconTile}>
-      <MaterialCommunityIcons name={name} size={20} color={dairyTactileColors.primaryContainer} />
-    </View>
-  );
+function textOrDash(value: string | null | undefined): string {
+  const t = String(value ?? '').trim();
+  return t || '—';
 }
 
-function FieldCard({
-  icon,
-  label,
-  value,
-  lines = 2,
-}: {
-  icon: keyof typeof MaterialCommunityIcons.glyphMap;
-  label: string;
-  value: string;
-  lines?: number;
-}) {
-  return (
-    <View style={styles.fieldCard}>
-      <IconTile name={icon} />
-      <View style={styles.fieldBody}>
-        <Text style={styles.fieldLabel}>{label}</Text>
-        <Text style={styles.fieldValue} numberOfLines={lines}>
-          {value}
-        </Text>
-      </View>
-    </View>
-  );
+function mobileOrDash(value: string | null | undefined): string {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length === 10) return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  return textOrDash(value);
 }
 
-function MiniStatusCard({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <View style={[styles.fieldCard, styles.miniCard]}>
-      <Text style={styles.miniLabel}>{label}</Text>
-      {children}
-    </View>
-  );
+function billingDayLabel(c: CustomerResponse, t: Dictionary['customers']['overview']): string {
+  if (c.billingType === 'Prepaid') return t.notApplicablePrepaid;
+  const day = Number(c.billingCycleDate);
+  return Number.isInteger(day) && day >= 1 && day <= 31 ? t.dayOfMonth(day) : t.monthEnd;
 }
 
 function CustomerDetailOverviewInner({
-  displayId,
-  fullName,
-  mobile,
-  appAccess,
-  status,
-  address,
-  addressTags,
+  customer: c,
   assignedDeliveryBoy,
   deliveryRoute,
   billingType,
+  addressTags,
+  onEditSection,
+  wide = false,
 }: CustomerDetailOverviewProps) {
-  const appAllowed = appAccess === 'Allowed';
+  const strings = useStrings('customers');
+  const t = strings.overview;
+  const appAllowed = c.appAccessEnabled !== false;
+  const active = c.status === 'Active';
+  const editAction = (section: CustomerFormTab) =>
+    onEditSection ? <DetailCardAction label={t.edit} icon="pencil-outline" onPress={() => onEditSection(section)} /> : undefined;
 
   return (
     <View style={styles.root}>
-      <View style={styles.sectionHead}>
-        <Text style={styles.sectionTitle}>Overview</Text>
-        <Text style={styles.sectionId}>ID: {displayId}</Text>
-      </View>
-      <Text style={styles.sectionBlurb}>Snapshot across Subscription, Billing, Payments, and Delivery.</Text>
-
-      <FieldCard icon="account-outline" label="FULL NAME" value={fullName} lines={2} />
-      <FieldCard icon="cellphone" label="MOBILE NUMBER" value={mobile} />
-
-      <View style={styles.splitRow}>
-        <MiniStatusCard label="App Access">
-          <View style={styles.statusValueRow}>
-            <MaterialCommunityIcons
-              name={appAllowed ? 'check-circle' : 'close-circle'}
-              size={18}
-              color={appAllowed ? '#16A34A' : dairyTactileColors.error}
+      <DetailSectionCard title={t.basicInfo} icon="account-outline" right={editAction('basic')}>
+        <DetailInfoGrid>
+          <DetailInfo label={t.fullName} value={textOrDash(c.name)} wide={wide} />
+          <DetailInfo label={t.mobile} value={mobileOrDash(c.mobile)} wide={wide} />
+          <DetailInfo label={t.alternateMobile} value={mobileOrDash(c.alternateMobile)} wide={wide} />
+          <DetailInfo label={t.dateOfBirth} value={textOrDash(toDdMmYyyyFromFlexibleDate(c.dateOfBirth))} wide={wide} />
+          <DetailInfo label={t.appAccess} wide={wide}>
+            <DetailStatusPill
+              tone={appAllowed ? 'green' : 'red'}
+              icon={appAllowed ? 'check-circle' : 'close-circle'}
+              label={appAllowed ? t.allowed : t.blocked}
             />
-            <Text style={[styles.statusValueText, appAllowed ? styles.textSuccess : styles.textDanger]}>{appAccess}</Text>
-          </View>
-        </MiniStatusCard>
-        <MiniStatusCard label="Status">
-          <View style={styles.statusValueRow}>
-            <View style={styles.statusDot} />
-            <Text style={styles.statusValueText}>{status}</Text>
-          </View>
-        </MiniStatusCard>
-      </View>
+          </DetailInfo>
+          <DetailInfo label={t.customerStatus} wide={wide}>
+            <DetailStatusPill
+              tone={active ? 'blue' : 'gray'}
+              icon={active ? 'check-decagram' : 'pause-circle-outline'}
+              label={strings.customerStatus[c.status] ?? c.status}
+            />
+          </DetailInfo>
+        </DetailInfoGrid>
+      </DetailSectionCard>
 
-      <View style={styles.fieldCard}>
-        <IconTile name="map-marker-outline" />
-        <View style={styles.fieldBody}>
-          <Text style={styles.fieldLabel}>FULL ADDRESS</Text>
-          <Text style={styles.fieldValue} numberOfLines={5}>
-            {address}
-          </Text>
-          {addressTags.length > 0 ? (
-            <View style={styles.tagRow}>
-              {addressTags.map((tag) => (
-                <View key={tag} style={styles.tag}>
-                  <Text style={styles.tagText}>{tag}</Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-        </View>
-      </View>
+      <DetailSectionCard title={t.address} icon="map-marker-outline" right={editAction('address')}>
+        <DetailInfoGrid>
+          <DetailInfo label={t.fullAddress} wide={wide} full>
+            <Text style={[styles.addressValue, !c.address?.trim() && styles.addressValueEmpty]} numberOfLines={5}>
+              {textOrDash(c.address)}
+            </Text>
+            {addressTags.length ? (
+              <View style={styles.tagRow}>
+                {addressTags.map((tag) => (
+                  <View key={tag} style={styles.tag}>
+                    <Text style={styles.tagText}>{tag}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </DetailInfo>
+          <DetailInfo label={t.houseFlat} value={textOrDash(c.houseFlatNumber)} wide={wide} />
+          <DetailInfo label={t.society} value={textOrDash(c.societyName)} wide={wide} />
+          <DetailInfo label={t.street} value={textOrDash(c.streetArea)} wide={wide} />
+          <DetailInfo label={t.landmark} value={textOrDash(c.landmark)} wide={wide} />
+          <DetailInfo label={t.city} value={textOrDash(c.city)} wide={wide} />
+          <DetailInfo label={t.pincode} value={textOrDash(c.pincode)} wide={wide} />
+          <DetailInfo label={t.deliveryBoy} value={textOrDash(assignedDeliveryBoy)} wide={wide} />
+          <DetailInfo label={t.route} value={textOrDash(deliveryRoute)} wide={wide} />
+        </DetailInfoGrid>
+      </DetailSectionCard>
 
-      <View style={styles.summaryCard}>
-        <SummaryRow icon="truck-outline" label="Assigned Delivery" value={assignedDeliveryBoy} />
-        <View style={styles.summaryDivider} />
-        <SummaryRow icon="routes" label="Delivery Route" value={deliveryRoute} />
-        <View style={styles.summaryDivider} />
-        <SummaryRow icon="wallet-outline" label="Billing Type" value={billingType} valueAccent />
-      </View>
-    </View>
-  );
-}
-
-function SummaryRow({
-  icon,
-  label,
-  value,
-  valueAccent,
-}: {
-  icon: keyof typeof MaterialCommunityIcons.glyphMap;
-  label: string;
-  value: string;
-  valueAccent?: boolean;
-}) {
-  return (
-    <View style={styles.summaryRow}>
-      <MaterialCommunityIcons name={icon} size={20} color={dairyTactileColors.onSurfaceVariant} />
-      <View style={styles.summaryTextCol}>
-        <Text style={styles.summaryLabel}>{label}</Text>
-        <Text style={[styles.summaryValue, valueAccent ? styles.summaryValueAccent : null]} numberOfLines={2}>
-          {value}
-        </Text>
-      </View>
+      <DetailSectionCard title={t.billing} icon="credit-card-outline" right={editAction('billing')}>
+        <DetailInfoGrid>
+          <DetailInfo label={t.billingType} value={textOrDash(billingType)} wide={wide} accent />
+          <DetailInfo label={t.billingDay} value={billingDayLabel(c, t)} wide={wide} />
+        </DetailInfoGrid>
+      </DetailSectionCard>
     </View>
   );
 }
@@ -173,90 +130,14 @@ export const CustomerDetailOverview = memo(CustomerDetailOverviewInner);
 
 const styles = StyleSheet.create({
   root: { gap: amraleSpacing.cardGap },
-  sectionHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: amraleSpacing.sm,
-  },
-  sectionTitle: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 18,
-    lineHeight: 24,
-    color: dairyTactileColors.onSurface,
-  },
-  sectionId: {
-    fontFamily: amraleTypography.fontFamily.medium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: dairyTactileColors.onSurfaceVariant,
-  },
-  sectionBlurb: {
-    fontFamily: amraleTypography.fontFamily.regular,
-    fontSize: 13,
-    lineHeight: 18,
-    color: dairyTactileColors.onSurfaceVariant,
-    marginTop: -4,
-    marginBottom: 4,
-  },
-  fieldCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: amraleSpacing.md,
-    padding: amraleSpacing.md,
-    borderRadius: amraleRadius.lg,
-    backgroundColor: dairyTactileColors.surfaceContainerLowest,
-    borderWidth: 1,
-    borderColor: dairyTactileColors.outlineVariant,
-    ...tactileCardElevation(),
-  },
-  miniCard: { flex: 1, minWidth: 0, flexDirection: 'column', gap: 8 },
-  iconTile: {
-    width: 40,
-    height: 40,
-    borderRadius: amraleRadius.md,
-    backgroundColor: dairyTactileColors.surfaceContainer,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fieldBody: { flex: 1, minWidth: 0, gap: 4 },
-  fieldLabel: {
+  addressValue: {
     fontFamily: amraleTypography.fontFamily.semiBold,
-    fontSize: 11,
-    lineHeight: 14,
-    letterSpacing: 0.8,
-    color: dairyTactileColors.onSurfaceVariant,
-    textTransform: 'uppercase',
-  },
-  fieldValue: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 16,
-    lineHeight: 22,
-    color: dairyTactileColors.onSurface,
-  },
-  miniLabel: {
-    fontFamily: amraleTypography.fontFamily.medium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: dairyTactileColors.onSurfaceVariant,
-  },
-  splitRow: { flexDirection: 'row', gap: amraleSpacing.cardGap },
-  statusValueRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
-  statusValueText: {
-    fontFamily: amraleTypography.fontFamily.bold,
     fontSize: 15,
-    lineHeight: 20,
+    lineHeight: 21,
     color: dairyTactileColors.onSurface,
   },
-  textSuccess: { color: '#16A34A' },
-  textDanger: { color: dairyTactileColors.error },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: dairyTactileColors.primaryContainer,
-  },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  addressValueEmpty: { color: dairyTactileColors.outline, fontFamily: amraleTypography.fontFamily.regular },
+  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
   tag: {
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -273,29 +154,4 @@ const styles = StyleSheet.create({
     color: dairyTactileColors.primaryContainer,
     textTransform: 'uppercase',
   },
-  summaryCard: {
-    padding: amraleSpacing.md,
-    borderRadius: amraleRadius.lg,
-    backgroundColor: dairyTactileColors.surfaceContainerLowest,
-    borderWidth: 1,
-    borderColor: dairyTactileColors.outlineVariant,
-    ...tactileCardElevation(),
-    gap: 0,
-  },
-  summaryRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 10 },
-  summaryTextCol: { flex: 1, minWidth: 0, gap: 2 },
-  summaryLabel: {
-    fontFamily: amraleTypography.fontFamily.medium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: dairyTactileColors.onSurfaceVariant,
-  },
-  summaryValue: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 15,
-    lineHeight: 20,
-    color: dairyTactileColors.onSurface,
-  },
-  summaryValueAccent: { color: dairyTactileColors.primaryContainer },
-  summaryDivider: { height: 1, backgroundColor: dairyTactileColors.outlineVariant, opacity: 0.65 },
 });

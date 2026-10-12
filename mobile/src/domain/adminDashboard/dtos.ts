@@ -9,6 +9,13 @@ export interface UpdateDashboardCoverRequest {
   aspectRatio: number;
 }
 
+export interface UpdatePaymentSettingsRequest {
+  upiId: string;
+  payeeName: string;
+  acceptCash: boolean;
+  instructions?: string;
+}
+
 export interface UpdateDashboardCoverResponse {
   settings: AdminDashboardSettings;
 }

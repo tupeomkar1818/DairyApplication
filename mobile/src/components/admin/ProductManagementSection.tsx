@@ -34,6 +34,14 @@ import type { ProductResponse } from '@/src/domain/products/dtos';
 import { CreateProductRequestSchema } from '@/src/domain/products/validations';
 import { useCreateProduct, useDeleteProduct, useProducts, useUpdateProduct } from '@/src/hooks/products';
 import { useProductCategories } from '@/src/hooks/productCategories';
+import {
+  deliverySlotName,
+  productAvailabilityName,
+  productFeatureName,
+  productTypeName,
+  productUnitName,
+} from '@/src/components/admin/productDisplay';
+import { useStrings } from '@/src/i18n/useStrings';
 
 const COLORS = {
   primary: '#2563EB',
@@ -69,10 +77,10 @@ type ProductFormState = {
   isActive: boolean;
 };
 
-function statusForProduct(p: ProductResponse): { label: 'Out of Stock' | 'Active' | 'Inactive'; tone: 'red' | 'green' | 'gray' } {
-  if (p.availableStock <= 0) return { label: 'Out of Stock', tone: 'red' };
-  if (p.isActive) return { label: 'Active', tone: 'green' };
-  return { label: 'Inactive', tone: 'gray' };
+// Stock isn't tracked in this ERP, so there is no out-of-stock state.
+function statusForProduct(p: ProductResponse): { active: boolean; tone: 'green' | 'gray' } {
+  if (p.isActive) return { active: true, tone: 'green' };
+  return { active: false, tone: 'gray' };
 }
 
 function toNumberOrUndefined(raw: string): number | undefined {
@@ -126,6 +134,9 @@ function emptyForm(): ProductFormState {
 }
 
 export function ProductManagementSection() {
+  const t = useStrings('products');
+  const tc = useStrings('common');
+  const m = t.management;
   const scheme = useColorScheme();
   const { width } = useWindowDimensions();
 
@@ -208,16 +219,14 @@ export function ProductManagementSection() {
 
   const summary = useMemo(() => {
     const total = all.length;
-    const active = all.filter((p) => p.isActive && p.availableStock > 0).length;
-    const outOfStock = all.filter((p) => p.availableStock <= 0).length;
+    const active = all.filter((p) => p.isActive).length;
     const categoryCount = new Set(all.map((p) => p.category)).size;
     return [
-      { key: 'total', label: 'Total Products', value: String(total), colors: ['#2563EB', '#60A5FA'] as const, icon: 'cube-outline' as const },
-      { key: 'active', label: 'Active Products', value: String(active), colors: ['#22C55E', '#60A5FA'] as const, icon: 'check-decagram-outline' as const },
-      { key: 'oos', label: 'Out of Stock', value: String(outOfStock), colors: ['#EF4444', '#F97316'] as const, icon: 'alert-circle-outline' as const },
-      { key: 'cats', label: 'Categories', value: String(categoryCount), colors: ['#2563EB', '#22C55E'] as const, icon: 'shape-outline' as const },
+      { key: 'total', label: m.totalProducts, value: String(total), colors: ['#2563EB', '#60A5FA'] as const, icon: 'cube-outline' as const },
+      { key: 'active', label: m.activeProducts, value: String(active), colors: ['#22C55E', '#60A5FA'] as const, icon: 'check-decagram-outline' as const },
+      { key: 'cats', label: m.categories, value: String(categoryCount), colors: ['#2563EB', '#22C55E'] as const, icon: 'shape-outline' as const },
     ];
-  }, [all]);
+  }, [all, m]);
 
   function animateForm(open: boolean) {
     openAnim.stopAnimation();
@@ -271,7 +280,7 @@ export function ProductManagementSection() {
       isActive: form.isActive,
     };
     return CreateProductRequestSchema.safeParse(input);
-  }, [form]);
+  }, [form, t]);
 
   async function onPickImage() {
     try {
@@ -309,7 +318,7 @@ export function ProductManagementSection() {
     setFormTouched(true);
     setFormError(null);
     if (!parsedForm.success) {
-      setFormError(parsedForm.error.issues[0]?.message ?? 'Please check the form');
+      setFormError(parsedForm.error.issues[0]?.message ?? m.checkForm);
       return;
     }
 
@@ -321,7 +330,7 @@ export function ProductManagementSection() {
       }
       closeForm();
     } catch {
-      setFormError('Unable to save product. Please try again.');
+      setFormError(m.saveFailed);
     }
   }
 
@@ -354,10 +363,10 @@ export function ProductManagementSection() {
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
           <Text variant="titleLarge" style={[styles.hTitle, textMain]}>
-            Product Management
+            {m.title}
           </Text>
           <Text variant="bodyMedium" style={[styles.hSub, textSub]}>
-            Manage all dairy products available for customer orders
+            {m.subtitle}
           </Text>
         </View>
 
@@ -371,7 +380,7 @@ export function ProductManagementSection() {
             style={styles.addBtn}
             contentStyle={styles.addBtnContent}
           >
-            Add Product
+            {m.add}
           </Button>
         </LinearGradient>
       </View>
@@ -379,7 +388,7 @@ export function ProductManagementSection() {
       <View style={styles.controlsRow}>
         <TextInput
           mode="outlined"
-          placeholder="Search product name"
+          placeholder={m.searchPlaceholder}
           value={query}
           onChangeText={setQuery}
           style={[styles.search, sectionCard]}
@@ -393,7 +402,7 @@ export function ProductManagementSection() {
             <Pressable onPress={() => setCategoryMenuOpen(true)} style={({ pressed }) => [styles.chip, sectionCard, pressed && styles.pressed]}>
               <MaterialCommunityIcons name="filter-variant" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
               <Text variant="labelLarge" style={textMain}>
-                {category === 'All' ? 'Category' : category}
+                {category === 'All' ? m.category : category}
               </Text>
               <MaterialCommunityIcons name="chevron-down" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
             </Pressable>
@@ -406,7 +415,7 @@ export function ProductManagementSection() {
                 setCategory(c);
                 setCategoryMenuOpen(false);
               }}
-              title={c}
+              title={c === 'All' ? tc.states.all : c}
             />
           ))}
         </Menu>
@@ -418,15 +427,15 @@ export function ProductManagementSection() {
             <Pressable onPress={() => setSortMenuOpen(true)} style={({ pressed }) => [styles.chip, sectionCard, pressed && styles.pressed]}>
               <MaterialCommunityIcons name="sort" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
               <Text variant="labelLarge" style={textMain}>
-                {sortKey === 'latest' ? 'Latest' : sortKey === 'price' ? 'Price' : 'Stock'}
+                {sortKey === 'latest' ? m.sortLatest : sortKey === 'price' ? m.sortPrice : m.sortStock}
               </Text>
               <MaterialCommunityIcons name="chevron-down" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
             </Pressable>
           }
         >
-          <Menu.Item title="Latest product" onPress={() => { setSortKey('latest'); setSortMenuOpen(false); }} />
-          <Menu.Item title="Price" onPress={() => { setSortKey('price'); setSortMenuOpen(false); }} />
-          <Menu.Item title="Stock" onPress={() => { setSortKey('stock'); setSortMenuOpen(false); }} />
+          <Menu.Item title={m.sortLatestProduct} onPress={() => { setSortKey('latest'); setSortMenuOpen(false); }} />
+          <Menu.Item title={m.sortPrice} onPress={() => { setSortKey('price'); setSortMenuOpen(false); }} />
+          <Menu.Item title={m.sortStock} onPress={() => { setSortKey('stock'); setSortMenuOpen(false); }} />
         </Menu>
       </View>
 
@@ -482,12 +491,12 @@ export function ProductManagementSection() {
                       {p.name}
                     </Text>
                     <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                      {p.category} • {p.unit}
+                      {p.category} • {productUnitName(p.unit)}
                     </Text>
 
                     <View style={[styles.badge, { backgroundColor: badge.bg, borderColor: badge.border }]}>
                       <Text variant="labelSmall" style={{ color: badge.fg }}>
-                        {status.label}
+                        {status.active ? tc.states.active : tc.states.inactive}
                       </Text>
                     </View>
                   </View>
@@ -500,7 +509,7 @@ export function ProductManagementSection() {
                 <View style={styles.detailRow}>
                   <View style={styles.detailItem}>
                     <Text variant="labelSmall" style={textSub}>
-                      Price
+                      {m.price}
                     </Text>
                     <Text variant="titleSmall" style={textMain}>
                       ₹{showPrice ? p.discountPrice : p.price}
@@ -514,21 +523,21 @@ export function ProductManagementSection() {
 
                   <View style={styles.detailItem}>
                     <Text variant="labelSmall" style={textSub}>
-                      Stock
+                      {m.stock}
                     </Text>
                     <Text variant="titleSmall" style={[textMain, lowStock ? styles.lowStockText : null]}>
                       {p.availableStock}
                     </Text>
                     {lowStock ? (
                       <Text variant="bodySmall" style={[styles.lowStockHint]}>
-                        Low stock
+                        {m.lowStock}
                       </Text>
                     ) : null}
                   </View>
 
                   <View style={styles.detailItem}>
                     <Text variant="labelSmall" style={textSub}>
-                      SKU
+                      {m.sku}
                     </Text>
                     <Text variant="titleSmall" style={textMain} numberOfLines={1}>
                       {p.sku || '—'}
@@ -546,7 +555,7 @@ export function ProductManagementSection() {
 
                   <View style={styles.flex} />
                   <Text variant="labelSmall" style={textSub}>
-                    Active
+                    {m.active}
                   </Text>
                   <Switch value={p.isActive} onValueChange={(v) => onToggleActive(p, v)} />
                 </View>
@@ -567,17 +576,17 @@ export function ProductManagementSection() {
 
       <Portal>
         <Dialog visible={!!confirmDelete} onDismiss={() => setConfirmDelete(null)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Delete product</Dialog.Title>
+          <Dialog.Title>{m.deleteTitle}</Dialog.Title>
           <Dialog.Content>
-            <Text variant="bodyMedium">Are you sure you want to delete this product?</Text>
+            <Text variant="bodyMedium">{m.deleteMessage}</Text>
             <Text variant="bodySmall" style={styles.dialogHint}>
               {confirmDelete?.name ?? ''}
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setConfirmDelete(null)}>Cancel</Button>
+            <Button onPress={() => setConfirmDelete(null)}>{tc.actions.cancel}</Button>
             <Button textColor="#EF4444" onPress={onConfirmDelete}>
-              Delete
+              {tc.actions.delete}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -601,7 +610,7 @@ export function ProductManagementSection() {
           >
             <View style={styles.dialogTitleRow}>
               <Text variant="titleLarge" style={styles.dialogTitleText}>
-                {editing ? 'Edit Product' : 'Add Product'}
+                {editing ? m.editTitle : m.addTitle}
               </Text>
               <Pressable onPress={closeForm} style={({ pressed }) => [styles.closeBtn, pressed && styles.pressed]}>
                 <MaterialCommunityIcons name="close" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
@@ -622,55 +631,55 @@ export function ProductManagementSection() {
                   <View style={styles.previewInputs}>
                     <View style={styles.formRow}>
                       <Button mode="outlined" onPress={onPickImage} icon="upload" style={styles.formHalf}>
-                        Upload Image
+                        {m.uploadImage}
                       </Button>
                       <Button mode="text" onPress={() => setForm((s) => ({ ...s, imageUri: '' }))} style={styles.formHalf}>
-                        Remove
+                        {m.remove}
                       </Button>
                     </View>
-                    <TextInput mode="outlined" label="Image URL (optional)" value={form.imageUri} onChangeText={(t) => setForm((s) => ({ ...s, imageUri: t }))} />
+                    <TextInput mode="outlined" label={m.imageUrlOptional} value={form.imageUri} onChangeText={(t) => setForm((s) => ({ ...s, imageUri: t }))} />
                     <HelperText type="info" visible={true}>
-                      Image upload works in supported devices; URL also supported.
+                      {m.imageHelp}
                     </HelperText>
                   </View>
                 </View>
 
                 <List.Section>
-                  <List.Accordion title="Product Details" left={(p) => <List.Icon {...p} icon="information-outline" />}>
+                  <List.Accordion title={m.detailsSection} left={(p) => <List.Icon {...p} icon="information-outline" />}>
                     <View style={styles.sectionBody}>
-                      <TextInput mode="outlined" label="Product name" value={form.name} onChangeText={(t) => setForm((s) => ({ ...s, name: t }))} />
+                      <TextInput mode="outlined" label={m.productName} value={form.name} onChangeText={(t) => setForm((s) => ({ ...s, name: t }))} />
 
                       <Pressable onPress={() => { setCategoryPickerQuery(''); setCategoryPickerOpen(true); }} style={({ pressed }) => [styles.pickerField, pressed && styles.pressed]}>
-                        <Text variant="labelLarge" style={styles.pickerLabel}>Category</Text>
+                        <Text variant="labelLarge" style={styles.pickerLabel}>{m.category}</Text>
                         <Text variant="bodyMedium">{form.category}</Text>
                         <MaterialCommunityIcons name="chevron-down" size={20} color={COLORS.text} />
                       </Pressable>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Product Type</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.productType}</Text>
                       <RadioButton.Group value={form.productType} onValueChange={(v) => setForm((s) => ({ ...s, productType: v as ProductType }))}>
                         <View style={styles.radioWrap}>
-                          {(['Milk', 'Milk Product', 'Sweet Product', 'Grocery Product'] as const).map((t) => (
-                            <View key={t} style={styles.radioItem}>
-                              <RadioButton value={t} />
-                              <Text>{t}</Text>
+                          {(['Milk', 'Milk Product', 'Sweet Product', 'Grocery Product'] as const).map((type) => (
+                            <View key={type} style={styles.radioItem}>
+                              <RadioButton value={type} />
+                              <Text>{productTypeName(type)}</Text>
                             </View>
                           ))}
                         </View>
                       </RadioButton.Group>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Unit Type</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.unitType}</Text>
                       <RadioButton.Group value={form.unit} onValueChange={(v) => setForm((s) => ({ ...s, unit: v as ProductUnit }))}>
                         <View style={styles.radioWrap}>
                           {(['Litre', 'Kg', 'Gram', 'Packet', 'Bottle', 'Piece'] as const).map((u) => (
                             <View key={u} style={styles.radioItem}>
                               <RadioButton value={u} />
-                              <Text>{u}</Text>
+                              <Text>{productUnitName(u)}</Text>
                             </View>
                           ))}
                         </View>
                       </RadioButton.Group>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Product Variant</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.productVariant}</Text>
                       <View style={styles.checkGrid}>
                         {(['250 ml', '500 ml', '1 Litre', '2 Litre', 'Custom Size'] as const).map((v) => (
                           <Pressable
@@ -679,33 +688,33 @@ export function ProductManagementSection() {
                             style={({ pressed }) => [styles.checkItem, pressed && styles.pressed]}
                           >
                             <Checkbox status={form.variants.includes(v) ? 'checked' : 'unchecked'} />
-                            <Text>{v}</Text>
+                            <Text>{v === 'Custom Size' ? t.variants.customSize : v}</Text>
                           </Pressable>
                         ))}
                       </View>
                       {form.variants.includes('Custom Size') ? (
-                        <TextInput mode="outlined" label="Custom size" value={form.customVariantLabel} onChangeText={(t) => setForm((s) => ({ ...s, customVariantLabel: t }))} />
+                        <TextInput mode="outlined" label={m.customSize} value={form.customVariantLabel} onChangeText={(t) => setForm((s) => ({ ...s, customVariantLabel: t }))} />
                       ) : null}
 
-                      <TextInput mode="outlined" label="SKU / Product code" value={form.sku} onChangeText={(t) => setForm((s) => ({ ...s, sku: t }))} />
-                      <TextInput mode="outlined" label="Description" value={form.description} onChangeText={(t) => setForm((s) => ({ ...s, description: t }))} multiline numberOfLines={3} />
+                      <TextInput mode="outlined" label={m.skuCode} value={form.sku} onChangeText={(t) => setForm((s) => ({ ...s, sku: t }))} />
+                      <TextInput mode="outlined" label={m.description} value={form.description} onChangeText={(t) => setForm((s) => ({ ...s, description: t }))} multiline numberOfLines={3} />
                     </View>
                   </List.Accordion>
 
-                  <List.Accordion title="Pricing" left={(p) => <List.Icon {...p} icon="currency-inr" />}>
+                  <List.Accordion title={m.pricingSection} left={(p) => <List.Icon {...p} icon="currency-inr" />}>
                     <View style={styles.sectionBody}>
                       <View style={styles.responsiveRow}>
-                        <TextInput mode="outlined" label="Price" keyboardType="decimal-pad" value={form.price} onChangeText={(t) => setForm((s) => ({ ...s, price: t.replace(/[^\d.]/g, '') }))} style={styles.flex1} />
-                        <TextInput mode="outlined" label="Discount Price" keyboardType="decimal-pad" value={form.discountPrice} onChangeText={(t) => setForm((s) => ({ ...s, discountPrice: t.replace(/[^\d.]/g, '') }))} style={styles.flex1} />
+                        <TextInput mode="outlined" label={m.price} keyboardType="decimal-pad" value={form.price} onChangeText={(t) => setForm((s) => ({ ...s, price: t.replace(/[^\d.]/g, '') }))} style={styles.flex1} />
+                        <TextInput mode="outlined" label={m.discountPrice} keyboardType="decimal-pad" value={form.discountPrice} onChangeText={(t) => setForm((s) => ({ ...s, discountPrice: t.replace(/[^\d.]/g, '') }))} style={styles.flex1} />
                       </View>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Tax Applicable</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.taxApplicable}</Text>
                       <RadioButton.Group value={form.taxApplicable ? 'Yes' : 'No'} onValueChange={(v) => setForm((s) => ({ ...s, taxApplicable: v === 'Yes' }))}>
                         <View style={styles.radioWrap}>
                           {(['Yes', 'No'] as const).map((v) => (
                             <View key={v} style={styles.radioItem}>
                               <RadioButton value={v} />
-                              <Text>{v}</Text>
+                              <Text>{v === 'Yes' ? m.yes : m.no}</Text>
                             </View>
                           ))}
                         </View>
@@ -713,7 +722,7 @@ export function ProductManagementSection() {
 
                       {form.taxApplicable ? (
                         <Pressable onPress={() => setTaxPickerOpen(true)} style={({ pressed }) => [styles.pickerField, pressed && styles.pressed]}>
-                          <Text variant="labelLarge" style={styles.pickerLabel}>Tax Percentage</Text>
+                          <Text variant="labelLarge" style={styles.pickerLabel}>{m.taxPercentage}</Text>
                           <Text variant="bodyMedium">{form.taxPercentage}</Text>
                           <MaterialCommunityIcons name="chevron-down" size={20} color={COLORS.text} />
                         </Pressable>
@@ -721,20 +730,20 @@ export function ProductManagementSection() {
                     </View>
                   </List.Accordion>
 
-                  <List.Accordion title="Stock" left={(p) => <List.Icon {...p} icon="warehouse" />}>
+                  <List.Accordion title={m.stockSection} left={(p) => <List.Icon {...p} icon="warehouse" />}>
                     <View style={styles.sectionBody}>
                       <View style={styles.responsiveRow}>
-                        <TextInput mode="outlined" label="Stock Quantity" keyboardType="number-pad" value={form.availableStock} onChangeText={(t) => setForm((s) => ({ ...s, availableStock: t.replace(/\D/g, '') }))} style={styles.flex1} />
-                        <TextInput mode="outlined" label="Minimum Stock Alert" keyboardType="number-pad" value={form.minStockAlert} onChangeText={(t) => setForm((s) => ({ ...s, minStockAlert: t.replace(/\D/g, '') }))} style={styles.flex1} />
+                        <TextInput mode="outlined" label={m.stockQuantity} keyboardType="number-pad" value={form.availableStock} onChangeText={(t) => setForm((s) => ({ ...s, availableStock: t.replace(/\D/g, '') }))} style={styles.flex1} />
+                        <TextInput mode="outlined" label={m.minStockAlert} keyboardType="number-pad" value={form.minStockAlert} onChangeText={(t) => setForm((s) => ({ ...s, minStockAlert: t.replace(/\D/g, '') }))} style={styles.flex1} />
                       </View>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Product Availability</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.availability}</Text>
                       <RadioButton.Group value={form.availability} onValueChange={(v) => setForm((s) => ({ ...s, availability: v as ProductAvailability }))}>
                         <View style={styles.radioWrap}>
-                          {(['Available', 'Out of Stock', 'Seasonal Product', 'Discontinued'] as const).map((a) => (
+                          {(['Available', 'Seasonal Product', 'Discontinued'] as const).map((a) => (
                             <View key={a} style={styles.radioItem}>
                               <RadioButton value={a} />
-                              <Text>{a}</Text>
+                              <Text>{productAvailabilityName(a)}</Text>
                             </View>
                           ))}
                         </View>
@@ -742,9 +751,9 @@ export function ProductManagementSection() {
                     </View>
                   </List.Accordion>
 
-                  <List.Accordion title="Delivery" left={(p) => <List.Icon {...p} icon="truck-delivery-outline" />}>
+                  <List.Accordion title={m.deliverySection} left={(p) => <List.Icon {...p} icon="truck-delivery-outline" />}>
                     <View style={styles.sectionBody}>
-                      <Text variant="labelLarge" style={styles.groupLabel}>Available Days</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.availableDays}</Text>
                       <View style={styles.checkGrid}>
                         {(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const).map((d) => (
                           <Pressable
@@ -753,12 +762,12 @@ export function ProductManagementSection() {
                             style={({ pressed }) => [styles.checkItem, pressed && styles.pressed]}
                           >
                             <Checkbox status={form.availableDays.includes(d) ? 'checked' : 'unchecked'} />
-                            <Text>{d}</Text>
+                            <Text>{tc.dates.weekdaysLong[(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const).indexOf(d)]}</Text>
                           </Pressable>
                         ))}
                       </View>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Delivery Time Slot</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.deliverySlot}</Text>
                       <View style={styles.checkGrid}>
                         {(['Morning', 'Afternoon', 'Evening'] as const).map((slt) => (
                           <Pressable
@@ -767,28 +776,28 @@ export function ProductManagementSection() {
                             style={({ pressed }) => [styles.checkItem, pressed && styles.pressed]}
                           >
                             <Checkbox status={form.deliveryTimeSlots.includes(slt) ? 'checked' : 'unchecked'} />
-                            <Text>{slt}</Text>
+                            <Text>{deliverySlotName(slt)}</Text>
                           </Pressable>
                         ))}
                       </View>
                     </View>
                   </List.Accordion>
 
-                  <List.Accordion title="Customer Visibility & Status" left={(p) => <List.Icon {...p} icon="eye-outline" />}>
+                  <List.Accordion title={m.visibilitySection} left={(p) => <List.Icon {...p} icon="eye-outline" />}>
                     <View style={styles.sectionBody}>
-                      <Text variant="labelLarge" style={styles.groupLabel}>Visibility for Customer</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.visibility}</Text>
                       <View style={styles.checkGrid}>
                         <Pressable onPress={() => setForm((s) => ({ ...s, isVisibleToCustomer: true }))} style={({ pressed }) => [styles.checkItem, pressed && styles.pressed]}>
                           <Checkbox status={form.isVisibleToCustomer ? 'checked' : 'unchecked'} />
-                          <Text>Show product in customer app</Text>
+                          <Text>{m.showInApp}</Text>
                         </Pressable>
                         <Pressable onPress={() => setForm((s) => ({ ...s, isVisibleToCustomer: false }))} style={({ pressed }) => [styles.checkItem, pressed && styles.pressed]}>
                           <Checkbox status={!form.isVisibleToCustomer ? 'checked' : 'unchecked'} />
-                          <Text>Hide product from customer app</Text>
+                          <Text>{m.hideFromApp}</Text>
                         </Pressable>
                       </View>
 
-                      <Text variant="labelLarge" style={styles.groupLabel}>Product Features</Text>
+                      <Text variant="labelLarge" style={styles.groupLabel}>{m.features}</Text>
                       <View style={styles.checkGrid}>
                         {(
                           [
@@ -807,13 +816,13 @@ export function ProductManagementSection() {
                             style={({ pressed }) => [styles.checkItem, pressed && styles.pressed]}
                           >
                             <Checkbox status={form.features.includes(f) ? 'checked' : 'unchecked'} />
-                            <Text>{f}</Text>
+                            <Text>{productFeatureName(f)}</Text>
                           </Pressable>
                         ))}
                       </View>
 
                       <View style={styles.toggleRow}>
-                        <Text variant="labelLarge">Status</Text>
+                        <Text variant="labelLarge">{m.status}</Text>
                         <Switch value={form.isActive} onValueChange={(v) => setForm((s) => ({ ...s, isActive: v }))} />
                       </View>
                     </View>
@@ -837,11 +846,11 @@ export function ProductManagementSection() {
                 }}
                 disabled={createProduct.isPending || updateProduct.isPending}
               >
-                Reset Form
+                {m.resetForm}
               </Button>
-              <Button onPress={closeForm} disabled={createProduct.isPending || updateProduct.isPending}>Cancel</Button>
+              <Button onPress={closeForm} disabled={createProduct.isPending || updateProduct.isPending}>{tc.actions.cancel}</Button>
               <Button onPress={onSave} loading={createProduct.isPending || updateProduct.isPending}>
-                Save
+                {m.save}
               </Button>
             </Dialog.Actions>
           </Animated.View>
@@ -850,9 +859,9 @@ export function ProductManagementSection() {
 
       <Portal>
         <Dialog visible={categoryPickerOpen} onDismiss={() => setCategoryPickerOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Select category</Dialog.Title>
+          <Dialog.Title>{m.selectCategory}</Dialog.Title>
           <Dialog.Content>
-            <TextInput mode="outlined" placeholder="Search category" value={categoryPickerQuery} onChangeText={setCategoryPickerQuery} left={<TextInput.Icon icon="magnify" />} />
+            <TextInput mode="outlined" placeholder={m.searchCategory} value={categoryPickerQuery} onChangeText={setCategoryPickerQuery} left={<TextInput.Icon icon="magnify" />} />
             <View style={styles.pickerList}>
               {categories
                 .filter((c) => c !== 'All')
@@ -873,31 +882,31 @@ export function ProductManagementSection() {
             </View>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setCategoryPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setCategoryPickerOpen(false)}>{tc.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
 
       <Portal>
         <Dialog visible={taxPickerOpen} onDismiss={() => setTaxPickerOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Select tax percentage</Dialog.Title>
+          <Dialog.Title>{m.selectTax}</Dialog.Title>
           <Dialog.Content>
-            {(['0%', '5%', '12%', '18%'] as const).map((t) => (
+            {(['0%', '5%', '12%', '18%'] as const).map((rate) => (
               <Pressable
-                key={t}
+                key={rate}
                 onPress={() => {
-                  setForm((s) => ({ ...s, taxPercentage: t }));
+                  setForm((s) => ({ ...s, taxPercentage: rate }));
                   setTaxPickerOpen(false);
                 }}
                 style={({ pressed }) => [styles.pickerItem, pressed && styles.pressed]}
               >
-                <Text variant="bodyMedium">{t}</Text>
-                {form.taxPercentage === t ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
+                <Text variant="bodyMedium">{rate}</Text>
+                {form.taxPercentage === rate ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
               </Pressable>
             ))}
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setTaxPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setTaxPickerOpen(false)}>{tc.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>

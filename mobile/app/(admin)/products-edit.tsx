@@ -3,20 +3,27 @@ import { useMemo } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 
-import { ProductFormScreen } from '@/src/components/admin/ProductFormScreen';
+import { ProductFormScreen, type ProductFormSection } from '@/src/components/admin/ProductFormScreen';
 import {
-  buildCustomVariantLabel,
+  parseUpdateProductRequest,
   productFormFromResponse,
   type ProductFormState,
 } from '@/src/components/admin/productFormShared';
-import { UpdateProductDetailsRequestSchema } from '@/src/domain/products/validations';
 import { useProducts, useUpdateProduct } from '@/src/hooks/products';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
+const PRODUCT_FORM_SECTIONS: ProductFormSection[] = ['basics', 'pricing', 'pack', 'availability', 'channels', 'features', 'description'];
+
 export default function AdminUpdateProductScreen() {
-  const params = useLocalSearchParams<{ id?: string }>();
+  const t = useStrings('products');
+  const params = useLocalSearchParams<{ id?: string; section?: string }>();
   const id = params.id ?? '';
+  // The Details screen's per-section Edit links open the form at that section.
+  const initialSection = PRODUCT_FORM_SECTIONS.includes(params.section as ProductFormSection)
+    ? (params.section as ProductFormSection)
+    : undefined;
   const products = useProducts();
   const update = useUpdateProduct();
   const { headerPaddingTop } = useScreenSafeInsets();
@@ -31,46 +38,47 @@ export default function AdminUpdateProductScreen() {
   }, [product?.id]);
 
   async function onSave(form: ProductFormState) {
-    if (!product) return;
+    if (!product || !seed) return;
 
-    const parsed = UpdateProductDetailsRequestSchema.safeParse({
-      name: form.name,
-      price: Number(form.price),
-      unit: form.unit,
-      isActive: true,
-    });
+    const parsed = parseUpdateProductRequest(product, seed.form, form);
     if (!parsed.success) {
-      throw new Error(parsed.error.issues[0]?.message ?? 'Please check the form');
+      throw new Error(parsed.message);
     }
 
-    const imageUri = form.imageUrl.trim();
-    await update.mutateAsync({
-      id: product.id,
-      data: {
-        ...parsed.data,
-        isActive: true,
-        imageUri,
-        variants: ['Custom Size'],
-        customVariantLabel: buildCustomVariantLabel(form),
-        isVisibleToCustomer: form.availableForOnline,
-        isVisibleOfflineCounter: form.availableForOffline,
-      },
-    });
+    await update.mutateAsync({ id: product.id, data: parsed.data });
     router.back();
   }
 
   if (!product || !seed) {
+    const notFound = !products.isLoading;
     return (
       <View style={styles.screen}>
         <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
-          <Pressable onPress={() => router.back()} style={styles.headerIconBtn} accessibilityLabel="Go back">
+          <Pressable onPress={() => router.back()} hitSlop={4} style={styles.headerIconBtn} accessibilityLabel={t.form.goBack}>
             <MaterialCommunityIcons name="arrow-left" size={24} color={amraleColors.blue} />
           </Pressable>
-          <Text style={styles.headerTitle}>Update Product</Text>
+          <Text style={styles.headerTitle}>{t.form.editTitle}</Text>
         </View>
         <View style={styles.headerDivider} />
         <View style={styles.loading}>
-          <ActivityIndicator color={amraleColors.blue} />
+          {notFound ? (
+            <>
+              <MaterialCommunityIcons name="package-variant-remove" size={48} color={amraleColors.textSubtle} />
+              <Text style={styles.notFoundTitle}>{t.notFound.title}</Text>
+              <Text style={styles.notFoundHint}>
+                {products.isError ? t.notFound.loadFailed : t.notFound.maybeDeleted}
+              </Text>
+              <Pressable
+                onPress={() => router.back()}
+                style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
+                accessibilityRole="button"
+              >
+                <Text style={styles.backBtnText}>{t.notFound.goBack}</Text>
+              </Pressable>
+            </>
+          ) : (
+            <ActivityIndicator color={amraleColors.blue} />
+          )}
         </View>
       </View>
     );
@@ -79,10 +87,11 @@ export default function AdminUpdateProductScreen() {
   return (
     <ProductFormScreen
       key={product.id}
-      title="Update Product"
-      saveLabel="Update Product"
+      title={t.form.editTitle}
+      saveLabel={t.form.saveChanges}
       initialForm={seed.form}
       initialCustomQuantity={seed.customQuantity}
+      initialSection={initialSection}
       isPending={update.isPending}
       onSave={onSave}
       onCancel={() => router.back()}
@@ -118,5 +127,31 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: amraleColors.inputBorderLight,
   },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: amraleSpacing.lg },
+  notFoundTitle: {
+    fontFamily: amraleTypography.fontFamily.bold,
+    fontSize: 18,
+    color: amraleColors.text,
+  },
+  notFoundHint: {
+    fontFamily: amraleTypography.fontFamily.regular,
+    fontSize: 14,
+    color: amraleColors.textMuted,
+    textAlign: 'center',
+  },
+  backBtn: {
+    marginTop: amraleSpacing.sm,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    backgroundColor: amraleColors.blue,
+  },
+  backBtnText: {
+    fontFamily: amraleTypography.fontFamily.semiBold,
+    fontSize: 15,
+    color: amraleColors.white,
+  },
+  pressed: { opacity: 0.88 },
 });

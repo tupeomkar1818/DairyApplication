@@ -3,6 +3,7 @@ import { StyleSheet, TextInput, View } from 'react-native';
 
 import { otpCellStyle, otpDigitInputStyle } from '@/src/components/auth/otpInputStyles';
 import { normalizeDigitInput } from '@/src/domain/shared/numerals';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius } from '@/src/theme/dairyTactile';
 
 const COLS = 3;
@@ -19,6 +20,7 @@ type Props = {
 };
 
 export function ProfileOtpInputGrid({ digits, onChangeDigit, onBackspace, inputRefs, hasError }: Props) {
+  const t = useStrings('auth');
   const rows = [digits.slice(0, COLS), digits.slice(COLS, 6)];
   const digitStyle = otpDigitInputStyle(BOX_SIZE, FONT_SIZE);
 
@@ -61,7 +63,7 @@ export function ProfileOtpInputGrid({ digits, onChangeDigit, onBackspace, inputR
                   onKeyPress={({ nativeEvent }) => {
                     if (nativeEvent.key === 'Backspace') onBackspace(index);
                   }}
-                  accessibilityLabel={`OTP digit ${index + 1}`}
+                  accessibilityLabel={t.otp.otpDigit(index + 1)}
                 />
               </View>
             );

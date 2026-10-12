@@ -1,0 +1,34 @@
+{
+  "name": "amrale-dairy-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker + D1 backend for the Amrale Dairy apps",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply amrale-dairy --local",
+    "db:migrate": "wrangler d1 migrations apply amrale-dairy --remote",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p .",
+    "db:reset:local": "wrangler d1 execute amrale-dairy --local --command \"delete from sessions; delete from otp_challenges; delete from subscription_plans; delete from customers; delete from product_packs; delete from products; delete from users where role != 0x61646d696e;\"",
+    "e2e": "bash scripts/e2e.sh",
+    "e2e:auth": "bash scripts/e2e-auth.sh",
+    "logs": "wrangler tail amrale-dairy-api --format pretty",
+    "e2e:billing": "bash scripts/e2e-billing.sh",
+    "e2e:team": "bash scripts/e2e-team.sh",
+    "e2e:offers": "bash scripts/e2e-offers.sh",
+    "e2e:self": "bash scripts/e2e-self-service.sh",
+    "e2e:messages": "bash scripts/e2e-messages.sh",
+    "e2e:jobs": "bash scripts/e2e-jobs.sh",
+    "e2e:bills": "bash scripts/e2e-bills.sh",
+    "e2e:media": "bash scripts/e2e-media.sh",
+    "e2e:settings": "bash scripts/e2e-settings.sh",
+    "e2e:profile": "bash scripts/e2e-profile.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.2",
+    "wrangler": "^4.149.0"
+  }
+}

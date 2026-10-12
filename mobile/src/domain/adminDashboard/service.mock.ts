@@ -1,5 +1,10 @@
 import type { IAdminDashboardService } from '@/src/domain/adminDashboard/service.interface';
-import type { DashboardSettingsResponse, UpdateDashboardCoverRequest, UpdateDashboardCoverResponse } from '@/src/domain/adminDashboard/dtos';
+import type {
+  DashboardSettingsResponse,
+  UpdateDashboardCoverRequest,
+  UpdateDashboardCoverResponse,
+  UpdatePaymentSettingsRequest,
+} from '@/src/domain/adminDashboard/dtos';
 import type { AdminDashboardSettings } from '@/src/domain/adminDashboard/entities';
 import { readJson, writeJson } from '@/src/infrastructure/storage/storage';
 import { ADMIN_DASHBOARD_SETTINGS_STORE_KEY } from '@/src/infrastructure/storage/keys';
@@ -59,6 +64,25 @@ export class AdminDashboardServiceMock implements IAdminDashboardService {
         sourceType: 'uri',
         uri: data.uri,
         aspectRatio: data.aspectRatio,
+        updatedAt: now,
+      },
+      updatedAt: now,
+    };
+    await writeJson(ADMIN_DASHBOARD_SETTINGS_STORE_KEY, settings);
+    return { settings };
+  }
+
+  async updatePaymentSettings(data: UpdatePaymentSettingsRequest): Promise<DashboardSettingsResponse> {
+    const current = await ensureSettings();
+    const now = nowIso();
+    const instructions = data.instructions?.trim();
+    const settings: AdminDashboardSettings = {
+      ...current,
+      payment: {
+        upiId: data.upiId.trim(),
+        payeeName: data.payeeName.trim(),
+        acceptCash: data.acceptCash,
+        ...(instructions ? { instructions } : {}),
         updatedAt: now,
       },
       updatedAt: now,

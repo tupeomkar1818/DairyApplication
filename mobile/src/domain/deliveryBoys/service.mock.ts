@@ -1,7 +1,15 @@
-import { daysInMonth, roundMoney2 } from '@/src/domain/deliveryBoys/salary';
+import { roundMoney2 } from '@/src/domain/deliveryBoys/salary';
 import type { IDeliveryBoyService } from '@/src/domain/deliveryBoys/service.interface';
+import { DomainError } from '@/src/domain/shared/errors';
+import { strings } from '@/src/i18n/strings';
 import type { CreateDeliveryBoyRequest, DeliveryBoyListResponse, DeliveryBoyResponse, UpdateDeliveryBoyRequest } from '@/src/domain/deliveryBoys/dtos';
 import type { DeliveryBoy as DeliveryBoyEntity } from '@/src/domain/deliveryBoys/entities';
+import {
+  assertMobileFree,
+  moveLoginToMobile,
+  removeLoginFor,
+  syncCustomersWithDeliveryBoy,
+} from '@/src/infrastructure/accountLinks';
 import { readJson, writeJson } from '@/src/infrastructure/storage/storage';
 import { DELIVERY_BOYS_STORE_KEY } from '@/src/infrastructure/storage/keys';
 
@@ -133,7 +141,7 @@ function normalizeDeliveryBoy(b: DeliveryBoyEntity): DeliveryBoyEntity {
   };
 }
 
-async function ensureSeedDeliveryBoys(): Promise<DeliveryBoyEntity[]> {
+async function loadDeliveryBoys(): Promise<DeliveryBoyEntity[]> {
   const existing = await readDeliveryBoys();
   if (existing.length > 0) {
     const normalized = existing.map(normalizeDeliveryBoy);
@@ -145,93 +153,29 @@ async function ensureSeedDeliveryBoys(): Promise<DeliveryBoyEntity[]> {
     return normalized;
   }
 
-  const now = nowIso();
-  const salaryMonth = calendarMonthKeyNow();
-  const salRowId = newId('sal');
-  /** Single seed account: final salary unsettled (no final payments, Unpaid) for admin salary-flow testing. */
-  const seeded: DeliveryBoyEntity[] = [
-    {
-      id: newId('db'),
-      fullName: 'Unpaid Salary Test',
-      mobileNumber: '9000000001',
-      alternateMobileNumber: '',
-      address: '',
-      aadhaarNumber: '',
-      panNumber: '',
-      joiningDate: now,
-      salaryType: 'Fixed Monthly Salary',
-      monthlySalary: 15000,
-      perDaySalary: 500,
-      incentiveAmount: 500,
-      bankDetails: {
-        bankName: 'HDFC',
-        accountHolderName: 'Unpaid Salary Test',
-        accountNumber: 'XXXX1001',
-        ifscCode: 'HDFC0000001',
-      },
-      upiId: 'unpaid-salary-test@upi',
-      assignedRoutes: ['Route A'],
-      primaryRouteName: 'Route A',
-      shiftTiming: 'Morning',
-      weeklyOffDay: 'Sunday',
-      emergencyContactName: 'Family',
-      emergencyContactNumber: '9000000101',
-      status: 'Active',
-      appAccessEnabled: true,
-      totalPaidLeaves: 12,
-      totalUnpaidLeaves: 0,
-      currentAttendanceStatus: 'Present',
-      attendance: [],
-      leaves: [],
-      replacements: [],
-      routeCoverageCredits: [],
-      salaryHistory: [
-        {
-          id: salRowId,
-          createdAt: now,
-          updatedAt: now,
-          salaryMonth,
-          salaryType: 'Fixed Monthly Salary',
-          baseSalary: 15000,
-          incentiveAmount: 500,
-          finalSalary: 15500,
-          paidAmount: 0,
-          pendingAmount: 15500,
-          paymentStatus: 'Unpaid',
-          paymentStatusSource: 'Auto',
-          payments: [],
-          advanceSalaryEntries: [],
-        },
-      ],
-      performance: [],
-      complaints: [],
-      audit: [],
-      createdAt: now,
-      updatedAt: now,
-    },
-  ];
-
-  await writeDeliveryBoys(seeded);
-  return seeded;
+  // A fresh store stays empty: every delivery partner is added by the admin.
+  return [];
 }
 
 export class DeliveryBoyServiceMock implements IDeliveryBoyService {
   async list(): Promise<DeliveryBoyListResponse> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedDeliveryBoys();
+    const items = await loadDeliveryBoys();
     return { items: items as unknown as DeliveryBoyResponse[], total: items.length };
   }
 
   async getById(id: string): Promise<DeliveryBoyResponse | null> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedDeliveryBoys();
+    const items = await loadDeliveryBoys();
     const found = items.find((b) => b.id === id);
     return found ? (found as unknown as DeliveryBoyResponse) : null;
   }
 
   async create(data: CreateDeliveryBoyRequest): Promise<DeliveryBoyResponse> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedDeliveryBoys();
+    const items = await loadDeliveryBoys();
+    // One number, one person: not a customer's, another partner's or the admin's number.
+    await assertMobileFree(data.mobileNumber, {});
     const now = nowIso();
 
     const created: DeliveryBoyEntity = {
@@ -245,8 +189,8 @@ export class DeliveryBoyServiceMock implements IDeliveryBoyService {
       joiningDate: data.joiningDate,
       salaryType: data.salaryType ?? 'Fixed Monthly Salary',
       monthlySalary: data.monthlySalary,
-      perDaySalary:
-        data.perDaySalary ?? (data.monthlySalary > 0 ? roundMoney2(data.monthlySalary / daysInMonth(calendarMonthKeyNow())) : undefined),
+      // No derived per-day for Fixed Monthly: payroll divides monthly by the target month's days (see resolvePerDaySalary).
+      perDaySalary: data.perDaySalary,
       incentiveAmount: data.incentiveAmount,
       bankDetails: data.bankDetails,
       upiId: data.upiId?.trim() ? data.upiId.trim() : undefined,
@@ -304,12 +248,15 @@ export class DeliveryBoyServiceMock implements IDeliveryBoyService {
 
   async update(id: string, data: UpdateDeliveryBoyRequest): Promise<DeliveryBoyResponse> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedDeliveryBoys();
+    const items = await loadDeliveryBoys();
     const idx = items.findIndex((b) => b.id === id);
-    if (idx < 0) return (items[0] as unknown) as DeliveryBoyResponse;
+    if (idx < 0) throw new DomainError('DELIVERY_BOY_NOT_FOUND', strings('deliveryBoys').errors.notFound);
 
     const now = nowIso();
     const current = items[idx]!;
+    if (data.mobileNumber !== undefined && data.mobileNumber.trim() !== current.mobileNumber) {
+      await assertMobileFree(data.mobileNumber, { deliveryBoyId: id });
+    }
 
     const audit = [...(current.audit ?? [])];
     const pushAudit = (action: string, oldValue?: string, newValue?: string) => {
@@ -516,14 +463,7 @@ export class DeliveryBoyServiceMock implements IDeliveryBoyService {
       joiningDate: data.joiningDate !== undefined ? data.joiningDate : current.joiningDate,
       salaryType: data.salaryType !== undefined ? data.salaryType : current.salaryType,
       monthlySalary: data.monthlySalary !== undefined ? data.monthlySalary : current.monthlySalary,
-      perDaySalary:
-        data.perDaySalary !== undefined
-          ? data.perDaySalary
-          : data.monthlySalary !== undefined
-            ? data.monthlySalary > 0
-              ? roundMoney2(data.monthlySalary / daysInMonth(calendarMonthKeyNow()))
-              : undefined
-            : current.perDaySalary,
+      perDaySalary: data.perDaySalary !== undefined ? data.perDaySalary : current.perDaySalary,
       incentiveAmount: data.incentiveAmount !== undefined ? data.incentiveAmount : current.incentiveAmount,
       pendingSalaryAmount: data.pendingSalaryAmount !== undefined ? data.pendingSalaryAmount : current.pendingSalaryAmount,
       salaryPaidStatus: data.salaryPaidStatus !== undefined ? data.salaryPaidStatus : current.salaryPaidStatus,
@@ -582,13 +522,19 @@ export class DeliveryBoyServiceMock implements IDeliveryBoyService {
     const next = [...items];
     next[idx] = updated;
     await writeDeliveryBoys(next);
+    // Their customers show the new name; their login follows a new number.
+    if (updated.fullName !== current.fullName) await syncCustomersWithDeliveryBoy({ id, fullName: updated.fullName });
+    if (updated.mobileNumber !== current.mobileNumber) await moveLoginToMobile(id, updated.mobileNumber);
     return updated as unknown as DeliveryBoyResponse;
   }
 
   async delete(id: string): Promise<void> {
     await sleep(DEFAULT_DELAY_MS);
-    const items = await ensureSeedDeliveryBoys();
+    const items = await loadDeliveryBoys();
     await writeDeliveryBoys(items.filter((b) => b.id !== id));
+    // Their customers become unassigned (not left pointing at nobody), and the login goes.
+    await syncCustomersWithDeliveryBoy({ id, deleted: true });
+    await removeLoginFor(id);
   }
 }
 

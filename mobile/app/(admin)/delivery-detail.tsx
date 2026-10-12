@@ -1,18 +1,29 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
-import { Button, Card, Dialog, Portal, Switch, Text, TextInput } from 'react-native-paper';
+import { Button, Card, Dialog, HelperText, Portal, Switch, Text, TextInput } from 'react-native-paper';
 
 import { useDeliveryBoy } from '@/src/hooks/deliveryBoys';
 import { useDeliveryBoys, useUpdateDeliveryBoy } from '@/src/hooks/deliveryBoys';
+import { DeferredTextInput } from '@/src/components/DeferredTextInput';
+import type { DeliveryBoyFormSection } from '@/src/components/admin/DeliveryBoyFormScreen';
+import { DetailProfileCard } from '@/src/components/shared/DetailProfileCard';
+import { PeriodStepper } from '@/src/components/shared/PeriodStepper';
+import {
+  DetailCardAction,
+  DetailInfo,
+  DetailInfoGrid,
+  DetailSectionCard,
+  DetailStatusPill,
+  DetailTabPill,
+} from '@/src/components/shared/detailUi';
 import { DateInput } from '@/src/components/DateInput';
 import {
   buildRouteCoverageCreditsForRange,
   mergeRouteCoverageCreditsDedup,
-  stripCreditsBySourceLeaveId,
-  stripCreditsBySourceReplacementId,
+  stripCreditsForLeaverSources,
 } from '@/src/domain/deliveryBoys/coverageCredits';
 import type { DeliveryBoy, DeliveryBoyAttendanceEntry, DeliveryBoyAuditEntry, DeliveryBoyLeaveRequest } from '@/src/domain/deliveryBoys/entities';
 import {
@@ -27,26 +38,60 @@ import { DeliveryBoyAdvanceSalaryEntrySchema } from '@/src/domain/deliveryBoys/v
 import {
   computeAutoFinalSalaryPaymentStatus,
   computeFinalSalarySettlementPending,
+  computeMonthlyPayrollFromHistory,
   computeUnifiedMonthlyPayroll,
   daysInMonth,
   finalSalarySettlementNetDue,
   formatInr2,
   getAutoPreviousBalance,
   getSalaryRecordForMonth,
+  isDateWithinEmployment,
   profileMonthlySalaryDisplay,
   resolveDisplayedFinalSalaryPaymentStatus,
   roundMoney2,
   salaryMemoLinesForMonth,
   totalAdvanceSalaryForMonthRecord,
 } from '@/src/domain/deliveryBoys/salary';
+import { isoDateOnly } from '@/src/domain/deliveryBoys/periodRange';
 import { services } from '@/src/infrastructure/service-registry';
+import { amraleColors, amraleRadius, amraleSpacing, amraleTypography, dairyTactileColors } from '@/src/theme/dairyTactile';
+import { strings, type Dictionary } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
+import { formatTime } from '@/src/utils/format';
+import { useResponsiveDialogStyle } from '@/src/utils/responsiveLayout';
+import { storedText } from '@/src/i18n/storedText';
 
-function autoLeaveIdForAttendanceDate(dateIso: string) {
-  return `lev_att_${String(dateIso).slice(0, 10)}`;
+type DetailStrings = Dictionary['deliveryBoyDetail'];
+
+/**
+ * Ids of the leave / replacement rows auto-created from admin attendance. Scoped per boy so the ids (and the
+ * `sourceLeaveId` on route-cover credits) never collide across boys. `legacy*` ids were date-only; they are still
+ * matched on this boy's own rows so older data keeps being cleaned up.
+ */
+function autoAttendanceIds(boyId: string, dateIso: string) {
+  const d = String(dateIso).slice(0, 10);
+  return {
+    leaveId: `lev_att_${boyId}_${d}`,
+    replId: `rpl_att_${boyId}_${d}`,
+    legacyLeaveId: `lev_att_${d}`,
+    legacyReplId: `rpl_att_${d}`,
+  };
 }
 
-function autoReplacementIdForAttendanceDate(dateIso: string) {
-  return `rpl_att_${String(dateIso).slice(0, 10)}`;
+/** Money text field: digits with at most one '.', max 2 decimals (paise). */
+function sanitizeMoneyInput(raw: string, maxIntDigits = 10): string {
+  const cleaned = raw.replace(/[^\d.]/g, '');
+  const dot = cleaned.indexOf('.');
+  if (dot < 0) return cleaned.slice(0, maxIntDigits);
+  const intPart = cleaned.slice(0, dot).slice(0, maxIntDigits);
+  const frac = cleaned.slice(dot + 1).replace(/\./g, '').slice(0, 2);
+  return `${intPart}.${frac}`;
+}
+
+/** Date-only strings (yyyy-mm-dd) are read as local dates; `new Date('yyyy-mm-dd')` is UTC midnight and shifts a day west of UTC. */
+function parseIsoForDisplay(iso: string): Date {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso);
 }
 
 function dashStr(v: string | undefined | null): string {
@@ -54,14 +99,90 @@ function dashStr(v: string | undefined | null): string {
   return s ? s : '—';
 }
 
-function formatSalaryTypeUi(t: string): string {
-  if (t === 'Attendance Based Salary') return 'Attendance Based';
-  if (t === 'Fixed Monthly Salary') return 'Fixed Monthly';
-  return t;
+/** 10-digit numbers read as "+91 98765 43210", like the Customer Details screen. */
+function formatMobileDisplay(mobile: string | undefined | null): string {
+  const digits = String(mobile ?? '').replace(/D/g, '');
+  if (digits.length === 10) return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  return dashStr(mobile);
 }
 
+function formatSalaryTypeUi(t: DetailStrings, type: string): string {
+  if (type === 'Attendance Based Salary') return t.labels.salaryTypeShort.attendanceBased;
+  if (type === 'Fixed Monthly Salary') return t.labels.salaryTypeShort.fixedMonthly;
+  return type;
+}
+
+function salaryTypeFullLabel(t: DetailStrings, type: string): string {
+  if (type === 'Attendance Based Salary') return t.labels.salaryTypeFull.attendanceBased;
+  if (type === 'Fixed Monthly Salary') return t.labels.salaryTypeFull.fixedMonthly;
+  return type;
+}
+
+/** Stored payment status → the English key the tint colors are chosen by ("Unpaid" reads as "Pending"). */
 function paymentStatusUi(s: string): string {
   return s === 'Unpaid' ? 'Pending' : s;
+}
+
+/** Stored payment status → the words shown in the current language. */
+function paymentStatusLabel(t: DetailStrings, s: string): string {
+  const key = paymentStatusUi(s);
+  if (key === 'Paid') return t.labels.pay.paid;
+  if (key === 'Partial') return t.labels.pay.partial;
+  if (key === 'Pending') return t.labels.pay.pending;
+  return s;
+}
+
+const ATTENDANCE_LABEL_KEYS: Record<string, keyof DetailStrings['labels']['attendance']> = {
+  Present: 'present',
+  'Half Day': 'halfDay',
+  Absent: 'absent',
+  'Weekly Off': 'weeklyOff',
+  'Paid Leave': 'paidLeave',
+  'Unpaid Leave': 'unpaidLeave',
+  'Late Arrival': 'lateArrival',
+  'On Leave': 'onLeave',
+  Pending: 'pending',
+};
+
+/** Stored attendance status (e.g. "Weekly Off") → the words shown in the current language. */
+function attendanceStatusLabel(t: DetailStrings, status: string | undefined | null): string {
+  const key = status ? ATTENDANCE_LABEL_KEYS[status] : undefined;
+  return key ? t.labels.attendance[key] : String(status ?? '');
+}
+
+const PAY_MODE_LABEL_KEYS: Record<string, keyof DetailStrings['labels']['payModes']> = {
+  Cash: 'cash',
+  UPI: 'upi',
+  'Bank Transfer': 'bankTransfer',
+  Card: 'card',
+};
+
+function payModeLabel(t: DetailStrings, mode: string | undefined | null): string {
+  const key = mode ? PAY_MODE_LABEL_KEYS[mode] : undefined;
+  return key ? t.labels.payModes[key] : String(mode ?? '');
+}
+
+const UPDATED_BY_LABEL_KEYS: Record<string, keyof DetailStrings['labels']['updatedBy']> = {
+  Admin: 'admin',
+  Delivery: 'delivery',
+  System: 'system',
+};
+
+function updatedByLabel(t: DetailStrings, who: string | undefined | null): string {
+  const key = who ? UPDATED_BY_LABEL_KEYS[who] : undefined;
+  return key ? t.labels.updatedBy[key] : String(who ?? '');
+}
+
+/** Salary memo day line `basis` (English words from the salary domain) → the words shown in the current language. */
+function memoBasisLabel(t: DetailStrings, basis: string): string {
+  const words = t.history.salaryMemo.basis;
+  if (basis === 'Before joining') return words.beforeJoining;
+  if (basis === 'After last working date') return words.afterLastWorkingDate;
+  if (basis === 'Attendance') return words.attendance;
+  if (basis === 'No attendance row') return words.noAttendanceRow;
+  const cover = basis.match(/^Route cover \((.*)\)$/);
+  if (cover) return words.routeCover(cover[1] ?? '');
+  return ATTENDANCE_LABEL_KEYS[basis] ? attendanceStatusLabel(t, basis) : basis;
 }
 
 function newAttendanceHistoryEntry(args: {
@@ -86,28 +207,32 @@ function newAttendanceHistoryEntry(args: {
 }
 
 /** How the day was last reflected on the stored attendance row (admin edits set `adminManualOverride`). */
-function attendanceSourceLabel(e: DeliveryBoyAttendanceEntry): string {
-  if (e.adminManualOverride) return 'Admin panel';
-  return 'System';
+function attendanceSourceLabel(t: DetailStrings, e: DeliveryBoyAttendanceEntry): string {
+  if (e.adminManualOverride) return t.history.attendanceMemo.sourceAdminPanel;
+  return t.history.attendanceMemo.sourceSystem;
 }
 
+/** "16 Sep 2026, 7:05 pm" in the app language. */
 function formatUpdatedAtShort(iso?: string): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const month = strings('common').dates.monthsShort[d.getMonth()];
+  return `${String(d.getDate()).padStart(2, '0')} ${month} ${d.getFullYear()}, ${formatTime(iso)}`;
 }
 
-function salaryUiStatusColors(label: string) {
-  if (label === 'Paid') return { bg: 'rgba(34,197,94,0.16)', border: 'rgba(34,197,94,0.30)', fg: '#166534' };
-  if (label === 'Partial') return { bg: 'rgba(245,158,11,0.16)', border: 'rgba(245,158,11,0.30)', fg: '#92400E' };
-  return { bg: 'rgba(239,68,68,0.14)', border: 'rgba(239,68,68,0.28)', fg: '#B91C1C' };
+function salaryUiStatusColors(label: string, dark?: boolean) {
+  // Dark scheme: the translucent tint sits on a near-black card, so the deep text colors need light variants.
+  if (label === 'Paid') return { bg: 'rgba(34,197,94,0.16)', border: 'rgba(34,197,94,0.30)', fg: dark ? '#86EFAC' : '#166534' };
+  if (label === 'Partial') return { bg: 'rgba(245,158,11,0.16)', border: 'rgba(245,158,11,0.30)', fg: dark ? '#FCD34D' : '#92400E' };
+  return { bg: 'rgba(239,68,68,0.14)', border: 'rgba(239,68,68,0.28)', fg: dark ? '#FCA5A5' : '#B91C1C' };
 }
 
 function SalaryStatusBadge({ status, compact }: { status: 'Paid' | 'Partial' | 'Unpaid'; compact?: boolean }) {
   const isPaid = status === 'Paid';
   const isPartial = status === 'Partial';
-  const label = isPaid ? 'Paid' : isPartial ? 'Partial' : 'Pending';
+  const t = useStrings('deliveryBoyDetail');
+  const label = isPaid ? t.labels.pay.paid : isPartial ? t.labels.pay.partial : t.labels.pay.pending;
   const bg = isPaid ? styles.statusPillPaid : isPartial ? styles.statusPillPartial : styles.statusPillPendingRed;
   return (
     <View style={[styles.statusPill, compact && styles.statusPillCompact, bg]}>
@@ -118,86 +243,83 @@ function SalaryStatusBadge({ status, compact }: { status: 'Paid' | 'Partial' | '
   );
 }
 
-function ProfileKvRow({
-  label,
-  value,
-  labelStyle,
-  valueStyle,
-  compact,
-}: {
-  label: string;
-  value: string;
-  labelStyle: object;
-  valueStyle: object;
-  compact?: boolean;
-}) {
-  return (
-    <View style={[styles.profileKvRow, compact && styles.profileKvRowCompact]}>
-      <Text variant={compact ? 'bodySmall' : 'bodyMedium'} style={[styles.profileKvLabel, labelStyle]} numberOfLines={2}>
-        {label}
-      </Text>
-      <Text variant={compact ? 'bodySmall' : 'bodyMedium'} style={[styles.profileKvValue, valueStyle]} numberOfLines={2}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
 const COLORS = {
-  primary: '#2563EB',
+  // Blue, surface and text come from the app theme so this screen matches the rest of the admin area.
+  primary: amraleColors.blue,
   secondary: '#60A5FA',
   accent: '#22C55E',
-  bg: '#F8FAFC',
-  text: '#1E293B',
+  bg: amraleColors.surface,
+  text: amraleColors.text,
   warning: '#F59E0B',
-  danger: '#EF4444',
+  danger: amraleColors.error,
 };
 
 type TabKey = 'salary' | 'attendance' | 'overview' | 'history';
 
-const DETAIL_TABS: { key: TabKey; label: string }[] = [
-  { key: 'overview', label: 'Profile Information' },
-  { key: 'salary', label: 'Salary' },
-  { key: 'attendance', label: 'Attendance' },
-  { key: 'history', label: 'History' },
+const DETAIL_TABS: { key: TabKey; label: keyof DetailStrings['tabs']; shortLabel?: keyof DetailStrings['tabs'] }[] = [
+  // `shortLabel` keeps the wrapped tab row to two lines on a phone. Labels are dictionary keys, read at render.
+  { key: 'overview', label: 'overview', shortLabel: 'overviewShort' },
+  { key: 'salary', label: 'salary' },
+  { key: 'attendance', label: 'attendance' },
+  { key: 'history', label: 'history' },
 ];
 
-function TabPill({ label, active, onPress, compact }: { label: string; active: boolean; onPress: () => void; compact?: boolean }) {
+/** Tabs whose content is scoped to one month; they share the stepper under the tab strip. */
+const MONTH_SCOPED_TABS: TabKey[] = ['salary', 'attendance', 'history'];
+
+/** Tabs whose data should follow edits from other actors while visible (currently every detail tab). */
+const LIVE_SYNC_TABS: readonly TabKey[] = ['attendance', 'salary', 'overview', 'history'];
+const LIVE_SYNC_INTERVAL_MS = 5000;
+
+/** Main tabs and the History sub-tabs both use the shared detail pill, so they match the Customer Details tabs. */
+const TabPill = DetailTabPill;
+
+/** `Dialog.Content` whose body scrolls past `maxHeight`, so long pickers never overflow the (height-capped) dialog. */
+function DialogScrollBody({ maxHeight, children }: { maxHeight: number; children: React.ReactNode }) {
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.tabPill,
-        !compact && styles.tabPillMax,
-        compact && styles.tabPillCompact,
-        active ? styles.tabPillActive : styles.tabPillInactive,
-        pressed && styles.pressed,
-      ]}
-    >
-      <Text
-        variant={compact ? 'labelMedium' : 'labelLarge'}
-        style={[compact && styles.tabTextCompact, active ? styles.tabTextActive : styles.tabTextInactive]}
-        numberOfLines={1}
-        ellipsizeMode="tail"
-      >
-        {label}
-      </Text>
-    </Pressable>
+    <Dialog.Content>
+      <ScrollView style={{ maxHeight }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator nestedScrollEnabled>
+        {children}
+      </ScrollView>
+    </Dialog.Content>
   );
 }
 
 export default function AdminDeliveryBoyDetailDashboard() {
+  const t = useStrings('deliveryBoyDetail');
+  const c = useStrings('common');
   const scheme = useColorScheme();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const { headerPaddingTop, scrollPaddingBottom } = useScreenSafeInsets();
-  const params = useLocalSearchParams<{ id?: string }>();
+  const params = useLocalSearchParams<{ id?: string; tab?: string }>();
   const id = params.id ?? '';
-  const boy = useDeliveryBoy(id);
-  const allBoys = useDeliveryBoys();
+  // `tab` lets other screens deep-link into a tab (e.g. Team today opens the attendance calendar).
+  const [tab, setTab] = useState<TabKey>(() =>
+    DETAIL_TABS.some((t) => t.key === params.tab) ? (params.tab as TabKey) : 'overview',
+  );
+  // Keep live tabs in sync with other actors (delivery app, another admin) via query polling (MEMORY.md R7)
+  // instead of a hand-rolled setInterval; polling stops when no live tab is shown.
+  const liveSyncInterval = LIVE_SYNC_TABS.includes(tab) ? LIVE_SYNC_INTERVAL_MS : false;
+  const boy = useDeliveryBoy(id, { refetchInterval: liveSyncInterval });
+  const allBoys = useDeliveryBoys({ refetchInterval: liveSyncInterval });
   const update = useUpdateDeliveryBoy();
   const b = boy.data;
+  /** Avatar initials for the profile card: first + last name letters. */
+  const profileInitials = useMemo(() => {
+    const parts = (b?.fullName ?? '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return (parts[0]![0]! + (parts.length > 1 ? parts[parts.length - 1]![0]! : '')).toUpperCase();
+  }, [b?.fullName]);
 
-  const [tab, setTab] = useState<TabKey>('overview');
+  /** Opens Edit Delivery Boy, scrolled to the matching form section (the card's own fields). */
+  const openEditSection = useCallback(
+    (section?: DeliveryBoyFormSection) => {
+      if (!b) return;
+      router.push({ pathname: '/(admin)/delivery-edit', params: section ? { id: b.id, section } : { id: b.id } });
+    },
+    [b?.id],
+  );
+
   const [error, setError] = useState<string | null>(null);
   const [picker, setPicker] = useState<null | { kind: 'backup' | 'replacement' }>(null);
   const [attendanceSelected, setAttendanceSelected] = useState<null | { dateIso: string }>(null);
@@ -205,7 +327,17 @@ export default function AdminDeliveryBoyDetailDashboard() {
   const [attendanceEditOpen, setAttendanceEditOpen] = useState(false);
   const [attendanceStatusPickerOpen, setAttendanceStatusPickerOpen] = useState(false);
   const [attendanceDraftStatus, setAttendanceDraftStatus] = useState<DeliveryBoyAdminAttendanceStatus>('Present');
-  const [salaryMonth, setSalaryMonth] = useState<string>('');
+  /**
+   * A single month drives Salary, Attendance and History, so switching it on one tab carries to the others. The old
+   * per-tab names are aliases below, so the rest of this screen reads the same.
+   */
+  // Initialised lazily: `monthKey` is computed below, and the state only needs it on the first render.
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const salaryMonth = selectedMonth;
+  const setSalaryMonth = setSelectedMonth;
   const [salaryMonthPickerOpen, setSalaryMonthPickerOpen] = useState(false);
   const [salaryPaymentModePickerOpen, setSalaryPaymentModePickerOpen] = useState(false);
 
@@ -217,6 +349,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
   const [absentReplacementName, setAbsentReplacementName] = useState<string | undefined>(undefined);
   const [absentReplTransfer, setAbsentReplTransfer] = useState(true);
   const [absentReplPickerOpen, setAbsentReplPickerOpen] = useState(false);
+  /** Synchronous double-tap guard for attendance writes (set before the first await; `update.isPending` flips too late). */
+  const attendanceSavingRef = useRef(false);
 
   const sectionCard = scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight;
   const textMain = scheme === 'dark' ? styles.textOnDark : styles.textOnLight;
@@ -228,21 +362,16 @@ export default function AdminDeliveryBoyDetailDashboard() {
   const layoutDesktop = width >= 1024;
   const salaryTwoColumn = layoutDesktop;
   const isNarrow = width < 900;
+  /** Small phones: attendance cells (~34px) show number + status dot only; the status word no longer fits. */
+  const attendanceCellTiny = width < 400;
+
+  // Dialogs: centered + width-capped (16px gutter on phones) with a viewport-relative max height.
+  const dialogSize = useResponsiveDialogStyle(480);
+  const monthDialogSize = useResponsiveDialogStyle(560);
+  /** Scrollable dialog body height — long lists (every delivery boy, every month) scroll inside the dialog. */
+  const dialogListMaxH = useMemo(() => Math.max(200, Math.min(Math.round(height * 0.6), height - 220)), [height]);
 
   const allBoysList = useMemo(() => allBoys.data?.items ?? [], [allBoys.data?.items]);
-
-  useEffect(() => {
-    if (!['attendance', 'salary', 'overview', 'history'].includes(tab)) return;
-    // Keep key salary/attendance/overview views in sync with changes from other actors (e.g. delivery boy app, another admin).
-    // Narrow deps to `tab`: the full `boy`/`allBoys` query objects are new references every render,
-    // so including them would tear down and restart this interval on every render.
-    const t = setInterval(() => {
-      boy.refetch();
-      allBoys.refetch();
-    }, 5000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
 
   const monthKey = useMemo(() => {
     const now = new Date();
@@ -286,27 +415,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
   /** Same inputs as Salary tab + stored row so Profile, History, and payroll stay aligned (MEMORY.md contract-first). */
   function computePayrollForMonthWithHistoryRow(forMonthKey: string, histRow: ReturnType<typeof getSalaryRecordForMonth>) {
-    const h = histRow ?? getSalaryRecordForMonth(b as any, forMonthKey);
-    const bonus = Math.max(0, roundMoney2(Number((h as any)?.bonusAmount ?? 0)));
-    const ded = Math.max(0, roundMoney2(Number((h as any)?.deductionAmount ?? 0)));
-    const prev =
-      h && (h as any).previousBalance !== undefined
-        ? roundMoney2(Number((h as any).previousBalance ?? 0))
-        : h && (h as any).previousPendingSalary !== undefined
-          ? roundMoney2(Number((h as any).previousPendingSalary ?? 0)) - roundMoney2(Number((h as any).previousOverpayment ?? 0))
-          : getAutoPreviousBalance(b as any, forMonthKey);
-    const foRaw = (h as any)?.finalSalaryOverride;
-    const finalSalaryOverride =
-      foRaw !== undefined && foRaw !== null && Number.isFinite(Number(foRaw))
-        ? roundMoney2(Number(foRaw))
-        : undefined;
-    return computeUnifiedMonthlyPayroll(b as any, forMonthKey, {
-      bonusAmount: bonus,
-      deductionAmount: ded,
-      previousBalance: prev,
-      finalSalaryOverride,
-      allBoys: allBoysList as any,
-    });
+    // Shared with the delivery boy's own salary screen so both show the same number.
+    return computeMonthlyPayrollFromHistory(b as any, forMonthKey, allBoysList as any, histRow);
   }
 
   function computeDerived(forMonthKey: string) {
@@ -389,6 +499,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
     return out;
   }, [b?.joiningDate, monthKey]);
 
+  /** Oldest month the screen can show: the end of the allowed window (joining month, or six steps back). */
+  const oldestSelectableMonth = salaryMonthOptions[salaryMonthOptions.length - 1] ?? monthKey;
+
   useEffect(() => {
     // If current selection falls outside the allowed month list, snap to the newest allowed month.
     if (!salaryMonthOptions.length) return;
@@ -397,7 +510,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
     }
   }, [salaryMonth, salaryMonthOptions]);
 
-  const [historySalaryMemoMonth, setHistorySalaryMemoMonth] = useState<string>(monthKey);
+  const historySalaryMemoMonth = selectedMonth;
+  const setHistorySalaryMemoMonth = setSelectedMonth;
   const [historySalaryMemoMonthPickerOpen, setHistorySalaryMemoMonthPickerOpen] = useState(false);
 
   useEffect(() => {
@@ -433,7 +547,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
   const [salaryBonus, setSalaryBonus] = useState('0');
   const [salaryDeduction, setSalaryDeduction] = useState('0');
-  const [salaryPrevPending, setSalaryPrevPending] = useState('0');
+  /** Live carry-forward from the prior month (never persisted on this month; see computePayrollForMonthWithHistoryRow). */
+  const salaryPrevBalance = useMemo(() => getAutoPreviousBalance(b as any, salaryMonth), [b, salaryMonth]);
   const [salaryFinalOverride, setSalaryFinalOverride] = useState('');
   const salaryIncentive = useMemo(() => String(Math.max(0, Math.round(Number(salaryHist?.incentiveAmount ?? b?.incentiveAmount ?? 0)))), [b?.incentiveAmount, salaryHist?.incentiveAmount]);
 
@@ -452,22 +567,15 @@ export default function AdminDeliveryBoyDetailDashboard() {
     // Keep payment form in sync when month changes or record updates.
     const bonus = Number(salaryHist?.bonusAmount ?? 0);
     const ded = Number(salaryHist?.deductionAmount ?? 0);
-    const prev =
-      (salaryHist as any)?.previousBalance !== undefined
-        ? Number((salaryHist as any)?.previousBalance ?? 0)
-        : salaryHist?.previousPendingSalary !== undefined
-          ? Number(salaryHist?.previousPendingSalary ?? 0) - Number((salaryHist as any)?.previousOverpayment ?? 0)
-          : getAutoPreviousBalance(b as any, salaryMonth);
     const dateIso = salaryHist?.paymentDate;
     const foRaw = (salaryHist as any)?.finalSalaryOverride;
     const overrideStr =
       foRaw !== undefined && foRaw !== null && Number.isFinite(Number(foRaw))
-        ? String(Math.round(Number(foRaw)))
+        ? String(roundMoney2(Number(foRaw)))
         : '';
 
-    setSalaryBonus(String(Math.max(0, Math.round(bonus))));
-    setSalaryDeduction(String(Math.max(0, Math.round(ded))));
-    setSalaryPrevPending(String(Math.round(prev)));
+    setSalaryBonus(String(Math.max(0, roundMoney2(bonus))));
+    setSalaryDeduction(String(Math.max(0, roundMoney2(ded))));
     setSalaryFinalOverride(overrideStr);
     setSalaryPayMode((salaryHist?.paymentMode as any) ?? 'UPI');
     setSalaryPayDate(dateIso ? isoToDdMmYyyy(dateIso) : '');
@@ -495,7 +603,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
     return computeUnifiedMonthlyPayroll(b as any, salaryMonth, {
       bonusAmount: Math.max(0, roundMoney2(Number(salaryBonus || 0))),
       deductionAmount: Math.max(0, roundMoney2(Number(salaryDeduction || 0))),
-      previousBalance: roundMoney2(Number(salaryPrevPending || 0)),
+      previousBalance: salaryPrevBalance,
       finalSalaryOverride: salaryFinalOverride.trim() ? roundMoney2(Number(salaryFinalOverride || 0)) : undefined,
       allBoys: allBoysList as any,
     });
@@ -507,7 +615,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
     salaryFinalOverride,
     salaryHist,
     salaryMonth,
-    salaryPrevPending,
+    salaryPrevBalance,
   ]);
 
   const paymentCalc = useMemo(() => {
@@ -532,6 +640,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
       alreadyPaid: alreadyPaidFinal,
       payingNow,
       remainingBefore: autoBefore.pendingAmount,
+      /** Paying more than what is pending on final would silently overpay (carried forward as a negative balance). */
+      exceedsPending: payingNow > Math.max(0, autoBefore.pendingAmount),
       totalPaidAfter,
       remainingAfter: autoAfter.pendingAmount,
       autoStatusBefore: autoBefore.status,
@@ -546,8 +656,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
   ]);
 
   const salaryPaymentUiTint = useMemo(
-    () => salaryUiStatusColors(paymentStatusUi(paymentCalc.statusCurrent)),
-    [paymentCalc.statusCurrent],
+    () => salaryUiStatusColors(paymentStatusUi(paymentCalc.statusCurrent), scheme === 'dark'),
+    [paymentCalc.statusCurrent, scheme],
   );
 
   const salarySimpleFormula = useMemo(() => {
@@ -556,13 +666,13 @@ export default function AdminDeliveryBoyDetailDashboard() {
     const cd = salaryMonthlyCalc.routeCoverageCreditedDays;
     const pe = roundMoney2(pd * pr);
     const ce = roundMoney2(pd * cd);
-    const pending = roundMoney2(Number(salaryPrevPending || 0));
+    const pending = salaryPrevBalance;
     const over = 0;
     const bonus = Math.max(0, roundMoney2(Number(salaryBonus || 0)));
     const ded = Math.max(0, roundMoney2(Number(salaryDeduction || 0)));
     const simple = roundMoney2(pe + ce + pending + bonus - ded - over);
     return { pd, pr, cd, pe, ce, pending, over, bonus, ded, simple };
-  }, [salaryBonus, salaryDeduction, salaryHist, salaryMonthlyCalc, salaryPrevPending]);
+  }, [salaryBonus, salaryDeduction, salaryHist, salaryMonthlyCalc, salaryPrevBalance]);
 
   useEffect(() => {
     // Auto-populate Amount Paying Now (default: pay full remaining).
@@ -582,7 +692,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
       if (trimmed) return cur;
       if (paymentCalc.netSettlementDue <= 0) return '';
       if (paymentCalc.remainingBefore <= 0) return '';
-      return isoToDdMmYyyy(new Date().toISOString().slice(0, 10));
+      return isoToDdMmYyyy(isoDateOnly(new Date()));
     });
   }, [paymentCalc.netSettlementDue, paymentCalc.remainingBefore, salaryMonth]);
 
@@ -606,12 +716,16 @@ export default function AdminDeliveryBoyDetailDashboard() {
   async function paySalary() {
     if (!b) return;
     const nowIso = new Date().toISOString();
-    const payIso = ddMmYyyyToIso(salaryPayDate) ?? (paymentCalc.payingNow > 0 ? nowIso.slice(0, 10) : undefined);
+    const payIso = ddMmYyyyToIso(salaryPayDate) ?? (paymentCalc.payingNow > 0 ? isoDateOnly(new Date()) : undefined);
     const paidNow = Math.max(0, roundMoney2(paymentCalc.payingNow));
     // Block final salary payment when net settlement is not positive or nothing is pending.
     if (paymentCalc.netSettlementDue <= 0) return;
     if (paymentCalc.remainingBefore <= 0) return;
     if (paidNow <= 0) return;
+    if (paymentCalc.exceedsPending) {
+      setError(t.errors.payingExceedsPending(formatInr2(paymentCalc.remainingBefore)));
+      return;
+    }
 
     const existing = (b.salaryHistory ?? []).find((x) => x.salaryMonth === salaryMonth) ?? null;
     const nextHistory = (b.salaryHistory ?? []).filter((x) => x.salaryMonth !== salaryMonth);
@@ -630,7 +744,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
     const nextPayments = [...prevPayments];
     nextPayments.unshift({
       id: `pay_${salaryMonth}_${Date.now().toString(16)}`,
-      date: payIso ?? nowIso.slice(0, 10),
+      date: payIso ?? isoDateOnly(new Date()),
       amountPaid: paidNow,
       kind: 'Salary',
       paymentMode: salaryPayMode as any,
@@ -650,7 +764,6 @@ export default function AdminDeliveryBoyDetailDashboard() {
       incentiveAmount: Number(salaryIncentive || 0),
       bonusAmount: Number(salaryBonus || 0),
       deductionAmount: Number(salaryDeduction || 0),
-      previousPendingSalary: roundMoney2(Number(salaryPrevPending || 0)),
       finalSalaryOverride: salaryFinalOverride.trim()
         ? roundMoney2(Number(salaryFinalOverride))
         : undefined,
@@ -685,12 +798,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
   async function payAdvanceSalary() {
     if (!b) return;
     const nowIso = new Date().toISOString();
-    const payIso = ddMmYyyyToIso(advancePayDate) ?? (Number(advancePayingNow || 0) > 0 ? nowIso.slice(0, 10) : undefined);
+    const payIso = ddMmYyyyToIso(advancePayDate) ?? (Number(advancePayingNow || 0) > 0 ? isoDateOnly(new Date()) : undefined);
     const paidNow = Math.max(0, roundMoney2(Number(advancePayingNow || 0)));
     if (paidNow <= 0) return;
 
     const validated = DeliveryBoyAdvanceSalaryEntrySchema.safeParse({
-      date: payIso ?? nowIso.slice(0, 10),
+      date: payIso ?? isoDateOnly(new Date()),
       amount: paidNow,
       paymentMode: advancePayMode,
       purpose: advancePurpose.trim() ? advancePurpose.trim() : undefined,
@@ -732,7 +845,6 @@ export default function AdminDeliveryBoyDetailDashboard() {
       incentiveAmount: Number(salaryIncentive || 0),
       bonusAmount: Number(salaryBonus || 0),
       deductionAmount: Number(salaryDeduction || 0),
-      previousPendingSalary: roundMoney2(Number(salaryPrevPending || 0)),
       finalSalaryOverride: salaryFinalOverride.trim() ? roundMoney2(Number(salaryFinalOverride)) : undefined,
       leaveDeduction: salaryMonthlyCalc.unpaidLeaveDeduction,
       finalSalary: salaryMonthlyCalc.finalSalary,
@@ -785,7 +897,6 @@ export default function AdminDeliveryBoyDetailDashboard() {
       incentiveAmount: Number(salaryIncentive || 0),
       bonusAmount: Number(salaryBonus || 0),
       deductionAmount: Number(salaryDeduction || 0),
-      previousPendingSalary: roundMoney2(Number(salaryPrevPending || 0)),
       finalSalaryOverride: salaryFinalOverride.trim() ? roundMoney2(Number(salaryFinalOverride)) : undefined,
       leaveDeduction: salaryMonthlyCalc.unpaidLeaveDeduction,
       finalSalary: salaryMonthlyCalc.finalSalary,
@@ -819,10 +930,13 @@ export default function AdminDeliveryBoyDetailDashboard() {
     return { bg: 'rgba(148,163,184,0.16)', fg: '#475569', border: 'rgba(148,163,184,0.22)' };
   }
 
-  const [attendanceMonth, setAttendanceMonth] = useState<string>(monthKey);
-  const [historyMemoMonth, setHistoryMemoMonth] = useState<string>(monthKey);
+  const attendanceMonth = selectedMonth;
+  const setAttendanceMonth = setSelectedMonth;
+  const historyMemoMonth = selectedMonth;
+  const setHistoryMemoMonth = setSelectedMonth;
   const [historyMemoMonthPickerOpen, setHistoryMemoMonthPickerOpen] = useState(false);
-  const [profileHistoryMonth, setProfileHistoryMonth] = useState<string>(monthKey);
+  const profileHistoryMonth = selectedMonth;
+  const setProfileHistoryMonth = setSelectedMonth;
   const [profileHistoryMonthPickerOpen, setProfileHistoryMonthPickerOpen] = useState(false);
 
   function shiftMonth(yyyyMm: string, deltaMonths: number): string {
@@ -881,13 +995,17 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
   function timeLabelFromIso(iso?: string): string {
     if (!iso) return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '—';
-    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return formatTime(iso) || '—';
   }
 
-  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayIso = useMemo(() => isoDateOnly(new Date()), []);
   const todayEntry = useMemo(() => (b?.attendance ?? []).find((x) => String(x.date).slice(0, 10) === todayIso) ?? null, [b, todayIso]);
+
+  /** Attendance can be written only between the joining date and today (future / pre-joining days never earn pay). */
+  function attendanceDateEditable(dateYyyyMmDd: string): boolean {
+    const d = String(dateYyyyMmDd).slice(0, 10);
+    return !!b && d <= todayIso && isDateWithinEmployment(b as any, d);
+  }
 
   const attendanceSelectedEntry = useMemo(() => {
     const iso = attendanceSelected?.dateIso ?? '';
@@ -910,12 +1028,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
   useEffect(() => {
     if (!absentFlowOpen || !b || !attendanceSelected?.dateIso) return;
     const d = attendanceSelected.dateIso.slice(0, 10);
-    const lid = autoLeaveIdForAttendanceDate(d);
-    const ex = (b.leaves ?? []).find((x) => x.id === lid);
+    const ids = autoAttendanceIds(b.id, d);
+    const ex = (b.leaves ?? []).find((x) => x.id === ids.leaveId || x.id === ids.legacyLeaveId);
     if (ex) {
       setAbsentReplacementId(ex.replacementDeliveryBoyId);
       setAbsentReplacementName(ex.replacementDeliveryBoyName);
-      const rex = (b.replacements ?? []).find((x) => x.id === autoReplacementIdForAttendanceDate(d));
+      const rex = (b.replacements ?? []).find((x) => x.id === ids.replId || x.id === ids.legacyReplId);
       setAbsentReplTransfer(rex ? rex.transferSalaryToReplacer !== false : true);
     } else {
       setAbsentReplacementId(undefined);
@@ -970,13 +1088,14 @@ export default function AdminDeliveryBoyDetailDashboard() {
     if (!m) return yyyyMm;
     const yyyy = Number(m[1]);
     const mm = Number(m[2]);
-    const d = new Date(yyyy, mm - 1, 1);
-    return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+    if (mm < 1 || mm > 12) return yyyyMm;
+    // "Sep 2026", with the month name in the app language.
+    return `${c.dates.monthsShort[mm - 1]} ${yyyy}`;
   }
 
   function isoToDdMmYyyy(iso?: string): string {
     if (!iso) return '';
-    const d = new Date(iso);
+    const d = parseIsoForDisplay(iso);
     if (Number.isNaN(d.getTime())) return '';
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -986,10 +1105,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
   function isoToDdMmmYyyy(iso?: string): string {
     if (!iso) return '';
-    const d = new Date(iso);
+    const d = parseIsoForDisplay(iso);
     if (Number.isNaN(d.getTime())) return '';
     const dd = String(d.getDate()).padStart(2, '0');
-    const mmm = d.toLocaleString('en-US', { month: 'short' });
+    const mmm = c.dates.monthsShort[d.getMonth()];
     const yyyy = String(d.getFullYear());
     return `${dd} ${mmm} ${yyyy}`;
   }
@@ -1015,21 +1134,21 @@ export default function AdminDeliveryBoyDetailDashboard() {
     try {
       await update.mutateAsync({ id: b.id, data: patch });
     } catch {
-      setError('Unable to save changes. Please try again.');
+      setError(t.errors.saveFailed);
     }
   }
 
   async function stripAutoAttendanceCredits(dateYyyyMmDd: string) {
+    if (!b) return;
     const d = String(dateYyyyMmDd).slice(0, 10);
-    const leaveId = autoLeaveIdForAttendanceDate(d);
-    const replId = autoReplacementIdForAttendanceDate(d);
+    const ids = autoAttendanceIds(b.id, d);
+    const sourceIds = [ids.leaveId, ids.replId, ids.legacyLeaveId, ids.legacyReplId];
     const listResp = await services.deliveryBoys.list();
     for (const item of listResp.items as any[]) {
-      let nextC = [...(item.routeCoverageCredits ?? [])];
-      const o = nextC.length;
-      nextC = stripCreditsBySourceLeaveId(nextC, leaveId);
-      nextC = stripCreditsBySourceReplacementId(nextC, replId);
-      if (nextC.length !== o) {
+      const prevC = [...(item.routeCoverageCredits ?? [])];
+      // Match the leaver too: legacy date-only source ids are shared by every boy absent that day.
+      const nextC = stripCreditsForLeaverSources(prevC, b.id, sourceIds);
+      if (nextC.length !== prevC.length) {
         await update.mutateAsync({ id: item.id, data: { routeCoverageCredits: nextC } });
       }
     }
@@ -1044,15 +1163,20 @@ export default function AdminDeliveryBoyDetailDashboard() {
       setAbsentFlowOpen(true);
       return;
     }
+    if (!attendanceDateEditable(d)) {
+      setError(t.errors.attendanceOutOfRange);
+      return;
+    }
+    if (attendanceSavingRef.current) return;
+    attendanceSavingRef.current = true;
     setError(null);
     const closeAfter = opts?.closeAfterSave !== false;
     const now = new Date().toISOString();
     try {
       await stripAutoAttendanceCredits(d);
-      const leaveId = autoLeaveIdForAttendanceDate(d);
-      const replId = autoReplacementIdForAttendanceDate(d);
-      const nextLeaves = (b.leaves ?? []).filter((x) => x.id !== leaveId);
-      const nextRepl = (b.replacements ?? []).filter((x) => x.id !== replId);
+      const ids = autoAttendanceIds(b.id, d);
+      const nextLeaves = (b.leaves ?? []).filter((x) => x.id !== ids.leaveId && x.id !== ids.legacyLeaveId);
+      const nextRepl = (b.replacements ?? []).filter((x) => x.id !== ids.replId && x.id !== ids.legacyReplId);
 
       const items = [...(b.attendance ?? [])];
       const idx = items.findIndex((x) => String(x.date).slice(0, 10) === d);
@@ -1127,7 +1251,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
       }
       allBoys.refetch();
     } catch {
-      setError('Unable to save attendance.');
+      setError(t.errors.attendanceSaveFailed);
+    } finally {
+      attendanceSavingRef.current = false;
     }
   }
 
@@ -1138,8 +1264,15 @@ export default function AdminDeliveryBoyDetailDashboard() {
   async function confirmAbsentFromAttendance() {
     if (!b || !attendanceSelected?.dateIso) return;
     const dateIso = attendanceSelected.dateIso.slice(0, 10);
-    const leaveId = autoLeaveIdForAttendanceDate(dateIso);
-    const replId = autoReplacementIdForAttendanceDate(dateIso);
+    if (!attendanceDateEditable(dateIso)) {
+      setError(t.errors.attendanceOutOfRange);
+      return;
+    }
+    if (attendanceSavingRef.current) return;
+    attendanceSavingRef.current = true;
+    const ids = autoAttendanceIds(b.id, dateIso);
+    const leaveId = ids.leaveId;
+    const replId = ids.replId;
     const now = new Date().toISOString();
     setError(null);
     try {
@@ -1195,12 +1328,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
         replacementDeliveryBoyId: absentReplacementId,
         replacementDeliveryBoyName: absentReplacementName,
         linkedAttendanceDate: dateIso,
-        createdAt: (b.leaves ?? []).find((x) => x.id === leaveId)?.createdAt ?? now,
+        createdAt: (b.leaves ?? []).find((x) => x.id === leaveId || x.id === ids.legacyLeaveId)?.createdAt ?? now,
         updatedAt: now,
       };
-      const nextLeaves = [leaveRow, ...(b.leaves ?? []).filter((x) => x.id !== leaveId)];
+      const nextLeaves = [leaveRow, ...(b.leaves ?? []).filter((x) => x.id !== leaveId && x.id !== ids.legacyLeaveId)];
 
-      let nextReplacements = (b.replacements ?? []).filter((x) => x.id !== replId);
+      let nextReplacements = (b.replacements ?? []).filter((x) => x.id !== replId && x.id !== ids.legacyReplId);
       if (absentReplacementId) {
         nextReplacements = [
           {
@@ -1214,7 +1347,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
             transferSalaryToReplacer: absentReplTransfer,
             notes: 'From attendance',
             linkedAttendanceDate: dateIso,
-            createdAt: (b.replacements ?? []).find((x) => x.id === replId)?.createdAt ?? now,
+            createdAt: (b.replacements ?? []).find((x) => x.id === replId || x.id === ids.legacyReplId)?.createdAt ?? now,
             updatedAt: now,
           },
           ...nextReplacements,
@@ -1252,7 +1385,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
       setAttendanceEditOpen(false);
       allBoys.refetch();
     } catch {
-      setError('Unable to save absence.');
+      setError(t.errors.absenceSaveFailed);
+    } finally {
+      attendanceSavingRef.current = false;
     }
   }
 
@@ -1282,11 +1417,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
     const dateIso = attendanceSelected?.dateIso ?? '';
     if (!dateIso) return;
     const d = dateIso.slice(0, 10);
+    if (attendanceSavingRef.current) return;
+    attendanceSavingRef.current = true;
     setError(null);
     try {
       await stripAutoAttendanceCredits(d);
-      const leaveId = autoLeaveIdForAttendanceDate(d);
-      const replId = autoReplacementIdForAttendanceDate(d);
+      const ids = autoAttendanceIds(b.id, d);
       const now = new Date().toISOString();
       const items = (b.attendance ?? [])
         .map((x) => {
@@ -1304,8 +1440,8 @@ export default function AdminDeliveryBoyDetailDashboard() {
           return { ...x, updatedAt: now, history };
         })
         .filter((x) => String(x.date).slice(0, 10) !== d);
-      const nextLeaves = (b.leaves ?? []).filter((x) => x.id !== leaveId);
-      const nextRepl = (b.replacements ?? []).filter((x) => x.id !== replId);
+      const nextLeaves = (b.leaves ?? []).filter((x) => x.id !== ids.leaveId && x.id !== ids.legacyLeaveId);
+      const nextRepl = (b.replacements ?? []).filter((x) => x.id !== ids.replId && x.id !== ids.legacyReplId);
       await update.mutateAsync({
         id: b.id,
         data: {
@@ -1318,7 +1454,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
       setAttendanceEditOpen(false);
       allBoys.refetch();
     } catch {
-      setError('Unable to delete attendance.');
+      setError(t.errors.attendanceDeleteFailed);
+    } finally {
+      attendanceSavingRef.current = false;
     }
   }
 
@@ -1375,109 +1513,81 @@ export default function AdminDeliveryBoyDetailDashboard() {
         style={[
           styles.appBar,
           scheme === 'dark' ? styles.appBarDark : styles.appBarLight,
-          layoutMobile && styles.appBarStack,
+          layoutDesktop && styles.appBarDesktop,
           { paddingTop: headerPaddingTop },
         ]}
       >
-        {layoutMobile ? (
-          <>
-            <View style={styles.appBarRowMobile}>
-              <View style={styles.appBarSideLeft}>
-                <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
-                  <MaterialCommunityIcons name="arrow-left" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                </Pressable>
-              </View>
-              <View style={styles.appBarTitleStretch}>
-                {tab === 'salary' && b ? (
-                  <View style={{ minWidth: 0, width: '100%' }}>
-                    <Text variant="titleMedium" style={[styles.headerTitle, styles.headerTitleMobile, textMain]} numberOfLines={1}>
-                      Salary
-                    </Text>
-                    <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                      {b.fullName}
-                    </Text>
-                  </View>
-                ) : (
-                  <Text variant="titleMedium" style={[styles.headerTitle, styles.headerTitleMobile, textMain]} numberOfLines={2}>
-                    {tab === 'overview'
-                      ? 'Profile Information'
-                      : tab === 'attendance'
-                        ? 'Attendance'
-                        : tab === 'history'
-                          ? 'History'
-                          : 'Details'}
-                  </Text>
-                )}
-              </View>
-              <View style={styles.appBarSideRight}>
-                {b ? (
-                  <Button mode="outlined" compact onPress={() => router.push(`/(admin)/delivery-edit?id=${encodeURIComponent(b.id)}`)}>
-                    Edit
-                  </Button>
-                ) : (
-                  <View style={{ width: 8 }} />
-                )}
-              </View>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={[styles.tabsRowScrollMobileContent, styles.tabsBar]}
-              keyboardShouldPersistTaps="handled"
-            >
-              {DETAIL_TABS.map((t) => (
-                <TabPill key={t.key} label={t.label} active={tab === t.key} onPress={() => setTab(t.key)} compact />
-              ))}
-            </ScrollView>
-          </>
-        ) : (
-          <>
-            <View style={styles.appBarSideLeft}>
-              <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
-                <MaterialCommunityIcons name="arrow-left" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
-              </Pressable>
-            </View>
-            <View style={styles.appBarCenter}>
-              {tab === 'salary' && b ? (
-                <View style={{ alignItems: 'flex-start', minWidth: 0, alignSelf: 'stretch' }}>
-                  <Text variant="titleMedium" style={[styles.headerTitle, textMain]} numberOfLines={1}>
-                    Salary
-                  </Text>
-                  <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                    {b.fullName}
-                  </Text>
-                </View>
-              ) : (
-                <Text variant="titleMedium" style={[styles.headerTitle, textMain]} numberOfLines={2}>
-                  {tab === 'overview'
-                    ? 'Profile Information'
-                    : tab === 'attendance'
-                      ? 'Attendance'
-                      : tab === 'history'
-                        ? 'History'
-                        : 'Details'}
-                </Text>
-              )}
-            </View>
-            <View style={styles.appBarSideRight}>
-              {b ? (
-                <Button mode="outlined" compact onPress={() => router.push(`/(admin)/delivery-edit?id=${encodeURIComponent(b.id)}`)}>
-                  Edit
-                </Button>
-              ) : null}
-            </View>
-          </>
-        )}
+        {/* Title is the screen, not the tab: the boy's own name/status live in the profile card below. */}
+        <View style={styles.appBarSideLeft}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={t.header.goBack}
+          >
+            <MaterialCommunityIcons name="arrow-left" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
+          </Pressable>
+        </View>
+        <View style={layoutMobile ? styles.appBarTitleStretch : styles.appBarCenter}>
+          <Text
+            variant="titleMedium"
+            style={[styles.headerTitle, layoutMobile && styles.headerTitleMobile, textMain]}
+            numberOfLines={1}
+          >
+            {t.header.title}
+          </Text>
+        </View>
       </View>
 
-      {!layoutMobile ? (
-        <View style={[styles.tabsBar, scheme === 'dark' ? styles.tabsBarDark : styles.tabsBarLight, layoutTablet && styles.tabsBarTablet]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={[styles.tabsRowScroll, styles.tabsRowFlex]}>
-            {DETAIL_TABS.map((t) => (
-              <TabPill key={t.key} label={t.label} active={tab === t.key} onPress={() => setTab(t.key)} />
-            ))}
-          </ScrollView>
+      {b ? (
+        <View style={[styles.profileCardWrap, layoutDesktop && styles.profileCardWrapDesktop]}>
+          <DetailProfileCard
+            name={b.fullName}
+            memberBadge={b.status === 'Active' ? c.states.active : b.status === 'Inactive' ? c.states.inactive : b.status}
+            badgeIcon={b.status === 'Active' ? 'check-decagram' : 'pause-circle-outline'}
+            initials={profileInitials}
+            editLabel={t.header.editDeliveryBoy}
+            subtitle={[b.mobileNumber ? formatMobileDisplay(b.mobileNumber) : '', b.primaryRouteName].filter(Boolean).join(' · ')}
+            onEdit={() => openEditSection()}
+          />
+        </View>
+      ) : null}
+
+      <View
+        style={[
+          styles.tabsBar,
+          scheme === 'dark' ? styles.tabsBarDark : styles.tabsBarLight,
+          layoutTablet && styles.tabsBarTablet,
+          layoutDesktop && styles.tabsBarDesktop,
+        ]}
+      >
+        <View style={[styles.tabsRowFlex, styles.tabsRowWrap, layoutMobile && styles.tabsRowMobileGap]}>
+          {DETAIL_TABS.map((tabDef) => (
+            <TabPill
+              key={tabDef.key}
+              label={t.tabs[layoutMobile ? tabDef.shortLabel ?? tabDef.label : tabDef.label]}
+              active={tab === tabDef.key}
+              onPress={() => setTab(tabDef.key)}
+              compact={layoutMobile}
+            />
+          ))}
+        </View>
+      </View>
+
+      {MONTH_SCOPED_TABS.includes(tab) ? (
+        <View style={[styles.monthBar, layoutDesktop && styles.monthBarDesktop]}>
+          <PeriodStepper
+            label={monthLabel(selectedMonth)}
+            hint={selectedMonth === monthKey ? c.dates.thisMonth : t.month.tapForThisMonth}
+            onPrev={() => setSelectedMonth(shiftMonth(selectedMonth, -1))}
+            onNext={() => setSelectedMonth(shiftMonth(selectedMonth, 1))}
+            // Nothing exists before the joining month, and a month outside the window snaps back anyway.
+            prevDisabled={selectedMonth <= oldestSelectableMonth}
+            nextDisabled={selectedMonth >= monthKey}
+            onPressLabel={selectedMonth === monthKey ? undefined : () => setSelectedMonth(monthKey)}
+            prevLabel={t.month.previous}
+            nextLabel={t.month.next}
+          />
         </View>
       ) : null}
 
@@ -1496,7 +1606,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
           <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
             <Card.Content style={styles.sectionContent}>
               <Text variant="bodyMedium" style={textSub}>
-                Loading…
+                {c.states.loading}
               </Text>
             </Card.Content>
           </Card>
@@ -1506,64 +1616,85 @@ export default function AdminDeliveryBoyDetailDashboard() {
           <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
             <Card.Content style={styles.sectionContent}>
               <Text variant="bodyMedium" style={textSub}>
-                Delivery boy not found.
+                {t.header.notFound}
               </Text>
             </Card.Content>
           </Card>
         ) : null}
 
+        {error ? (
+          <View style={styles.errorBanner} accessibilityLiveRegion="polite">
+            <Text variant="bodyMedium" style={scheme === 'dark' ? styles.errorBannerTextDark : styles.errorBannerText}>
+              {error}
+            </Text>
+          </View>
+        ) : null}
+
         {tab === 'overview' && b ? (
+          // Same sections, order and field style as the Edit Delivery Boy form (and the Customer Details overview).
           <View style={[styles.overviewWrap, { gap: overviewStackGap }]}>
-            <View style={[styles.headerCard, sectionCard]}>
-              <View style={styles.headerTopRow}>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text variant="titleMedium" style={[styles.headerName, textMain]} numberOfLines={2}>
-                    {b.fullName}
-                  </Text>
-                  <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                    {dashStr(b.mobileNumber)}
-                  </Text>
-                </View>
-                <View style={[styles.badge, b.status === 'Active' ? styles.badgeActive : styles.badgeInactive]}>
-                  <Text variant="labelSmall" style={b.status === 'Active' ? styles.badgeTextActive : styles.badgeTextInactive}>
-                    {b.status}
-                  </Text>
-                </View>
-              </View>
-              <View style={{ marginTop: 10 }}>
-                <ProfileKvRow label="Assigned route" value={profileAssignedRoutes} labelStyle={textSub} valueStyle={textMain} compact={overviewNarrowPhone} />
-                <ProfileKvRow label="Salary type" value={formatSalaryTypeUi(String(b.salaryType ?? ''))} labelStyle={textSub} valueStyle={textMain} compact={overviewNarrowPhone} />
-                <ProfileKvRow
-                  label="Monthly salary amount"
-                  value={formatInr2(profileMonthlySalaryDisplay(b, monthKey))}
-                  labelStyle={textSub}
-                  valueStyle={textMain}
-                  compact={overviewNarrowPhone}
-                />
-                <ProfileKvRow
-                  label="Per day salary amount"
-                  value={formatInr2(derivedCurrent.perDay)}
-                  labelStyle={textSub}
-                  valueStyle={textMain}
-                  compact={overviewNarrowPhone}
-                />
-                <ProfileKvRow
-                  label="Joining date"
+            <DetailSectionCard
+              title={t.overview.basicInfo}
+              icon="account-outline"
+              right={<DetailCardAction label={c.actions.edit} icon="pencil-outline" onPress={() => openEditSection('basic')} />}
+            >
+              <DetailInfoGrid>
+                <DetailInfo label={t.overview.fullName} value={dashStr(b.fullName)} wide={!layoutMobile} />
+                <DetailInfo label={c.fields.mobileNumber} value={formatMobileDisplay(b.mobileNumber)} wide={!layoutMobile} />
+                <DetailInfo label={t.overview.assignedRoute} value={dashStr(profileAssignedRoutes)} wide={!layoutMobile} />
+                <DetailInfo
+                  label={t.overview.joiningDate}
                   value={dashStr(isoToDdMmmYyyy(b.joiningDate) || isoToDdMmYyyy(b.joiningDate) || String(b.joiningDate ?? '').trim())}
-                  labelStyle={textSub}
-                  valueStyle={textMain}
-                  compact={overviewNarrowPhone}
+                  wide={!layoutMobile}
                 />
-              </View>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                <Button mode="contained" compact disabled={b.status === 'Active' || update.isPending} onPress={() => void onProfileStatusPress('Active')}>
-                  Mark active
+                <DetailInfo label={c.fields.status} wide={!layoutMobile}>
+                  <DetailStatusPill
+                    tone={b.status === 'Active' ? 'blue' : 'gray'}
+                    icon={b.status === 'Active' ? 'check-decagram' : 'pause-circle-outline'}
+                    label={b.status === 'Active' ? c.states.active : b.status === 'Inactive' ? c.states.inactive : b.status}
+                  />
+                </DetailInfo>
+              </DetailInfoGrid>
+
+              <View style={styles.statusActionsRow}>
+                <Button
+                  mode="contained"
+                  compact
+                  buttonColor={COLORS.primary}
+                  disabled={b.status === 'Active' || update.isPending}
+                  onPress={() => void onProfileStatusPress('Active')}
+                >
+                  {t.overview.markActive}
                 </Button>
-                <Button mode="outlined" compact disabled={b.status === 'Inactive' || update.isPending} onPress={() => void onProfileStatusPress('Inactive')}>
-                  Mark inactive
+                <Button
+                  mode="outlined"
+                  compact
+                  textColor={COLORS.primary}
+                  disabled={b.status === 'Inactive' || update.isPending}
+                  onPress={() => void onProfileStatusPress('Inactive')}
+                >
+                  {t.overview.markInactive}
                 </Button>
               </View>
-            </View>
+            </DetailSectionCard>
+
+            <DetailSectionCard
+              title={t.overview.salary}
+              icon="cash-multiple"
+              right={<DetailCardAction label={c.actions.edit} icon="pencil-outline" onPress={() => openEditSection('salary')} />}
+            >
+              <DetailInfoGrid>
+                <DetailInfo label={t.overview.salaryType} value={dashStr(formatSalaryTypeUi(t, String(b.salaryType ?? '')))} wide={!layoutMobile} accent />
+                <DetailInfo label={t.overview.monthlySalary} value={formatInr2(profileMonthlySalaryDisplay(b, monthKey))} wide={!layoutMobile} />
+                <DetailInfo label={t.overview.perDaySalary} value={formatInr2(derivedCurrent.perDay)} wide={!layoutMobile} />
+              </DetailInfoGrid>
+              {/* Same wording as the hint under the amounts in the Add / Edit form. */}
+              <Text variant="bodySmall" style={[textSub, styles.sectionHint]}>
+                {b.salaryType === 'Attendance Based Salary'
+                  ? t.overview.hintAttendanceBased
+                  : t.overview.hintFixed}
+              </Text>
+            </DetailSectionCard>
           </View>
         ) : null}
 
@@ -1572,47 +1703,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
             <Card.Content style={styles.sectionContent}>
               <View style={styles.calendarHeaderRow}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Attendance calendar
+                  {t.attendance.calendarTitle}
                 </Text>
               </View>
               <Text variant="bodySmall" style={[textSub, { marginBottom: 8 }]}>
-                Tap a day to view or change attendance. Today: {todayEntry?.attendanceStatus ?? '—'}.
+                {t.attendance.tapHint(todayEntry?.attendanceStatus ? attendanceStatusLabel(t, todayEntry.attendanceStatus) : '—')}
               </Text>
-              <View style={styles.monthNavRow}>
-                <Pressable
-                  disabled={isAttendancePrevDisabled}
-                  onPress={() => setAttendanceMonth(shiftMonth(attendanceMonth, -1))}
-                  style={({ pressed }) => [
-                    styles.monthNavBtn,
-                    isAttendancePrevDisabled ? styles.monthNavBtnDisabled : null,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                </Pressable>
-                <Pressable
-                  onPress={() => setAttendanceMonthPickerOpen(true)}
-                  style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}
-                >
-                  <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                    {monthLabel(attendanceMonth)}
-                  </Text>
-                  <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                    {attendanceMonth}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  disabled={isAttendanceNextDisabled}
-                  onPress={() => setAttendanceMonth(shiftMonth(attendanceMonth, 1))}
-                  style={({ pressed }) => [
-                    styles.monthNavBtn,
-                    isAttendanceNextDisabled ? styles.monthNavBtnDisabled : null,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                </Pressable>
-              </View>
 
               {(() => {
                 const s = monthSummary(attendanceMonth);
@@ -1622,16 +1718,14 @@ export default function AdminDeliveryBoyDetailDashboard() {
                   layoutDesktop ? styles.topStatCardTablet : layoutTablet ? styles.topStatCardTablet : styles.topStatCardHalfMobile,
                   layoutMobile ? styles.topStatCardPadMobile : null,
                 ];
+                // The month navigator above already names the month, so the tiles need no second heading.
                 return (
                   <View style={{ width: '100%', marginBottom: 12 }}>
-                    <Text variant="titleSmall" style={[styles.bold, textMain, { marginBottom: 8 }]} numberOfLines={1}>
-                      {monthLabel(attendanceMonth)} · {attendanceMonth}
-                    </Text>
                     <View style={[styles.topSummaryGrid, styles.topSummaryGridEqual, { columnGap: 10, rowGap: 10 }]}>
                       <View style={countCardStyle}>
                         <View style={styles.topStatCardInner}>
                           <Text variant="labelSmall" style={[styles.topStatLabel, textSub]} numberOfLines={2}>
-                            Present days
+                            {t.attendance.presentDays}
                           </Text>
                           <Text variant="titleMedium" style={[styles.topStatValue, textMain]} numberOfLines={1}>
                             {String(s.present)}
@@ -1641,7 +1735,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       <View style={countCardStyle}>
                         <View style={styles.topStatCardInner}>
                           <Text variant="labelSmall" style={[styles.topStatLabel, textSub]} numberOfLines={2}>
-                            Absent days
+                            {t.attendance.absentDays}
                           </Text>
                           <Text variant="titleMedium" style={[styles.topStatValue, textMain]} numberOfLines={1}>
                             {String(s.absent)}
@@ -1654,14 +1748,14 @@ export default function AdminDeliveryBoyDetailDashboard() {
               })()}
 
               <View style={[styles.calendarCard, sectionCard, { marginBottom: 12 }]}>
-                <View style={styles.weekHeaderRow}>
-                  {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, idx) => (
+                <View style={[styles.weekHeaderRow, layoutDesktop && styles.calendarCapDesktop]}>
+                  {c.dates.weekdaysNarrow.map((d, idx) => (
                     <Text key={`wh-${idx}`} variant="labelSmall" style={[styles.weekHeaderCell, textSub]}>
                       {d}
                     </Text>
                   ))}
                 </View>
-                <View style={[styles.calendarGrid, width < 380 ? styles.calendarGridTiny : null]}>
+                <View style={[styles.calendarGrid, layoutDesktop && styles.calendarCapDesktop]}>
                   {(() => {
                     const m = attendanceMonth.match(/^(\d{4})-(\d{2})$/);
                     const yyyy = m ? Number(m[1]) : 0;
@@ -1696,15 +1790,19 @@ export default function AdminDeliveryBoyDetailDashboard() {
                               ? styles.calCellAbsentDark
                               : styles.calCellAbsentLight
                             : null;
+                      // Future / pre-joining days can't be marked; an existing row stays tappable so it can be reviewed or deleted.
+                      const locked = !ex && !attendanceDateEditable(iso);
                       return (
                         <Pressable
                           key={iso}
+                          disabled={locked}
                           onPress={() => openAttendanceEditor(iso)}
                           style={({ pressed }) => [
                             styles.calCell,
                             layoutDesktop ? styles.calCellDesktop : layoutTablet ? styles.calCellTablet : styles.calCellMobile,
-                            width < 380 ? styles.calCellTiny : null,
+                            attendanceCellTiny ? styles.calCellTiny : null,
                             cellStatusBg,
+                            locked && styles.calCellLocked,
                             pressed && styles.pressed,
                           ]}
                         >
@@ -1714,9 +1812,11 @@ export default function AdminDeliveryBoyDetailDashboard() {
                             </Text>
                             <View style={[styles.attDot, dot]} />
                           </View>
-                          <Text variant="labelSmall" style={[styles.calMeta, textSub]} numberOfLines={1}>
-                            {st}
-                          </Text>
+                          {attendanceCellTiny ? null : (
+                            <Text variant="labelSmall" style={[styles.calMeta, textSub]} numberOfLines={1}>
+                              {attendanceStatusLabel(t, st)}
+                            </Text>
+                          )}
                         </Pressable>
                       );
                     });
@@ -1728,6 +1828,22 @@ export default function AdminDeliveryBoyDetailDashboard() {
                     );
                   })()}
                 </View>
+              </View>
+
+              {/* Colour key for the cells above, so the green/red tints are readable without tapping a day. */}
+              <View style={styles.calLegendRow}>
+                {[
+                  { key: 'present', label: t.labels.attendance.present, style: styles.calLegendPresent },
+                  { key: 'absent', label: t.labels.attendance.absent, style: styles.calLegendAbsent },
+                  { key: 'outside', label: t.attendance.outsideEmployment, style: styles.calLegendLocked },
+                ].map((item) => (
+                  <View key={item.key} style={styles.calLegendItem}>
+                    <View style={[styles.calLegendSwatch, item.style]} />
+                    <Text variant="bodySmall" style={textSub}>
+                      {item.label}
+                    </Text>
+                  </View>
+                ))}
               </View>
 
             </Card.Content>
@@ -1746,41 +1862,6 @@ export default function AdminDeliveryBoyDetailDashboard() {
               ]}
             >
               <>
-              <View style={[styles.monthNavRow, { marginBottom: 14 }]}>
-                <Pressable
-                  disabled={isSalaryMonthNavPrevDisabled}
-                  onPress={() => setSalaryMonth(shiftMonth(salaryMonth, -1))}
-                  style={({ pressed }) => [
-                    styles.monthNavBtn,
-                    isSalaryMonthNavPrevDisabled ? styles.monthNavBtnDisabled : null,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                </Pressable>
-                <Pressable
-                  onPress={() => setSalaryMonthPickerOpen(true)}
-                  style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}
-                >
-                  <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                    {salaryMonth ? monthLabel(salaryMonth) : '—'}
-                  </Text>
-                  <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                    {salaryMonth || '—'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  disabled={isSalaryMonthNavNextDisabled}
-                  onPress={() => setSalaryMonth(shiftMonth(salaryMonth, 1))}
-                  style={({ pressed }) => [
-                    styles.monthNavBtn,
-                    isSalaryMonthNavNextDisabled ? styles.monthNavBtnDisabled : null,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                </Pressable>
-              </View>
 
               <View
                 style={[
@@ -1791,16 +1872,16 @@ export default function AdminDeliveryBoyDetailDashboard() {
                 ]}
               >
                 {[
-                  { label: 'Final salary (earned)', value: formatInr2(paymentCalc.earnedFinal), tone: false },
-                  { label: 'Advance (this month)', value: formatInr2(paymentCalc.advanceTotal), tone: false },
-                  { label: 'Net final settlement', value: formatInr2(paymentCalc.netSettlementDue), tone: false },
-                  { label: 'Present days', value: String(salaryMonthlyCalc.presentDays), tone: false },
-                  { label: 'Final pay status', value: paymentStatusUi(paymentCalc.statusCurrent), tone: true },
-                ].map((c) => {
-                  const tone = c.tone ? salaryUiStatusColors(String(c.value)) : null;
+                  { key: 'earned', label: t.salary.cards.finalEarned, value: formatInr2(paymentCalc.earnedFinal), tone: false },
+                  { key: 'advance', label: t.salary.cards.advanceThisMonth, value: formatInr2(paymentCalc.advanceTotal), tone: false },
+                  { key: 'net', label: t.salary.cards.netSettlement, value: formatInr2(paymentCalc.netSettlementDue), tone: false },
+                  { key: 'present', label: t.salary.cards.presentDays, value: String(salaryMonthlyCalc.presentDays), tone: false },
+                  { key: 'status', label: t.salary.cards.finalPayStatus, value: paymentStatusLabel(t, paymentCalc.statusCurrent), tone: true },
+                ].map((card) => {
+                  const tone = card.tone ? salaryUiStatusColors(paymentStatusUi(paymentCalc.statusCurrent), scheme === 'dark') : null;
                   return (
                     <View
-                      key={c.label}
+                      key={card.key}
                       style={[
                         styles.salaryTopCard,
                         layoutDesktop && styles.salaryTopCardFour,
@@ -1818,7 +1899,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                         numberOfLines={2}
                         ellipsizeMode="tail"
                       >
-                        {c.label}
+                        {card.label}
                       </Text>
                       <Text
                         variant={layoutMobile ? 'bodyLarge' : 'titleSmall'}
@@ -1826,7 +1907,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                         numberOfLines={2}
                         ellipsizeMode="tail"
                       >
-                        {c.value}
+                        {card.value}
                       </Text>
                     </View>
                   );
@@ -1847,56 +1928,56 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       variant="titleSmall"
                       style={[styles.bold, textMain, { marginBottom: layoutMobile ? 8 : 10 }, layoutMobile && styles.salarySectionTitleMobile]}
                     >
-                      Salary details
+                      {t.salary.details.title}
                     </Text>
                     {[
-                      { label: 'Salary Type', value: formatSalaryTypeUi(String(salaryMonthlyCalc.salaryType)) },
-                      { label: 'Monthly Salary Amount', value: formatInr2(salaryMonthlyCalc.monthlySalary) },
+                      { label: t.salary.details.salaryType, value: formatSalaryTypeUi(t, String(salaryMonthlyCalc.salaryType)) },
+                      { label: t.salary.details.monthlyAmount, value: formatInr2(salaryMonthlyCalc.monthlySalary) },
                       {
-                        label: 'Calculated per day salary',
+                        label: t.salary.details.perDayCalculated,
                         value: formatInr2(salaryMonthlyCalc.perDaySalary),
                       },
                       {
-                        label: 'Covered route per day salary',
+                        label: t.salary.details.coveredRoutePerDay,
                         value: formatInr2(salaryMonthlyCalc.perDaySalary),
                       },
                       {
-                        label: 'Present days salary (per day × present days)',
+                        label: t.salary.details.presentDaysSalary,
                         value: formatInr2(salaryMonthlyCalc.attendanceSalary),
                       },
                       {
-                        label: 'Covered route salary (per day × covered days)',
+                        label: t.salary.details.coveredRouteSalary,
                         value: formatInr2(
                           roundMoney2(salaryMonthlyCalc.perDaySalary * salaryMonthlyCalc.routeCoverageCreditedDays),
                         ),
                       },
                       {
-                        label: 'Previous balance (carry forward)',
+                        label: t.salary.details.previousBalance,
                         value: formatInr2(roundMoney2(Number((salaryMonthlyCalc as any).previousBalance ?? (salaryMonthlyCalc as any).previousPendingSalary ?? 0))),
                       },
-                      { label: 'Bonus Amount', value: formatInr2(Math.max(0, roundMoney2(Number(salaryBonus || 0)))) },
-                      { label: 'Deduction Amount', value: formatInr2(Math.max(0, roundMoney2(Number(salaryDeduction || 0)))) },
+                      { label: t.salary.details.bonusAmount, value: formatInr2(Math.max(0, roundMoney2(Number(salaryBonus || 0)))) },
+                      { label: t.salary.details.deductionAmount, value: formatInr2(Math.max(0, roundMoney2(Number(salaryDeduction || 0)))) },
                       {
-                        label: 'Advance salary (this month, separate ledger)',
+                        label: t.salary.details.advanceSeparate,
                         value: formatInr2(paymentCalc.advanceTotal),
                       },
                       {
-                        label: 'Net due for final settlement (earned − advances)',
+                        label: t.salary.details.netDue,
                         value: formatInr2(paymentCalc.netSettlementDue),
                       },
                     ].map((row) => (
                       <View key={row.label} style={[styles.salaryTabKvRow, layoutMobile && styles.salaryTabKvRowMobile]}>
                         <Text
                           variant={layoutMobile ? 'bodySmall' : 'bodyMedium'}
-                          style={[textSub, styles.salaryTabKvLabel, layoutMobile && styles.salaryTextMetaMobile]}
-                          numberOfLines={2}
+                          style={[textSub, styles.salaryTabKvLabel, layoutMobile && styles.salaryTabKvLabelMobile, layoutMobile && styles.salaryTextMetaMobile]}
+                          numberOfLines={layoutMobile ? 3 : 2}
                           ellipsizeMode="tail"
                         >
                           {row.label}
                         </Text>
                         <Text
                           variant={layoutMobile ? 'bodySmall' : 'bodyMedium'}
-                          style={[styles.bold, textMain, styles.salaryTabKvValue, layoutMobile && styles.salaryTextValueMobile]}
+                          style={[styles.bold, textMain, styles.salaryTabKvValue, layoutMobile && styles.salaryTabKvValueMobile, layoutMobile && styles.salaryTextValueMobile]}
                           numberOfLines={2}
                           ellipsizeMode="tail"
                         >
@@ -1915,40 +1996,39 @@ export default function AdminDeliveryBoyDetailDashboard() {
                     ]}
                   >
                     <Text variant="titleSmall" style={[styles.bold, textMain, layoutMobile && styles.salarySectionTitleMobile]}>
-                      Final salary formula
+                      {t.salary.formula.title}
                     </Text>
                     <Text variant="bodySmall" style={[textSub, { marginTop: 8 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      (Per day × Present days) + (Per day × Covered route days) + Previous balance (carry forward) + Bonus − Deduction.
-                      Absent days earn nothing; weekly off and leave records do not add base pay.
+                      {t.salary.formula.explain}
                     </Text>
                     <View style={styles.salaryTabFormulaLines}>
                       <Text variant="bodySmall" style={[textSub, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={2} ellipsizeMode="tail">
-                        Per day salary = {formatInr2(salarySimpleFormula.pd)}
+                        {t.salary.formula.perDay(formatInr2(salarySimpleFormula.pd))}
                       </Text>
                       <Text variant="bodySmall" style={[textSub, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={2} ellipsizeMode="tail">
-                        {formatInr2(salarySimpleFormula.pd)} × {salarySimpleFormula.pr} present days = {formatInr2(salarySimpleFormula.pe)}
+                        {t.salary.formula.presentLine(formatInr2(salarySimpleFormula.pd), salarySimpleFormula.pr, formatInr2(salarySimpleFormula.pe))}
                       </Text>
                       <Text variant="bodySmall" style={[textSub, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={2} ellipsizeMode="tail">
-                        {formatInr2(salarySimpleFormula.pd)} × {salarySimpleFormula.cd} covered route days = {formatInr2(salarySimpleFormula.ce)}
+                        {t.salary.formula.coveredLine(formatInr2(salarySimpleFormula.pd), salarySimpleFormula.cd, formatInr2(salarySimpleFormula.ce))}
                       </Text>
                       <Text variant="bodySmall" style={[textSub, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={2} ellipsizeMode="tail">
-                        + Previous balance {formatInr2(salarySimpleFormula.pending)}
+                        {t.salary.formula.previousBalance(formatInr2(salarySimpleFormula.pending))}
                       </Text>
                       <Text variant="bodySmall" style={[textSub, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={1} ellipsizeMode="tail">
-                        + Bonus {formatInr2(salarySimpleFormula.bonus)}
+                        {t.salary.formula.bonus(formatInr2(salarySimpleFormula.bonus))}
                       </Text>
                       <Text variant="bodySmall" style={[textSub, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={1} ellipsizeMode="tail">
-                        − Deduction {formatInr2(salarySimpleFormula.ded)}
+                        {t.salary.formula.deduction(formatInr2(salarySimpleFormula.ded))}
                       </Text>
                       <Text variant={layoutMobile ? 'bodySmall' : 'bodyMedium'} style={[styles.bold, textMain, { marginTop: 8 }, layoutMobile && styles.salaryTextValueMobile]} numberOfLines={2} ellipsizeMode="tail">
-                        Calculated total = {formatInr2(salarySimpleFormula.simple)}
+                        {t.salary.formula.calculatedTotal(formatInr2(salarySimpleFormula.simple))}
                       </Text>
                       <Text variant={layoutMobile ? 'bodySmall' : 'bodyMedium'} style={[styles.bold, textMain, layoutMobile && styles.salaryTextValueMobile]} numberOfLines={2} ellipsizeMode="tail">
-                        Final salary (system) = {formatInr2(salaryMonthlyCalc.finalSalary)}
+                        {t.salary.formula.finalSystem(formatInr2(salaryMonthlyCalc.finalSalary))}
                       </Text>
                       {Math.abs(salarySimpleFormula.simple - salaryMonthlyCalc.finalSalary) > 0.5 ? (
                         <Text variant="bodySmall" style={[textSub, { marginTop: 6 }, layoutMobile && styles.salaryTextMetaMobile]} numberOfLines={4} ellipsizeMode="tail">
-                          Difference is usually a final salary override on this month&apos;s record.
+                          {t.salary.formula.overrideNote}
                         </Text>
                       ) : null}
                     </View>
@@ -1970,28 +2050,28 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       variant="titleSmall"
                       style={[styles.bold, textMain, { marginBottom: layoutMobile ? 8 : 10 }, layoutMobile && styles.salarySectionTitleMobile]}
                     >
-                      Advance salary ledger
+                      {t.salary.advance.title}
                     </Text>
                     <Text variant="bodySmall" style={[textSub, { marginBottom: 10 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Month {salaryMonth || '—'} · tracked separately from final salary payments. Totals feed into net settlement on the right.
+                      {t.salary.advance.intro(salaryMonth ? monthLabel(salaryMonth) : '—')}
                     </Text>
 
                     <View style={[styles.paySummaryGrid, layoutMobile && styles.paySummaryGridMobile]}>
                       {[
-                        { label: 'Advance lines', value: String(advancePaymentsThisMonth.entries.length), strong: true },
-                        { label: 'Total advance', value: formatInr2(advancePaymentsThisMonth.total), strong: false },
-                      ].map((c) => (
-                        <View key={c.label} style={[styles.paySummaryCard, layoutMobile && styles.paySummaryCardMobile]}>
+                        { key: 'lines', label: t.salary.advance.lines, value: String(advancePaymentsThisMonth.entries.length), strong: true },
+                        { key: 'total', label: t.salary.advance.total, value: formatInr2(advancePaymentsThisMonth.total), strong: false },
+                      ].map((card) => (
+                        <View key={card.key} style={[styles.paySummaryCard, layoutMobile && styles.paySummaryCardMobile]}>
                           <Text variant="bodySmall" style={styles.summaryLabel} numberOfLines={2} ellipsizeMode="tail">
-                            {c.label}
+                            {card.label}
                           </Text>
                           <Text
                             variant={layoutMobile ? 'bodyLarge' : 'titleSmall'}
-                            style={[styles.summaryValue, c.strong ? { color: COLORS.primary, fontWeight: '900' } : textMain]}
+                            style={[styles.summaryValue, card.strong ? { color: COLORS.primary, fontWeight: '900' } : textMain]}
                             numberOfLines={2}
                             ellipsizeMode="tail"
                           >
-                            {c.value}
+                            {card.value}
                           </Text>
                         </View>
                       ))}
@@ -1999,24 +2079,24 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
                     <View style={[styles.paymentFieldsGrid, layoutMobile && styles.paymentFieldsGridMobile]}>
                       <View style={layoutMobile ? styles.salaryInputFullMobile : undefined}>
-                        <DateInput label="Advance date" value={advancePayDate} onChange={setAdvancePayDate} dense />
+                        <DateInput label={t.salary.advance.date} value={advancePayDate} onChange={setAdvancePayDate} dense />
                       </View>
-                      <TextInput
+                      <DeferredTextInput
                         dense
                         mode="outlined"
-                        label="Advance amount"
+                        label={t.salary.advance.amount}
                         value={advancePayingNow}
-                        onChangeText={(t) => setAdvancePayingNow(t.replace(/[^\d]/g, '').slice(0, 10))}
+                        onChangeText={(t) => setAdvancePayingNow(sanitizeMoneyInput(t, 10))}
                         keyboardType="numeric"
                         style={layoutMobile ? styles.salaryInputFullMobile : undefined}
                         contentStyle={layoutMobile ? styles.salaryInputContentMobile : undefined}
                       />
                     </View>
 
-                    <TextInput
+                    <DeferredTextInput
                       dense
                       mode="outlined"
-                      label="Purpose (optional)"
+                      label={t.salary.advance.purpose}
                       value={advancePurpose}
                       onChangeText={setAdvancePurpose}
                       style={layoutMobile ? styles.salaryInputFullMobile : undefined}
@@ -2024,7 +2104,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                     />
 
                     <Text variant={layoutMobile ? 'labelMedium' : 'labelLarge'} style={[textMain, { marginBottom: 8 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Advance mode
+                      {t.salary.advance.mode}
                     </Text>
                     <View style={[styles.salaryPayModeRow, layoutMobile && styles.salaryPayModeRowMobile]}>
                       {(['Cash', 'UPI', 'Bank Transfer', 'Card'] as const).map((mode) => (
@@ -2052,7 +2132,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                             numberOfLines={1}
                             ellipsizeMode="tail"
                           >
-                            {mode}
+                            {payModeLabel(t, mode)}
                           </Text>
                         </Pressable>
                       ))}
@@ -2069,7 +2149,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       contentStyle={layoutMobile ? styles.salaryPayBtnContentMobile : undefined}
                       labelStyle={[styles.payCtaLabel, layoutMobile && styles.salaryPayBtnLabelMobile]}
                     >
-                      Record advance
+                      {t.salary.advance.record}
                     </Button>
 
                     {advancePaymentsThisMonth.entries.length ? (
@@ -2077,7 +2157,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                         {advancePaymentsThisMonth.entries.slice(0, 8).map((e) => (
                           <View key={String(e.id)} style={[styles.salaryTabKvRow, layoutMobile && styles.salaryTabKvRowMobile]}>
                             <Text variant={layoutMobile ? 'bodySmall' : 'bodyMedium'} style={[textSub, styles.salaryTabKvLabel]} numberOfLines={2}>
-                              {String(e.date ?? '').slice(0, 10) || '—'} · {String(e.paymentMode ?? '—')}
+                              {String(e.date ?? '').slice(0, 10) || '—'} · {e.paymentMode ? payModeLabel(t, String(e.paymentMode)) : '—'}
                               {e.purpose ? ` · ${String(e.purpose)}` : ''}
                             </Text>
                             <Text variant={layoutMobile ? 'bodySmall' : 'bodyMedium'} style={[styles.bold, textMain, styles.salaryTabKvValue]} numberOfLines={1}>
@@ -2087,13 +2167,13 @@ export default function AdminDeliveryBoyDetailDashboard() {
                         ))}
                         {advancePaymentsThisMonth.entries.length > 8 ? (
                           <Text variant="bodySmall" style={textSub}>
-                            Showing latest 8 lines. Open History → Salary memo for this month for full context.
+                            {t.salary.advance.showingLatest}
                           </Text>
                         ) : null}
                       </View>
                     ) : (
                       <Text variant="bodySmall" style={[textSub, { marginTop: 8 }]}>
-                        No advance lines for this month yet.
+                        {t.salary.advance.empty}
                       </Text>
                     )}
                   </View>
@@ -2112,32 +2192,32 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       variant="titleSmall"
                       style={[styles.bold, textMain, { marginBottom: layoutMobile ? 8 : 10 }, layoutMobile && styles.salarySectionTitleMobile]}
                     >
-                      Bonus and deduction
+                      {t.salary.bonusDeduction.title}
                     </Text>
                     <View style={[styles.paymentFieldsGrid, layoutMobile && styles.paymentFieldsGridMobile]}>
-                      <TextInput
+                      <DeferredTextInput
                         dense
                         mode="outlined"
-                        label="Bonus Amount"
+                        label={t.salary.details.bonusAmount}
                         value={salaryBonus}
-                        onChangeText={(t) => setSalaryBonus(t.replace(/[^\d]/g, '').slice(0, 8))}
+                        onChangeText={(t) => setSalaryBonus(sanitizeMoneyInput(t, 8))}
                         keyboardType="numeric"
                         style={layoutMobile ? styles.salaryInputFullMobile : undefined}
                         contentStyle={layoutMobile ? styles.salaryInputContentMobile : undefined}
                       />
-                      <TextInput
+                      <DeferredTextInput
                         dense
                         mode="outlined"
-                        label="Deduction Amount"
+                        label={t.salary.details.deductionAmount}
                         value={salaryDeduction}
-                        onChangeText={(t) => setSalaryDeduction(t.replace(/[^\d]/g, '').slice(0, 8))}
+                        onChangeText={(t) => setSalaryDeduction(sanitizeMoneyInput(t, 8))}
                         keyboardType="numeric"
                         style={layoutMobile ? styles.salaryInputFullMobile : undefined}
                         contentStyle={layoutMobile ? styles.salaryInputContentMobile : undefined}
                       />
                     </View>
                     <Text variant="bodySmall" style={[textSub, { marginTop: 8 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Bonus increases salary; deduction reduces it.
+                      {t.salary.bonusDeduction.hint}
                     </Text>
                   </View>
 
@@ -2157,44 +2237,45 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       variant="titleSmall"
                       style={[styles.bold, textMain, { marginBottom: layoutMobile ? 8 : 10 }, layoutMobile && styles.salarySectionTitleMobile]}
                     >
-                      Final salary settlement
+                      {t.salary.settlement.title}
                     </Text>
                     <Text variant="bodySmall" style={[textSub, { marginBottom: 10 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Only payments toward closing the month&apos;s salary count here. Advance salary is recorded in the left column ledger and reduces net
-                      settlement below—it is not final salary paid.
+                      {t.salary.settlement.intro}
                     </Text>
                     <Text variant="bodySmall" style={[textSub, { marginBottom: 10 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Earned {formatInr2(paymentCalc.earnedFinal)} − Advance {formatInr2(paymentCalc.advanceTotal)} = Net due{' '}
-                      {formatInr2(paymentCalc.netSettlementDue)}
+                      {t.salary.settlement.equation(
+                        formatInr2(paymentCalc.earnedFinal),
+                        formatInr2(paymentCalc.advanceTotal),
+                        formatInr2(paymentCalc.netSettlementDue),
+                      )}
                     </Text>
                     <View style={[styles.paySummaryGrid, layoutMobile && styles.paySummaryGridMobile]}>
                       {[
-                        { label: 'Final pay status', value: paymentStatusUi(paymentCalc.statusCurrent), strong: true },
-                        { label: 'Paid toward final', value: formatInr2(paymentCalc.alreadyPaid), strong: false },
-                        { label: 'Pending on final', value: formatInr2(paymentCalc.remainingBefore), strong: false },
-                      ].map((c) => (
-                        <View key={c.label} style={[styles.paySummaryCard, layoutMobile && styles.paySummaryCardMobile]}>
+                        { key: 'status', label: t.salary.cards.finalPayStatus, value: paymentStatusLabel(t, paymentCalc.statusCurrent), strong: true },
+                        { key: 'paid', label: t.salary.settlement.paidTowardFinal, value: formatInr2(paymentCalc.alreadyPaid), strong: false },
+                        { key: 'pending', label: t.salary.settlement.pendingOnFinal, value: formatInr2(paymentCalc.remainingBefore), strong: false },
+                      ].map((card) => (
+                        <View key={card.key} style={[styles.paySummaryCard, layoutMobile && styles.paySummaryCardMobile]}>
                           <Text variant="bodySmall" style={styles.summaryLabel} numberOfLines={2} ellipsizeMode="tail">
-                            {c.label}
+                            {card.label}
                           </Text>
                           <Text
                             variant={layoutMobile ? 'bodyLarge' : 'titleSmall'}
-                            style={[styles.summaryValue, c.strong ? { color: salaryPaymentUiTint.fg, fontWeight: '900' } : textMain]}
+                            style={[styles.summaryValue, card.strong ? { color: salaryPaymentUiTint.fg, fontWeight: '900' } : textMain]}
                             numberOfLines={2}
                             ellipsizeMode="tail"
                           >
-                            {c.value}
+                            {card.value}
                           </Text>
                         </View>
                       ))}
                     </View>
 
                     <Text variant="labelLarge" style={[textMain, { marginBottom: 8 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Status source (auto or manual)
+                      {t.salary.settlement.statusSourceTitle}
                     </Text>
                     <Text variant="bodySmall" style={[textSub, { marginBottom: 8 }]}>
-                      Auto follows net settlement vs paid toward final. Manual lets you set Paid / Partial / Pending for display while amounts still drive carry
-                      forward.
+                      {t.salary.settlement.statusSourceHint}
                     </Text>
                     <View style={[styles.salaryPayModeRow, layoutMobile && styles.salaryPayModeRowMobile, { marginBottom: 10 }]}>
                       {(['Auto', 'Manual'] as const).map((src) => (
@@ -2220,7 +2301,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                 : textSub
                             }
                           >
-                            {src}
+                            {src === 'Manual' ? t.labels.statusSource.manual : t.labels.statusSource.auto}
                           </Text>
                         </Pressable>
                       ))}
@@ -2228,7 +2309,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                     {finalPayStatusSourceUi === 'Manual' ? (
                       <>
                         <Text variant="labelLarge" style={[textMain, { marginBottom: 8 }]}>
-                          Manual final pay status
+                          {t.salary.settlement.manualStatusTitle}
                         </Text>
                         <View style={[styles.salaryPayModeRow, layoutMobile && styles.salaryPayModeRowMobile, { marginBottom: 10 }]}>
                           {(['Paid', 'Partial', 'Unpaid'] as const).map((st) => (
@@ -2254,7 +2335,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                     : textSub
                                 }
                               >
-                                {st === 'Unpaid' ? 'Pending' : st}
+                                {paymentStatusLabel(t, st)}
                               </Text>
                             </Pressable>
                           ))}
@@ -2274,27 +2355,33 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       compact={layoutMobile}
                       style={{ marginBottom: 12 }}
                     >
-                      Save status preference
+                      {t.salary.settlement.saveStatusPreference}
                     </Button>
 
                     <View style={[styles.paymentFieldsGrid, layoutMobile && styles.paymentFieldsGridMobile]}>
                       <View style={layoutMobile ? styles.salaryInputFullMobile : undefined}>
-                        <DateInput label="Payment Date" value={salaryPayDate} onChange={setSalaryPayDate} dense />
+                        <DateInput label={t.salary.settlement.paymentDate} value={salaryPayDate} onChange={setSalaryPayDate} dense />
                       </View>
-                      <TextInput
+                      <DeferredTextInput
                         dense
                         mode="outlined"
-                        label="Amount paying now"
+                        label={t.salary.settlement.amountPayingNow}
                         value={salaryPayingNow}
-                        onChangeText={(t) => setSalaryPayingNow(t.replace(/[^\d]/g, '').slice(0, 10))}
-                        keyboardType="numeric"
+                        onChangeText={(t) => setSalaryPayingNow(sanitizeMoneyInput(t, 10))}
+                        keyboardType="decimal-pad"
+                        error={paymentCalc.exceedsPending}
                         style={layoutMobile ? styles.salaryInputFullMobile : undefined}
                         contentStyle={layoutMobile ? styles.salaryInputContentMobile : undefined}
                       />
                     </View>
+                    {paymentCalc.exceedsPending ? (
+                      <HelperText type="error" padding="none">
+                        {t.salary.settlement.exceedsPending(formatInr2(Math.max(0, paymentCalc.remainingBefore)))}
+                      </HelperText>
+                    ) : null}
 
                     <Text variant={layoutMobile ? 'labelMedium' : 'labelLarge'} style={[textMain, { marginBottom: 8 }, layoutMobile && styles.salaryTextMetaMobile]}>
-                      Payment mode
+                      {t.salary.settlement.paymentMode}
                     </Text>
                     <View style={[styles.salaryPayModeRow, layoutMobile && styles.salaryPayModeRowMobile]}>
                       {(['Cash', 'UPI', 'Bank Transfer', 'Card'] as const).map((mode) => (
@@ -2322,7 +2409,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                             numberOfLines={1}
                             ellipsizeMode="tail"
                           >
-                            {mode}
+                            {payModeLabel(t, mode)}
                           </Text>
                         </Pressable>
                       ))}
@@ -2337,14 +2424,15 @@ export default function AdminDeliveryBoyDetailDashboard() {
                         update.isPending ||
                         paymentCalc.netSettlementDue <= 0 ||
                         paymentCalc.remainingBefore <= 0 ||
-                        paymentCalc.payingNow <= 0
+                        paymentCalc.payingNow <= 0 ||
+                        paymentCalc.exceedsPending
                       }
                       compact={layoutMobile}
                       style={[styles.payFullBtn, layoutMobile && styles.payFullBtnMobile, layoutMobile && styles.salaryPayBtnMobile]}
                       contentStyle={layoutMobile ? styles.salaryPayBtnContentMobile : undefined}
                       labelStyle={[styles.payCtaLabel, layoutMobile && styles.salaryPayBtnLabelMobile]}
                     >
-                      Pay final salary
+                      {t.salary.settlement.payFinal}
                     </Button>
                   </View>
                 </View>
@@ -2359,19 +2447,19 @@ export default function AdminDeliveryBoyDetailDashboard() {
             <Card.Content style={styles.sectionContent}>
               <View style={styles.historyKindRow}>
                 <TabPill
-                  label="Salary memo"
+                  label={t.history.tabs.salary}
                   active={historyKind === 'salary'}
                   onPress={() => setHistoryKind('salary')}
                   compact={layoutMobile}
                 />
                 <TabPill
-                  label="Attendance memo"
+                  label={t.history.tabs.attendance}
                   active={historyKind === 'attendance'}
                   onPress={() => setHistoryKind('attendance')}
                   compact={layoutMobile}
                 />
                 <TabPill
-                  label="Profile update history"
+                  label={t.history.tabs.profile}
                   active={historyKind === 'profile'}
                   onPress={() => setHistoryKind('profile')}
                   compact={layoutMobile}
@@ -2380,45 +2468,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
               {historyKind === 'salary' ? (
                 <>
-                  <View style={[styles.monthNavRow, { marginBottom: 14 }]}>
-                    <Pressable
-                      disabled={isHistorySalaryMemoPrevDisabled}
-                      onPress={() => setHistorySalaryMemoMonth(shiftMonth(historySalaryMemoMonth, -1))}
-                      style={({ pressed }) => [
-                        styles.monthNavBtn,
-                        isHistorySalaryMemoPrevDisabled ? styles.monthNavBtnDisabled : null,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setHistorySalaryMemoMonthPickerOpen(true)}
-                      style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}
-                    >
-                      <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                        {monthLabel(historySalaryMemoMonth)}
-                      </Text>
-                      <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                        {historySalaryMemoMonth}
-                      </Text>
-                    </Pressable>
-                    <Pressable
-                      disabled={isHistorySalaryMemoNextDisabled}
-                      onPress={() => setHistorySalaryMemoMonth(shiftMonth(historySalaryMemoMonth, 1))}
-                      style={({ pressed }) => [
-                        styles.monthNavBtn,
-                        isHistorySalaryMemoNextDisabled ? styles.monthNavBtnDisabled : null,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                    </Pressable>
-                  </View>
 
                   {!historySalaryMemoPayroll || !b ? (
                     <Text variant="bodyMedium" style={[textSub, { paddingVertical: 8 }]}>
-                      No salary memo for this selection.
+                      {t.history.salaryMemo.empty}
                     </Text>
                   ) : (
                     (() => {
@@ -2429,7 +2482,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       const autoPay = computeAutoFinalSalaryPaymentStatus(live.finalSalary, advanceTotalHist, paidFinal);
                       const displayStatus = resolveDisplayedFinalSalaryPaymentStatus(hr as any, autoPay.status);
                       const payStat = { pendingAmount: autoPay.pendingAmount, status: displayStatus };
-                      const st = salaryUiStatusColors(paymentStatusUi(payStat.status));
+                      const st = salaryUiStatusColors(paymentStatusUi(payStat.status), scheme === 'dark');
                       const pd = live.perDaySalary;
                       const pr = live.presentDays;
                       const cd = live.routeCoverageCreditedDays;
@@ -2457,62 +2510,76 @@ export default function AdminDeliveryBoyDetailDashboard() {
                           <View style={[styles.monthlySummaryCard, sectionCard]}>
                             <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                               <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={2}>
-                                Salary month · {monthLabel(historySalaryMemoMonth)} ({historySalaryMemoMonth})
+                                {t.history.salaryMemo.monthTitle(monthLabel(historySalaryMemoMonth))}
                               </Text>
                               <View style={[styles.salaryHistStatusPill, { backgroundColor: st.bg, borderColor: st.border, borderWidth: 1 }]}>
                                 <Text variant="labelSmall" style={{ color: st.fg, fontWeight: '900' }} numberOfLines={1}>
-                                  {paymentStatusUi(payStat.status)}
+                                  {paymentStatusLabel(t, payStat.status)}
                                 </Text>
                               </View>
                             </View>
-                            <Text variant="bodySmall" style={[textSub, { marginTop: 10 }]}>
-                              Final salary (earned): {formatInr2(net)} · Advance (ledger): {formatInr2(advanceTotalHist)} · Net final settlement:{' '}
-                              {formatInr2(autoPay.netSettlementDue)}
-                            </Text>
-                            <Text variant="bodySmall" style={textSub}>
-                              Paid toward final (excludes advance): {formatInr2(paidFinal)} · Pending on final:{' '}
-                              {formatInr2(payStat.pendingAmount)}
-                              {(hr as any)?.paymentStatusSource === 'Manual' ? ' · Status: manual override' : ' · Status: auto'}
-                            </Text>
-                            <Text variant="bodySmall" style={textSub}>
-                              Final settlement lines: {payments.length}
-                              {paidFinal > 0 && payments.length === 0 ? ' (amount on record without line breakdown)' : ''}
-                            </Text>
-                            {lastPayIso ? (
-                              <Text variant="bodySmall" style={textSub}>
-                                Last payment date on record: {isoToDdMmmYyyy(lastPayIso) || lastPayIso}
-                                {lastPayMonth ? ` · Paid in calendar month ${monthLabel(lastPayMonth)} (${lastPayMonth})` : ''}
-                              </Text>
-                            ) : null}
+                            {/* Labelled fields instead of one run-on sentence, so each amount is readable at a glance. */}
+                            <DetailInfoGrid>
+                              <DetailInfo label={t.salary.cards.finalEarned} value={formatInr2(net)} wide={!layoutMobile} />
+                              <DetailInfo label={t.history.salaryMemo.advanceLedger} value={formatInr2(advanceTotalHist)} wide={!layoutMobile} />
+                              <DetailInfo label={t.salary.cards.netSettlement} value={formatInr2(autoPay.netSettlementDue)} wide={!layoutMobile} accent />
+                              <DetailInfo label={t.history.salaryMemo.paidTowardFinalExcludesAdvance} value={formatInr2(paidFinal)} wide={!layoutMobile} />
+                              <DetailInfo label={t.salary.settlement.pendingOnFinal} value={formatInr2(payStat.pendingAmount)} wide={!layoutMobile} />
+                              <DetailInfo
+                                label={t.history.salaryMemo.statusSource}
+                                value={(hr as any)?.paymentStatusSource === 'Manual' ? t.history.salaryMemo.manualOverride : t.history.salaryMemo.automatic}
+                                wide={!layoutMobile}
+                              />
+                              <DetailInfo
+                                label={t.history.salaryMemo.settlementLines}
+                                value={
+                                  paidFinal > 0 && payments.length === 0
+                                    ? t.history.salaryMemo.settlementLinesNoBreakdown(payments.length)
+                                    : String(payments.length)
+                                }
+                                wide={!layoutMobile}
+                              />
+                              {lastPayIso ? (
+                                <DetailInfo
+                                  label={t.history.salaryMemo.lastPayment}
+                                  value={
+                                    lastPayMonth
+                                      ? t.history.salaryMemo.lastPaymentPaidIn(isoToDdMmmYyyy(lastPayIso) || lastPayIso, monthLabel(lastPayMonth))
+                                      : isoToDdMmmYyyy(lastPayIso) || lastPayIso
+                                  }
+                                  wide={!layoutMobile}
+                                />
+                              ) : null}
+                            </DetailInfoGrid>
                             {!hr ? (
                               <Text variant="bodySmall" style={[textSub, { marginTop: 8 }]}>
-                                No salary history row saved for this month yet—figures follow live attendance and the same rules as the Salary tab.
+                                {t.history.salaryMemo.noHistoryRow}
                               </Text>
                             ) : null}
                           </View>
 
                           <View style={[styles.monthlySummaryCard, sectionCard]}>
                             <Text variant="titleSmall" style={[styles.bold, textMain, { marginBottom: 8 }]}>
-                              How this month is calculated
+                              {t.history.salaryMemo.howTitle}
                             </Text>
                             <Text variant="bodySmall" style={[textSub, { lineHeight: 20 }]}>
-                              Per day {formatInr2(pd)} × present days ({pr}) = {formatInr2(pe)}.{'\n'}
-                              + Per day × route-cover days credited ({cd}) = {formatInr2(ce)}.{'\n'}
-                              + Previous balance {formatInr2(roundMoney2(prevP - prevO))} + Bonus {formatInr2(bonus)} − Deduction {formatInr2(ded)}.{'\n'}
-                              = Auto total {formatInr2(auto)}.
-                              {fo !== undefined ? `\nFinal override applied → ${formatInr2(net)}.` : `\nNet payable ${formatInr2(net)}.`}
+                              {[
+                                t.history.salaryMemo.howPresent(formatInr2(pd), pr, formatInr2(pe)),
+                                t.history.salaryMemo.howCover(cd, formatInr2(ce)),
+                                t.history.salaryMemo.howAdjustments(formatInr2(roundMoney2(prevP - prevO)), formatInr2(bonus), formatInr2(ded)),
+                                t.history.salaryMemo.howAutoTotal(formatInr2(auto)),
+                                fo !== undefined ? t.history.salaryMemo.howOverride(formatInr2(net)) : t.history.salaryMemo.howNetPayable(formatInr2(net)),
+                              ].join('\n')}
                             </Text>
                             <Text variant="bodySmall" style={[textSub, { marginTop: 8, lineHeight: 20 }]}>
-                              Salary type: {live.salaryType}. Incentives, extra route earnings, and temp replacement lines are on the Salary tab and are not in
-                              this auto net unless you override. Leave and weekly-off records do not change this auto total. Advance salary is a separate month
-                              ledger and reduces net final settlement (not counted as final salary paid).
+                              {t.history.salaryMemo.typeNote(salaryTypeFullLabel(t, String(live.salaryType)))}
                             </Text>
                           </View>
 
                           {((hr as any)?.advanceSalaryEntries ?? []).length > 0 ? (
                             <View style={{ gap: 8 }}>
                               <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                                Advance salary ledger ({historySalaryMemoMonth})
+                                {t.history.salaryMemo.advanceLedgerTitle(monthLabel(historySalaryMemoMonth))}
                               </Text>
                               {((hr as any).advanceSalaryEntries as any[]).map((e) => {
                                 const d = String(e.date ?? '').slice(0, 10);
@@ -2522,7 +2589,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                       {isoToDdMmmYyyy(d) || d || '—'}
                                     </Text>
                                     <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
-                                      Advance: {formatInr2(Number(e.amount ?? 0))} · Mode: {e.paymentMode ?? '—'}
+                                      {t.history.salaryMemo.advanceLine(
+                                        formatInr2(Number(e.amount ?? 0)),
+                                        e.paymentMode ? payModeLabel(t, String(e.paymentMode)) : '—',
+                                      )}
                                       {e.purpose ? ` · ${String(e.purpose)}` : ''}
                                     </Text>
                                   </View>
@@ -2534,7 +2604,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                           {payments.length > 0 ? (
                             <View style={{ gap: 8 }}>
                               <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                                Final salary settlement payments
+                                {t.history.salaryMemo.settlementPaymentsTitle}
                               </Text>
                               {payments.map((p) => {
                                 const d = String(p.date ?? '').slice(0, 10);
@@ -2543,14 +2613,17 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                 return (
                                   <View key={p.id} style={[styles.monthlySummaryCard, sectionCard]}>
                                     <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                                      {isoToDdMmmYyyy(d) || d || '—'} · {pm ? `${monthLabel(pm)} (${pm})` : '—'}
+                                      {isoToDdMmmYyyy(d) || d || '—'} · {pm ? monthLabel(pm) : "—"}
                                     </Text>
                                     <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
-                                      Final settlement: {formatInr2(Number(p.amountPaid ?? 0))} · Mode: {p.paymentMode ?? '—'}
+                                      {t.history.salaryMemo.settlementLine(
+                                        formatInr2(Number(p.amountPaid ?? 0)),
+                                        p.paymentMode ? payModeLabel(t, p.paymentMode) : '—',
+                                      )}
                                       {purpose ? ` · ${purpose}` : ''}
                                     </Text>
                                     <Text variant="bodySmall" style={textSub}>
-                                      Pending on final after this line: {formatInr2(Number(p.remainingPendingAmount ?? 0))}
+                                      {t.history.salaryMemo.pendingAfterLine(formatInr2(Number(p.remainingPendingAmount ?? 0)))}
                                     </Text>
                                   </View>
                                 );
@@ -2560,12 +2633,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
 
                           <View style={{ gap: 8 }}>
                             <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                              Day-wise base & cover
+                              {t.history.salaryMemo.dayWiseTitle}
                             </Text>
                             <Text variant="bodySmall" style={[textSub, { marginBottom: 4 }]}>
-                              Each calendar day: base pay only when attendance is Present; otherwise ₹0. On Absent days, cover and route-cover salary credit
-                              appear in one line below when on file. Extra lines add route-cover credit (leaver per-day rate) for days you covered someone
-                              else.
+                              {t.history.salaryMemo.dayWiseHint}
                             </Text>
                             <View style={{ gap: 8 }}>
                               {historySalaryMemoDayLines.map((line, idx) => {
@@ -2582,7 +2653,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                     : dashStr(ac.salaryCreditedToDeliveryBoyId);
                                 const creditNote =
                                   ac && ac.transferSalaryToReplacer === false && !ac.salaryCreditedToDeliveryBoyId
-                                    ? 'Salary credit not routed to replacer (transfer off on replacement).'
+                                    ? t.history.salaryMemo.creditNotRouted
                                     : null;
                                 return (
                                   <View
@@ -2590,7 +2661,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                     style={[styles.monthlySummaryCard, sectionCard, line.kind === 'cover' ? { opacity: 0.95 } : null]}
                                   >
                                     <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={2}>
-                                      {isoToDdMmmYyyy(line.date) || line.date} · {line.kind === 'cover' ? 'Cover' : 'Base'} · {line.basis}
+                                      {isoToDdMmmYyyy(line.date) || line.date} ·{' '}
+                                      {line.kind === 'cover' ? t.history.salaryMemo.kindCover : t.history.salaryMemo.kindBase} ·{' '}
+                                      {memoBasisLabel(t, line.basis)}
                                     </Text>
                                     <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
                                       {formatInr2(line.amount)}
@@ -2598,7 +2671,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
                                     {line.kind === 'base' && line.basis === 'Absent' ? (
                                       <>
                                         <Text variant="bodySmall" style={[textSub, { marginTop: 8 }]}>
-                                          Who covered this route: {coveredLabel} Route-cover salary credited to: {creditedLabel}
+                                          {t.history.salaryMemo.whoCovered(coveredLabel, creditedLabel)}
                                         </Text>
                                         {creditNote ? (
                                           <Text variant="bodySmall" style={[textSub, { marginTop: 4 }]}>
@@ -2619,72 +2692,37 @@ export default function AdminDeliveryBoyDetailDashboard() {
                 </>
               ) : historyKind === 'attendance' ? (
                 <>
-                  <View style={[styles.monthNavRow, { marginBottom: 14 }]}>
-                    <Pressable
-                      disabled={isHistoryMemoPrevDisabled}
-                      onPress={() => setHistoryMemoMonth(shiftMonth(historyMemoMonth, -1))}
-                      style={({ pressed }) => [
-                        styles.monthNavBtn,
-                        isHistoryMemoPrevDisabled ? styles.monthNavBtnDisabled : null,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setHistoryMemoMonthPickerOpen(true)}
-                      style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}
-                    >
-                      <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                        {monthLabel(historyMemoMonth)}
-                      </Text>
-                      <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                        {historyMemoMonth}
-                      </Text>
-                    </Pressable>
-                    <Pressable
-                      disabled={isHistoryMemoNextDisabled}
-                      onPress={() => setHistoryMemoMonth(shiftMonth(historyMemoMonth, 1))}
-                      style={({ pressed }) => [
-                        styles.monthNavBtn,
-                        isHistoryMemoNextDisabled ? styles.monthNavBtnDisabled : null,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                    </Pressable>
-                  </View>
 
                   {attendanceMemoSorted.length === 0 ? (
                     <Text variant="bodyMedium" style={[textSub, { paddingVertical: 8 }]}>
-                      No attendance rows for this month.
+                      {t.history.attendanceMemo.empty}
                     </Text>
                   ) : (
                     <View style={{ gap: 10 }}>
                       {attendanceMemoSorted.map((e) => (
                         <View key={e.id} style={[styles.monthlySummaryCard, sectionCard]}>
                           <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={2}>
-                            {isoToDdMmmYyyy(e.date) || String(e.date).slice(0, 10)} · {e.attendanceStatus}
+                            {isoToDdMmmYyyy(e.date) || String(e.date).slice(0, 10)} · {attendanceStatusLabel(t, e.attendanceStatus)}
                           </Text>
                           <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
-                            Source: {attendanceSourceLabel(e)}
+                            {t.history.attendanceMemo.source(attendanceSourceLabel(t, e))}
                           </Text>
                           <Text variant="bodySmall" style={[textSub, { marginTop: 4 }]}>
-                            Last updated: {formatUpdatedAtShort(e.updatedAt)}
+                            {t.history.attendanceMemo.lastUpdated(formatUpdatedAtShort(e.updatedAt))}
                           </Text>
                           {e.coverForDeliveryBoyName ? (
                             <Text variant="bodySmall" style={[textSub, { marginTop: 4 }]}>
-                              Covering route for: {e.coverForDeliveryBoyName}
+                              {t.history.attendanceMemo.coveringFor(e.coverForDeliveryBoyName)}
                             </Text>
                           ) : null}
                           {(e.notes ?? '').trim() ? (
                             <Text variant="bodySmall" style={[textSub, { marginTop: 6 }]}>
-                              Notes: {e.notes}
+                              {t.history.attendanceMemo.notes(storedText(String(e.notes)))}
                             </Text>
                           ) : null}
                           {(e.remarks ?? '').trim() ? (
                             <Text variant="bodySmall" style={[textSub, { marginTop: 4 }]}>
-                              Remarks: {e.remarks}
+                              {t.history.attendanceMemo.remarks(String(e.remarks))}
                             </Text>
                           ) : null}
                         </View>
@@ -2694,48 +2732,12 @@ export default function AdminDeliveryBoyDetailDashboard() {
                 </>
               ) : (
                 <>
-                  <View style={[styles.monthNavRow, { marginBottom: 14 }]}>
-                    <Pressable
-                      disabled={isProfileHistoryMonthPrevDisabled}
-                      onPress={() => setProfileHistoryMonth(shiftMonth(profileHistoryMonth, -1))}
-                      style={({ pressed }) => [
-                        styles.monthNavBtn,
-                        isProfileHistoryMonthPrevDisabled ? styles.monthNavBtnDisabled : null,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                    </Pressable>
-                    <Pressable
-                      onPress={() => setProfileHistoryMonthPickerOpen(true)}
-                      style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}
-                    >
-                      <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                        {monthLabel(profileHistoryMonth)}
-                      </Text>
-                      <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                        {profileHistoryMonth}
-                      </Text>
-                    </Pressable>
-                    <Pressable
-                      disabled={isProfileHistoryMonthNextDisabled}
-                      onPress={() => setProfileHistoryMonth(shiftMonth(profileHistoryMonth, 1))}
-                      style={({ pressed }) => [
-                        styles.monthNavBtn,
-                        isProfileHistoryMonthNextDisabled ? styles.monthNavBtnDisabled : null,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                    </Pressable>
-                  </View>
                   <Text variant="bodySmall" style={[textSub, { marginBottom: 12 }]}>
-                    Profile updates in {monthLabel(profileHistoryMonth)} ({profileHistoryMonth}), one line each (when, who, what changed). From Edit or this
-                    screen. Newest first within the month.
+                    {t.history.profile.intro(monthLabel(profileHistoryMonth))}
                   </Text>
                   {profileAuditForHistoryMonth.length === 0 ? (
                     <Text variant="bodyMedium" style={[textSub, { paddingVertical: 8 }]}>
-                      No profile updates in this month.
+                      {t.history.profile.empty}
                     </Text>
                   ) : (
                     <View style={{ gap: 10 }}>
@@ -2743,9 +2745,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
                         const when = formatUpdatedAtShort(String(entry.date || entry.updatedAt || ''));
                         const detail =
                           entry.oldValue !== undefined || entry.newValue !== undefined
-                            ? ` (${dashStr(entry.oldValue)} → ${dashStr(entry.newValue)})`
+                            ? ` (${storedText(dashStr(entry.oldValue))} → ${storedText(dashStr(entry.newValue))})`
                             : '';
-                        const line = `${when} · ${entry.updatedBy} — ${entry.action}${detail}`;
+                        // `action` and the old/new values are stored English; the app's own phrases show in the reader's language.
+                        const line = `${when} · ${updatedByLabel(t, entry.updatedBy)} — ${storedText(entry.action)}${detail}`;
                         return (
                           <View key={entry.id} style={[styles.monthlySummaryCard, sectionCard]}>
                             <Text variant="bodySmall" style={textSub} numberOfLines={1} ellipsizeMode="tail">
@@ -2768,10 +2771,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
         <Dialog
           visible={salaryMonthPickerOpen}
           onDismiss={() => setSalaryMonthPickerOpen(false)}
-          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : styles.monthPickerDialog]}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : [styles.monthPickerDialog, monthDialogSize]]}
         >
-          <Dialog.Title>Salary month</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.month.salaryMonth}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={styles.monthPickerWrap}>
               {salaryMonthOptions.map((m) => {
                 const selected = salaryMonth === m;
@@ -2794,21 +2797,21 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       {monthLabel(m)}
                     </Text>
                     <Text variant="bodySmall" style={selected ? styles.monthPickSubSelected : styles.monthPickSub} numberOfLines={1}>
-                      {isCurrent ? 'Current month' : m}
+                      {isCurrent ? t.month.current : m}
                     </Text>
                   </Pressable>
                 );
               })}
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setSalaryMonthPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setSalaryMonthPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
-        <Dialog visible={salaryPaymentModePickerOpen} onDismiss={() => setSalaryPaymentModePickerOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Select payment mode</Dialog.Title>
-          <Dialog.Content>
+        <Dialog visible={salaryPaymentModePickerOpen} onDismiss={() => setSalaryPaymentModePickerOpen(false)} style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}>
+          <Dialog.Title>{t.dialogs.selectPaymentMode}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             {(['Cash', 'UPI', 'Bank Transfer', 'Card'] as const).map((m) => (
               <Pressable
                 key={m}
@@ -2819,23 +2822,23 @@ export default function AdminDeliveryBoyDetailDashboard() {
                 style={({ pressed }) => [styles.pickItem, pressed && styles.pressed]}
               >
                 <Text variant="bodyMedium" style={textMain}>
-                  {m}
+                  {payModeLabel(t, m)}
                 </Text>
               </Pressable>
             ))}
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setSalaryPaymentModePickerOpen(false)}>Close</Button>
+            <Button onPress={() => setSalaryPaymentModePickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog
           visible={attendanceMonthPickerOpen}
           onDismiss={() => setAttendanceMonthPickerOpen(false)}
-          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : styles.monthPickerDialog]}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : [styles.monthPickerDialog, monthDialogSize]]}
         >
-          <Dialog.Title>Select month</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.month.selectMonth}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={styles.monthPickerWrap}>
               {salaryMonthOptions.map((m) => {
                 const selected = attendanceMonth === m;
@@ -2859,25 +2862,25 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       {monthLabel(m)}
                     </Text>
                     <Text variant="bodySmall" style={selected ? styles.monthPickSubSelected : styles.monthPickSub} numberOfLines={1}>
-                      {isCurrent ? 'Current month' : m}
+                      {isCurrent ? t.month.current : m}
                     </Text>
                   </Pressable>
                 );
               })}
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setAttendanceMonthPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setAttendanceMonthPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog
           visible={historyMemoMonthPickerOpen}
           onDismiss={() => setHistoryMemoMonthPickerOpen(false)}
-          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : styles.monthPickerDialog]}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : [styles.monthPickerDialog, monthDialogSize]]}
         >
-          <Dialog.Title>Memo month</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.month.memoMonth}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={styles.monthPickerWrap}>
               {salaryMonthOptions.map((m) => {
                 const selected = historyMemoMonth === m;
@@ -2900,25 +2903,25 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       {monthLabel(m)}
                     </Text>
                     <Text variant="bodySmall" style={selected ? styles.monthPickSubSelected : styles.monthPickSub} numberOfLines={1}>
-                      {isCurrent ? 'Current month' : m}
+                      {isCurrent ? t.month.current : m}
                     </Text>
                   </Pressable>
                 );
               })}
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setHistoryMemoMonthPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setHistoryMemoMonthPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog
           visible={profileHistoryMonthPickerOpen}
           onDismiss={() => setProfileHistoryMonthPickerOpen(false)}
-          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : styles.monthPickerDialog]}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : [styles.monthPickerDialog, monthDialogSize]]}
         >
-          <Dialog.Title>Profile history month</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.month.profileHistoryMonth}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={styles.monthPickerWrap}>
               {salaryMonthOptions.map((m) => {
                 const selected = profileHistoryMonth === m;
@@ -2941,25 +2944,25 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       {monthLabel(m)}
                     </Text>
                     <Text variant="bodySmall" style={selected ? styles.monthPickSubSelected : styles.monthPickSub} numberOfLines={1}>
-                      {isCurrent ? 'Current month' : m}
+                      {isCurrent ? t.month.current : m}
                     </Text>
                   </Pressable>
                 );
               })}
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setProfileHistoryMonthPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setProfileHistoryMonthPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog
           visible={historySalaryMemoMonthPickerOpen}
           onDismiss={() => setHistorySalaryMemoMonthPickerOpen(false)}
-          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : styles.monthPickerDialog]}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, layoutMobile ? styles.monthPickerSheet : [styles.monthPickerDialog, monthDialogSize]]}
         >
-          <Dialog.Title>Salary memo month</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.month.salaryMemoMonth}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={styles.monthPickerWrap}>
               {salaryMonthOptions.map((m) => {
                 const selected = historySalaryMemoMonth === m;
@@ -2982,29 +2985,29 @@ export default function AdminDeliveryBoyDetailDashboard() {
                       {monthLabel(m)}
                     </Text>
                     <Text variant="bodySmall" style={selected ? styles.monthPickSubSelected : styles.monthPickSub} numberOfLines={1}>
-                      {isCurrent ? 'Current month' : m}
+                      {isCurrent ? t.month.current : m}
                     </Text>
                   </Pressable>
                 );
               })}
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setHistorySalaryMemoMonthPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setHistorySalaryMemoMonthPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog
           visible={attendanceEditOpen}
           onDismiss={() => setAttendanceEditOpen(false)}
-          style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}
         >
-          <Dialog.Title>Attendance</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.dialogs.attendanceTitle}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={{ gap: 12 }}>
               <View style={[styles.monthlySummaryCard, sectionCard]}>
                 <Text variant="bodySmall" style={textSub}>
-                  Selected Date
+                  {t.dialogs.selectedDate}
                 </Text>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
                   {attendanceSelected?.dateIso ?? '—'}
@@ -3016,28 +3019,28 @@ export default function AdminDeliveryBoyDetailDashboard() {
                   <Pressable onPress={() => setAttendanceStatusPickerOpen(true)} style={({ pressed }) => [styles.pickerRow, pressed && styles.pressed]}>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text variant="bodySmall" style={textSub}>
-                        Attendance Status
+                        {t.dialogs.attendanceStatus}
                       </Text>
                       <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                        {attendanceDraftStatus}
+                        {attendanceStatusLabel(t, attendanceDraftStatus)}
                       </Text>
                     </View>
                     <MaterialCommunityIcons name="chevron-down" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
                   </Pressable>
 
                   <Text variant="bodySmall" style={textSub}>
-                    Attendance is marked by admin only.
+                    {t.dialogs.adminOnly}
                   </Text>
                 </>
               ) : (
                 <>
                   <View style={styles.kvGrid}>
                     {[
-                      { label: 'Current Attendance Status', value: attendanceSelectedEntry.attendanceStatus },
+                      { label: t.dialogs.currentStatus, value: attendanceStatusLabel(t, attendanceSelectedEntry.attendanceStatus) },
                       ...(attendanceSelectedEntry.attendanceStatus === 'Absent'
                         ? [
                             {
-                              label: 'Covering route by',
+                              label: t.dialogs.coveringRouteBy,
                               value:
                                 absentCoverForSelectedDate?.name ??
                                 absentCoverForSelectedDate?.id ??
@@ -3047,9 +3050,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
                             },
                           ]
                         : []),
-                      { label: 'Route Name', value: (attendanceSelectedEntry as any)?.routeName ?? b?.primaryRouteName ?? '—' },
+                      { label: t.dialogs.routeName, value: (attendanceSelectedEntry as any)?.routeName ?? b?.primaryRouteName ?? '—' },
                       {
-                        label: 'Attendance marked at',
+                        label: t.dialogs.markedAt,
                         value: formatUpdatedAtShort(attendanceSelectedEntry.updatedAt ?? attendanceSelectedEntry.createdAt),
                       },
                     ].map((x) => (
@@ -3066,50 +3069,49 @@ export default function AdminDeliveryBoyDetailDashboard() {
                 </>
               )}
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
+          {/* Dialog.Actions passes props (compact, style) to each direct child, so the buttons sit directly inside it —
+              a fragment wrapper cannot take those props and React reports it. */}
           <Dialog.Actions>
-            {!attendanceSelectedEntry ? (
-              <>
-                <Button onPress={() => setAttendanceEditOpen(false)}>Cancel</Button>
-                <Button
-                  mode="contained"
-                  onPress={() => {
-                    if (attendanceDraftStatus === 'Absent') {
-                      setAbsentFlowOpen(true);
-                    } else {
-                      void saveAttendanceStatusWrite(attendanceDraftStatus, { closeAfterSave: true });
-                    }
-                  }}
-                  loading={update.isPending}
-                  disabled={update.isPending}
-                >
-                  Save
-                </Button>
-              </>
+            <Button onPress={() => setAttendanceEditOpen(false)}>{c.actions.cancel}</Button>
+            {attendanceSelectedEntry ? (
+              <Button
+                mode="outlined"
+                textColor={COLORS.danger}
+                onPress={deleteAttendanceForSelectedDate}
+                loading={update.isPending}
+                disabled={update.isPending}
+              >
+                {c.actions.delete}
+              </Button>
+            ) : null}
+            {attendanceSelectedEntry ? (
+              <Button
+                mode="contained"
+                onPress={() => {
+                  setAttendanceDraftStatus(deliveryBoyAdminAttendanceDraftFromStored(attendanceSelectedEntry.attendanceStatus));
+                  setAttendanceStatusPickerOpen(true);
+                }}
+                loading={update.isPending}
+                disabled={update.isPending}
+              >
+                {t.dialogs.update}
+              </Button>
             ) : (
-              <>
-                <Button onPress={() => setAttendanceEditOpen(false)}>Cancel</Button>
-                <Button
-                  mode="outlined"
-                  textColor={COLORS.danger}
-                  onPress={deleteAttendanceForSelectedDate}
-                  loading={update.isPending}
-                  disabled={update.isPending}
-                >
-                  Delete
-                </Button>
-                <Button
-                  mode="contained"
-                  onPress={() => {
-                    setAttendanceDraftStatus(deliveryBoyAdminAttendanceDraftFromStored(attendanceSelectedEntry.attendanceStatus));
-                    setAttendanceStatusPickerOpen(true);
-                  }}
-                  loading={update.isPending}
-                  disabled={update.isPending}
-                >
-                  Update
-                </Button>
-              </>
+              <Button
+                mode="contained"
+                onPress={() => {
+                  if (attendanceDraftStatus === 'Absent') {
+                    setAbsentFlowOpen(true);
+                  } else {
+                    void saveAttendanceStatusWrite(attendanceDraftStatus, { closeAfterSave: true });
+                  }
+                }}
+                loading={update.isPending}
+                disabled={update.isPending}
+              >
+                {c.actions.save}
+              </Button>
             )}
           </Dialog.Actions>
         </Dialog>
@@ -3117,10 +3119,10 @@ export default function AdminDeliveryBoyDetailDashboard() {
         <Dialog
           visible={attendanceStatusPickerOpen}
           onDismiss={() => setAttendanceStatusPickerOpen(false)}
-          style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}
         >
-          <Dialog.Title>Select status</Dialog.Title>
-          <Dialog.Content>
+          <Dialog.Title>{t.dialogs.selectStatus}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             {DELIVERY_BOY_ADMIN_ATTENDANCE_STATUS_OPTIONS.map((label) => {
               const dot = label === 'Absent' ? 'absent' : 'present';
               return (
@@ -3136,21 +3138,21 @@ export default function AdminDeliveryBoyDetailDashboard() {
                   <View style={styles.statusPickRow}>
                     <View style={[styles.attDot, styles[`attDot_${dot}`]]} />
                     <Text variant="bodyMedium" style={textMain}>
-                      {label}
+                      {attendanceStatusLabel(t, label)}
                     </Text>
                   </View>
                 </Pressable>
               );
             })}
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setAttendanceStatusPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setAttendanceStatusPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
-        <Dialog visible={!!picker} onDismiss={() => setPicker(null)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>{picker?.kind === 'backup' ? 'Select Backup Delivery Boy' : 'Select Replacement Delivery Boy'}</Dialog.Title>
-          <Dialog.Content>
+        <Dialog visible={!!picker} onDismiss={() => setPicker(null)} style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}>
+          <Dialog.Title>{picker?.kind === 'backup' ? t.dialogs.selectBackup : t.dialogs.selectReplacement}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             {(allBoys.data?.items ?? [])
               .filter((x) => x.status === 'Active' && x.id !== id)
               .map((x) => (
@@ -3171,15 +3173,15 @@ export default function AdminDeliveryBoyDetailDashboard() {
                   </Text>
                 </Pressable>
               ))}
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setPicker(null)}>Close</Button>
+            <Button onPress={() => setPicker(null)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
-        <Dialog visible={attendanceCoverPickerOpen} onDismiss={() => setAttendanceCoverPickerOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Route cover for</Dialog.Title>
-          <Dialog.Content>
+        <Dialog visible={attendanceCoverPickerOpen} onDismiss={() => setAttendanceCoverPickerOpen(false)} style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}>
+          <Dialog.Title>{t.dialogs.routeCoverFor}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             {(allBoys.data?.items ?? [])
               .filter((x) => x.status === 'Active' && x.id !== id)
               .map((x) => (
@@ -3196,53 +3198,56 @@ export default function AdminDeliveryBoyDetailDashboard() {
                   </Text>
                 </Pressable>
               ))}
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setAttendanceCoverPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setAttendanceCoverPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
-        <Dialog visible={absentFlowOpen} onDismiss={() => setAbsentFlowOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Absent for this day</Dialog.Title>
-          <Dialog.Content>
+        <Dialog visible={absentFlowOpen} onDismiss={() => setAbsentFlowOpen(false)} style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}>
+          <Dialog.Title>{t.dialogs.absentTitle}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <View style={{ gap: 12 }}>
               <Text variant="bodySmall" style={textSub}>
-                Date: {attendanceSelected?.dateIso ?? '—'}. A linked leave record (unpaid, for payroll) and optional replacement stay in sync with Salary
-                and Leaves.
+                {t.dialogs.absentIntro(attendanceSelected?.dateIso ?? '—')}
               </Text>
               <Pressable onPress={() => setAbsentReplPickerOpen(true)} style={({ pressed }) => [styles.pickerRow, pressed && styles.pressed]}>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text variant="bodySmall" style={textSub}>
-                    Who covered the route? (optional)
+                    {t.dialogs.whoCoveredOptional}
                   </Text>
                   <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                    {absentReplacementName ?? absentReplacementId ?? '— Tap to select'}
+                    {absentReplacementName ?? absentReplacementId ?? t.dialogs.tapToSelect}
                   </Text>
                 </View>
                 <MaterialCommunityIcons name="chevron-down" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
               </Pressable>
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                 <Text variant="bodyMedium" style={textMain}>
-                  Credit salary to cover person
+                  {t.dialogs.creditToCover}
                 </Text>
-                <Switch value={absentReplTransfer} onValueChange={setAbsentReplTransfer} />
+                <Switch
+                  value={absentReplTransfer}
+                  onValueChange={setAbsentReplTransfer}
+                  accessibilityLabel={t.dialogs.creditToCover}
+                />
               </View>
               <Text variant="bodySmall" style={textSub}>
-                When enabled, the selected cover person receives route-coverage credit for this day (same per-day amount as on their Salary tab).
+                {t.dialogs.creditHint}
               </Text>
             </View>
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setAbsentFlowOpen(false)}>Cancel</Button>
+            <Button onPress={() => setAbsentFlowOpen(false)}>{c.actions.cancel}</Button>
             <Button mode="contained" onPress={() => confirmAbsentFromAttendance()} loading={update.isPending} disabled={update.isPending}>
-              Save
+              {c.actions.save}
             </Button>
           </Dialog.Actions>
         </Dialog>
 
-        <Dialog visible={absentReplPickerOpen} onDismiss={() => setAbsentReplPickerOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Cover person</Dialog.Title>
-          <Dialog.Content>
+        <Dialog visible={absentReplPickerOpen} onDismiss={() => setAbsentReplPickerOpen(false)} style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}>
+          <Dialog.Title>{t.dialogs.coverPerson}</Dialog.Title>
+          <DialogScrollBody maxHeight={dialogListMaxH}>
             <Pressable
               onPress={() => {
                 setAbsentReplacementId(undefined);
@@ -3252,7 +3257,7 @@ export default function AdminDeliveryBoyDetailDashboard() {
               style={({ pressed }) => [styles.pickItem, pressed && styles.pressed]}
             >
               <Text variant="bodyMedium" style={textMain}>
-                None
+                {c.states.none}
               </Text>
             </Pressable>
             {(allBoys.data?.items ?? [])
@@ -3272,9 +3277,9 @@ export default function AdminDeliveryBoyDetailDashboard() {
                   </Text>
                 </Pressable>
               ))}
-          </Dialog.Content>
+          </DialogScrollBody>
           <Dialog.Actions>
-            <Button onPress={() => setAbsentReplPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setAbsentReplPickerOpen(false)}>{c.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
@@ -3299,16 +3304,28 @@ const styles = StyleSheet.create({
   appBarSideLeft: { width: 44, alignItems: 'flex-start', justifyContent: 'center' },
   appBarCenter: { flex: 1, minWidth: 0, alignItems: 'flex-start', justifyContent: 'center' },
   appBarSideRight: { minWidth: 96, alignItems: 'flex-end', justifyContent: 'center' },
-  iconBtn: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  iconBtn: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
 
   headerTitle: { fontWeight: '900', flexShrink: 1, textAlign: 'left', alignSelf: 'stretch' },
   headerTitleMobile: { fontSize: 17 },
-  editPill: { height: 40, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' },
-  editPillCompact: { height: 34, paddingHorizontal: 10, borderRadius: 12, gap: 6 },
+  editPill: { minHeight: 44, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' },
+  editPillCompact: { minHeight: 44, paddingHorizontal: 10, borderRadius: 12, gap: 6 },
+  /** Header "Edit" (compact Paper Button) keeps a ≥44px touch target. */
+  editBtnContent: { minHeight: 44 },
 
-  tabsBar: { paddingHorizontal: 16, paddingBottom: 10 },
+  // Same rhythm as Customer Details: a gap between the profile card and the tab row.
+  tabsBar: { paddingHorizontal: amraleSpacing.marginMobile, paddingBottom: amraleSpacing.sm, marginTop: amraleSpacing.sm },
   tabsBarTablet: { paddingBottom: 12 },
+  /** Desktop: header + tab row share `containerDesktop`'s centered 1120px column and 28px gutter. */
+  tabsBarDesktop: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 28 },
+  appBarDesktop: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 28 },
+  /** Keeps the profile card in the same centered column as the tabs and tab content on laptops. */
+  /** Shared month stepper under the tabs. */
+  monthBar: { paddingHorizontal: 16, paddingBottom: 10 },
+  monthBarDesktop: { width: '100%', maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 28 },
+  profileCardWrap: { width: '100%' },
+  profileCardWrapDesktop: { maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 12 },
   tabsBarLight: { backgroundColor: 'transparent' },
   tabsBarDark: { backgroundColor: 'transparent' },
   tabsRowScroll: { flexDirection: 'row', gap: 8 },
@@ -3316,22 +3333,15 @@ const styles = StyleSheet.create({
   tabsRowScrollMobileContent: { flexDirection: 'row', flexGrow: 1, gap: 6, paddingRight: 4, alignItems: 'center' },
   tabsRowFlex: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   tabsRowWrap: { flexWrap: 'wrap' },
+  tabsRowMobileGap: { gap: 6 },
   tabsRowNoWrap: { flexWrap: 'nowrap' },
 
-  tabPill: { borderRadius: 999, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, height: 40 },
-  tabPillMax: { maxWidth: 180 },
-  tabPillCompact: { paddingHorizontal: 10, height: 36, flexShrink: 0 },
-  tabPillActive: { backgroundColor: 'rgba(37,99,235,0.14)', borderColor: 'rgba(37,99,235,0.22)' },
-  tabPillInactive: { backgroundColor: 'rgba(148,163,184,0.08)', borderColor: 'rgba(148,163,184,0.18)' },
-  tabTextActive: { color: '#1D4ED8', fontWeight: '900' },
-  tabTextInactive: { color: 'rgba(30,41,59,0.70)', fontWeight: '800' },
-  tabTextCompact: { fontSize: 13 },
 
   bodyScroll: { flex: 1, overflow: 'hidden' },
   container: { padding: 16, paddingBottom: 24, gap: 12, maxWidth: '100%', width: '100%' },
   containerMobile: { paddingHorizontal: 14, paddingTop: 14, paddingBottom: 28 },
   containerDesktop: { maxWidth: 1120, alignSelf: 'center', paddingHorizontal: 28, paddingBottom: 40, paddingTop: 20 },
-  bold: { fontWeight: '900' },
+  bold: { fontFamily: amraleTypography.fontFamily.bold },
 
   overviewWrap: { width: '100%', maxWidth: '100%', overflow: 'hidden' },
   overviewColumns: { width: '100%', maxWidth: '100%' },
@@ -3353,26 +3363,12 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 3,
   },
-  profileSummaryCardLight: { backgroundColor: '#FFFFFF', borderColor: 'rgba(15,23,42,0.08)' },
+  profileSummaryCardLight: { backgroundColor: dairyTactileColors.surfaceContainerLowest, borderColor: dairyTactileColors.outlineVariant },
   profileSummaryCardMobile: { paddingVertical: 12, paddingHorizontal: 14 },
   profileSummaryTitle: { fontWeight: '800', marginBottom: 10 },
   profileSummaryCols: { width: '100%', gap: 0 },
   profileSummaryColsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 20 },
   profileSummaryCol: { flex: 1, minWidth: 0 },
-
-  profileKvRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(148,163,184,0.35)',
-    maxWidth: '100%',
-  },
-  profileKvRowCompact: { paddingVertical: 8, gap: 8 },
-  profileKvLabel: { fontWeight: '700', flex: 1, minWidth: 0, maxWidth: '48%', paddingRight: 8 },
-  profileKvValue: { flex: 1, minWidth: 0, textAlign: 'right', maxWidth: '52%' },
   profileStatusRow: { borderBottomWidth: 0 },
   profileStatusSeg: {
     flexDirection: 'row',
@@ -3434,24 +3430,26 @@ const styles = StyleSheet.create({
   topStatCardPadMobile: { paddingVertical: 12, paddingHorizontal: 12, minHeight: 96 },
   topStatCardTablet: { flexGrow: 1, flexShrink: 1, flexBasis: '47%', minWidth: 0, maxWidth: '100%' },
   topStatCardDesktop: { flexGrow: 1, flexShrink: 1, flexBasis: '22%', minWidth: 0 },
-  topStatCardLight: { backgroundColor: '#FFFFFF', borderColor: 'rgba(15,23,42,0.08)' },
+  topStatCardLight: { backgroundColor: dairyTactileColors.surfaceContainerLowest, borderColor: dairyTactileColors.outlineVariant },
   topStatCardDark: { backgroundColor: 'rgba(15,23,42,0.92)', borderColor: 'rgba(255,255,255,0.10)' },
   topStatLabel: { fontWeight: '800', flex: 1, minWidth: 0, paddingRight: 6 },
   topStatValue: { marginTop: 4, fontWeight: '900', flexShrink: 1 },
 
   sectionCard: { borderRadius: 16, borderWidth: 1, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 12, shadowOffset: { width: 0, height: 8 } },
   sectionContent: { gap: 10 },
+  /** Explanatory line under a detail card's fields. */
+  sectionHint: { marginTop: 8 },
+  /** Mark active / Mark inactive, under the Basic information fields. */
+  statusActionsRow: { flexDirection: 'row', gap: 8, marginTop: 12, flexWrap: 'wrap' },
   kvGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },
   kvRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingVertical: 6 },
   miniCard: { flexGrow: 1, flexBasis: 160, minWidth: 0, padding: 10, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', backgroundColor: 'rgba(148,163,184,0.08)' },
   headerCard: { padding: 12, borderRadius: 12, borderWidth: 1, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 10, shadowOffset: { width: 0, height: 6 } },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  headerName: { fontWeight: '900' },
   badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
-  badgeActive: { backgroundColor: 'rgba(37,99,235,0.16)' },
+  badgeActive: { backgroundColor: 'rgba(0, 85, 199, 0.12)' },
   badgeInactive: { backgroundColor: 'rgba(239,68,68,0.14)' },
-  badgeTextActive: { color: '#1D4ED8', fontWeight: '900' },
-  badgeTextInactive: { color: '#B91C1C', fontWeight: '900' },
+  badgeTextActive: { color: dairyTactileColors.primaryContainer, fontFamily: amraleTypography.fontFamily.semiBold },
+  badgeTextInactive: { color: dairyTactileColors.error, fontFamily: amraleTypography.fontFamily.semiBold },
 
   summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },
   summaryCard: {
@@ -3514,12 +3512,13 @@ const styles = StyleSheet.create({
   calendarHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' },
   monthNavRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10 },
   monthNavCenter: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center', gap: 2 },
-  monthNavBtn: { width: 44, height: 44, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', backgroundColor: 'rgba(148,163,184,0.08)', alignItems: 'center', justifyContent: 'center' },
+  monthNavBtn: { width: 44, height: 44, borderRadius: amraleRadius.md, borderWidth: 1, borderColor: dairyTactileColors.outlineVariant, backgroundColor: dairyTactileColors.surfaceContainerLow, alignItems: 'center', justifyContent: 'center' },
   monthNavBtnDisabled: { opacity: 0.55 },
   weekHeaderRow: { flexDirection: 'row' },
   weekHeaderCell: { flexGrow: 1, flexBasis: 0, textAlign: 'center', paddingVertical: 6, fontWeight: '800' },
   calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  calendarGridTiny: { width: 360 },
+  /** Desktop: cap week header + grid (~100px cells) instead of ~150px squares across the 1120px column. */
+  calendarCapDesktop: { width: '100%', maxWidth: 720, alignSelf: 'center' },
   calBlank: { width: '14.2857%', aspectRatio: 1, padding: 2 },
   calCell: {
     width: '14.2857%',
@@ -3534,7 +3533,8 @@ const styles = StyleSheet.create({
   calCellDesktop: { padding: 10 },
   calCellTablet: { padding: 8 },
   calCellMobile: { padding: 6 },
-  calCellTiny: { width: 52, height: 52, padding: 5, aspectRatio: undefined },
+  // Keeps the 14.2857% width + square aspect (a fixed 52px width made 7 cells overflow a 320px screen).
+  calCellTiny: { padding: 3 },
   calCellPresentLight: { backgroundColor: 'rgba(34,197,94,0.22)', borderColor: 'rgba(34,197,94,0.55)' },
   calCellPresentDark: { backgroundColor: 'rgba(34,197,94,0.26)', borderColor: 'rgba(34,197,94,0.48)' },
   calCellAbsentLight: { backgroundColor: 'rgba(239,68,68,0.18)', borderColor: 'rgba(239,68,68,0.48)' },
@@ -3549,6 +3549,24 @@ const styles = StyleSheet.create({
   attDot_upcoming: { backgroundColor: 'rgba(148,163,184,0.95)' },
   attDot_none: { backgroundColor: 'rgba(148,163,184,0.35)' },
   calMeta: { color: 'rgba(30,41,59,0.70)', fontWeight: '800' },
+  calCellLocked: { opacity: 0.4 },
+  calLegendRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 12 },
+  calLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  calLegendSwatch: { width: 14, height: 14, borderRadius: 4, borderWidth: 1 },
+  calLegendPresent: { backgroundColor: 'rgba(34,197,94,0.22)', borderColor: 'rgba(34,197,94,0.55)' },
+  calLegendAbsent: { backgroundColor: 'rgba(239,68,68,0.18)', borderColor: 'rgba(239,68,68,0.48)' },
+  calLegendLocked: { backgroundColor: 'rgba(148,163,184,0.18)', borderColor: 'rgba(148,163,184,0.45)', opacity: 0.6 },
+
+  errorBanner: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.35)',
+    backgroundColor: 'rgba(239,68,68,0.10)',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  errorBannerText: { color: '#B91C1C', fontWeight: '700' },
+  errorBannerTextDark: { color: '#FCA5A5', fontWeight: '700' },
 
   monthlySummaryCard: {
     marginTop: 10,
@@ -3671,7 +3689,7 @@ const styles = StyleSheet.create({
   salaryNotePadMobile: { padding: 8 },
   salaryFormulaPadTablet: { padding: 10 },
   salaryFormulaPadMobile: { padding: 9 },
-  salaryTabKvRowMobile: { paddingVertical: 8, gap: 8 },
+  salaryTabKvRowMobile: { flexDirection: 'column', alignItems: 'flex-start', paddingVertical: 8, gap: 2 },
   paymentFieldsGridMobile: { width: '100%', maxWidth: '100%' },
   salaryInputFullMobile: { width: '100%', maxWidth: '100%', alignSelf: 'stretch' },
   salaryInputContentMobile: { minHeight: 40 },
@@ -3802,6 +3820,8 @@ const styles = StyleSheet.create({
   salaryTabKvRowDesktop: { width: '48%', maxWidth: '48%' },
   salaryTabKvLabel: { flex: 1, minWidth: 0, paddingRight: 8 },
   salaryTabKvValue: { flex: 1, minWidth: 0, textAlign: 'right' },
+  salaryTabKvValueMobile: { flex: 0, width: '100%', textAlign: 'left' },
+  salaryTabKvLabelMobile: { flex: 0, width: '100%', paddingRight: 0 },
   salaryTabFormulaBox: {
     marginTop: 16,
     padding: 12,
@@ -3951,7 +3971,7 @@ const styles = StyleSheet.create({
 
   dialogLight: { backgroundColor: 'white' },
   dialogDark: { backgroundColor: '#0F172A' },
-  pickItem: { paddingVertical: 10 },
+  pickItem: { paddingVertical: 10, minHeight: 44, justifyContent: 'center' },
   statusPickRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 
   statusChip: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1 },
@@ -3981,11 +4001,11 @@ const styles = StyleSheet.create({
   monthPickSub: { color: 'rgba(30,41,59,0.70)' },
   monthPickSubSelected: { color: 'rgba(29,78,216,0.95)', fontWeight: '800' },
 
-  sectionCardLight: { backgroundColor: 'white', borderColor: 'rgba(37,99,235,0.10)' },
+  sectionCardLight: { backgroundColor: dairyTactileColors.surfaceContainerLowest, borderColor: dairyTactileColors.outlineVariant },
   sectionCardDark: { backgroundColor: 'rgba(15,23,42,0.70)', borderColor: 'rgba(255,255,255,0.10)' },
-  textOnLight: { color: COLORS.text },
+  textOnLight: { color: dairyTactileColors.onSurface },
   textOnDark: { color: 'rgba(255,255,255,0.96)' },
-  subtleOnLight: { color: 'rgba(30,41,59,0.70)' },
+  subtleOnLight: { color: dairyTactileColors.onSurfaceVariant },
   subtleOnDark: { color: 'rgba(255,255,255,0.78)' },
 });
 

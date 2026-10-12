@@ -4,12 +4,13 @@ import { Platform } from 'react-native';
 type StorageKeyChangeListener = (key: string) => void;
 
 const listenersByKey = new Map<string, Set<StorageKeyChangeListener>>();
+const pendingLocalNotifications = new Set<string>();
 
 let sharedChannel: BroadcastChannel | null = null;
 let sharedChannelInitialized = false;
 
 function getSharedChannel(): BroadcastChannel | null {
-  if (Platform.OS !== 'web') return null;
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return null;
   if (sharedChannelInitialized) return sharedChannel;
   sharedChannelInitialized = true;
   try {
@@ -27,9 +28,14 @@ function getSharedChannel(): BroadcastChannel | null {
 }
 
 function notifyLocal(key: string) {
-  const set = listenersByKey.get(key);
-  if (!set?.size) return;
-  for (const cb of set) cb(key);
+  if (pendingLocalNotifications.has(key)) return;
+  pendingLocalNotifications.add(key);
+  queueMicrotask(() => {
+    pendingLocalNotifications.delete(key);
+    const set = listenersByKey.get(key);
+    if (!set?.size) return;
+    for (const cb of [...set]) cb(key);
+  });
 }
 
 function broadcastWeb(key: string) {

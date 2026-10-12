@@ -1,6 +1,6 @@
 import type { EntityBase } from '@/src/domain/shared/types';
 
-export type ContactChannelType = 'call' | 'whatsapp' | 'email';
+export type ContactChannelType = 'call' | 'whatsapp' | 'email' | 'website';
 
 export interface ContactChannel {
   type: ContactChannelType;
@@ -8,7 +8,7 @@ export interface ContactChannel {
   label: string;
   /** Primary display value on the card */
   value: string;
-  /** tel:, https://wa.me/..., mailto: */
+  /** tel:, https://wa.me/..., mailto:, https://… */
   actionUri: string;
 }
 

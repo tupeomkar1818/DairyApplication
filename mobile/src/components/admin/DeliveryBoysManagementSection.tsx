@@ -1,329 +1,405 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { LinearGradient } from 'expo-linear-gradient';
-import React, { useMemo, useState } from 'react';
-import { FlatList, Linking, Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
-import { Button, Card, Dialog, Menu, Portal, Text, TextInput } from 'react-native-paper';
+import { useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Linking,
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+  type ViewStyle,
+} from 'react-native';
 import { router } from 'expo-router';
+import { Button, Dialog, Portal } from 'react-native-paper';
 
+import { ADMIN_LIST_GAP, ADMIN_LIST_PAD, useAdminListGrid } from '@/src/components/admin/AdminListScreenLayout';
+import {
+  AdminListControls,
+  AdminListEmptyState,
+  AdminListErrorState,
+  AdminListIconButton,
+  adminListCardStyles as cardStyles,
+  type AdminListSortOption,
+} from '@/src/components/shared/adminListUi';
 import type { DeliveryBoyResponse } from '@/src/domain/deliveryBoys/dtos';
 import { useDeleteDeliveryBoy, useDeliveryBoys } from '@/src/hooks/deliveryBoys';
-import { computeListCardWidth, useResponsiveLayout } from '@/src/utils/responsiveLayout';
+import { strings } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
+import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { useResponsiveDialogStyle } from '@/src/utils/responsiveLayout';
 
-const COLORS = {
-  primary: '#2563EB',
-  secondary: '#60A5FA',
-  text: '#1E293B',
-};
+type SortBy = 'name_asc' | 'name_desc' | 'route_asc' | 'salary_desc';
+type StatusFilter = 'all' | 'Active' | 'Inactive';
 
-function routeLabel(routeName: string | undefined): string {
-  const s = (routeName ?? '').trim();
-  return s ? s : '—';
+/** Sort choices; labels are looked up in the current language when the list renders. */
+function sortOptions(): AdminListSortOption<SortBy>[] {
+  const s = strings('deliveryBoys').list.sort;
+  return [
+    { key: 'name_asc', label: s.nameAsc, short: s.nameAscShort, icon: 'sort-alphabetical-ascending' },
+    { key: 'name_desc', label: s.nameDesc, short: s.nameDescShort, icon: 'sort-alphabetical-descending' },
+    { key: 'route_asc', label: s.routeAsc, short: s.routeAscShort, icon: 'routes' },
+    { key: 'salary_desc', label: s.salaryDesc, short: s.salaryDescShort, icon: 'sort-numeric-descending' },
+  ];
 }
 
-export function DeliveryBoysManagementSection() {
-  const scheme = useColorScheme();
-  const isDark = scheme === 'dark';
-  const { width, listColumns, isMobile } = useResponsiveLayout();
+const STATUS_FILTERS: StatusFilter[] = ['all', 'Active', 'Inactive'];
 
+function statusFilterLabel(key: StatusFilter): string {
+  const states = strings('common').states;
+  return key === 'all' ? states.all : key === 'Active' ? states.active : states.inactive;
+}
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0]![0]! + (parts.length > 1 ? parts[parts.length - 1]![0]! : '')).toUpperCase();
+}
+
+function routeLabel(routeName: string | undefined): string {
+  return (routeName ?? '').trim() || strings('deliveryBoys').list.noRoute;
+}
+
+function mobileLabel(mobile: string | undefined): string {
+  const digits = (mobile ?? '').replace(/\D/g, '');
+  if (digits.length === 10) return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+  return (mobile ?? '').trim() || strings('deliveryBoys').list.noMobile;
+}
+
+/** Monthly salary, or the per-day rate for attendance-based boys. */
+function salaryLabel(b: DeliveryBoyResponse): string {
+  const t = strings('deliveryBoys').list;
+  if (b.salaryType === 'Attendance Based Salary') {
+    const perDay = Number(b.perDaySalary ?? 0);
+    return perDay > 0 ? t.perDayRate(`₹${perDay}`) : t.perDayRateNotSet;
+  }
+  const monthly = Number(b.monthlySalary ?? 0);
+  return monthly > 0 ? t.monthlyRate(`₹${monthly.toLocaleString('en-IN')}`) : t.salaryNotSet;
+}
+
+/** Sort value for "Salary (high to low)": per-day rates compare on their monthly equivalent. */
+function salarySortValue(b: DeliveryBoyResponse): number {
+  if (b.salaryType === 'Attendance Based Salary') return Number(b.perDaySalary ?? 0) * 30;
+  return Number(b.monthlySalary ?? 0);
+}
+
+function DeliveryBoyCard({
+  boy: b,
+  cellStyle,
+  onDelete,
+}: {
+  boy: DeliveryBoyResponse;
+  cellStyle: ViewStyle | undefined;
+  onDelete: (b: DeliveryBoyResponse) => void;
+}) {
+  // Re-render when the language changes; the label helpers read the current language.
+  const t = useStrings('deliveryBoys').list;
+  const states = useStrings('common').states;
+  const isActive = b.status === 'Active';
+  const tel = (b.mobileNumber ?? '').trim();
+
+  return (
+    // The whole card opens the delivery boy details; the call/edit/delete buttons inside handle their own taps.
+    <Pressable
+      onPress={() => router.push({ pathname: '/(admin)/delivery-detail', params: { id: b.id } })}
+      style={({ pressed }) => [
+        cardStyles.card,
+        cellStyle,
+        !isActive && cardStyles.cardDimmed,
+        pressed && cardStyles.cardPressed,
+      ]}
+      // No `button` role: on web that renders a <button>, and the action buttons inside would be invalid nested buttons.
+      accessibilityLabel={t.viewDetailsFor(b.fullName)}
+    >
+      {/* Details use the card's full width; the actions sit in a footer row instead of a column that squeezed the text
+          to ~130px on small phones. */}
+      <View style={styles.cardTop}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{initialsOf(b.fullName ?? '')}</Text>
+        </View>
+
+        <View style={styles.cardBody}>
+          <View style={cardStyles.nameRow}>
+            <Text style={cardStyles.name} numberOfLines={2}>
+              {b.fullName}
+            </Text>
+            <View style={[cardStyles.badge, isActive ? styles.badgeActive : styles.badgeInactive]}>
+              <Text style={[cardStyles.badgeText, isActive ? styles.badgeTextActive : styles.badgeTextInactive]}>
+                {(isActive ? states.active : states.inactive).toUpperCase()}
+              </Text>
+            </View>
+          </View>
+
+          <View style={cardStyles.metaLine}>
+            <MaterialCommunityIcons name="routes" size={14} color={amraleColors.textSubtle} />
+            <Text style={cardStyles.metaText} numberOfLines={2}>
+              {routeLabel(b.primaryRouteName)}
+            </Text>
+          </View>
+          <View style={cardStyles.metaLine}>
+            <MaterialCommunityIcons name="phone-outline" size={14} color={amraleColors.textSubtle} />
+            <Text style={cardStyles.metaText} numberOfLines={1}>
+              {mobileLabel(b.mobileNumber)}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.cardFooter}>
+        <View style={styles.salary}>
+          <MaterialCommunityIcons name="cash" size={16} color={amraleColors.blue} />
+          <Text style={styles.salaryText} numberOfLines={1}>
+            {salaryLabel(b)}
+          </Text>
+        </View>
+        <View style={cardStyles.iconRow}>
+          <AdminListIconButton
+            icon="phone"
+            tone="green"
+            label={t.callName(b.fullName)}
+            disabled={!tel}
+            onPress={() => {
+              if (!tel) return;
+              void Linking.openURL(`tel:${tel}`);
+            }}
+          />
+          <AdminListIconButton
+            icon="pencil-outline"
+            tone="blue"
+            label={t.editName(b.fullName)}
+            onPress={() => router.push({ pathname: '/(admin)/delivery-edit', params: { id: b.id } })}
+          />
+          <AdminListIconButton icon="trash-can-outline" tone="red" label={t.deleteName(b.fullName)} onPress={() => onDelete(b)} />
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+export type DeliveryBoysManagementSectionProps = {
+  bottomInset?: number;
+};
+
+export function DeliveryBoysManagementSection({ bottomInset = 0 }: DeliveryBoysManagementSectionProps) {
+  const t = useStrings('deliveryBoys').list;
+  const c = useStrings('common');
   const deliveryBoys = useDeliveryBoys();
   const del = useDeleteDeliveryBoy();
+  const grid = useAdminListGrid();
+  const dialogStyle = useResponsiveDialogStyle(420);
+  // Short windows (a phone held sideways): pinned search and filters would leave room for less than one card, so they
+  // scroll away with the list instead.
+  const { height: windowHeight } = useWindowDimensions();
+  const controlsScroll = windowHeight < 560;
 
   const [query, setQuery] = useState('');
-  const [nameSort, setNameSort] = useState<'asc' | 'desc'>('asc');
-  const [nameSortMenuOpen, setNameSortMenuOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [sortBy, setSortBy] = useState<SortBy>('name_asc');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeliveryBoyResponse | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const columns = listColumns;
-
-  const cardWidth = useMemo(() => computeListCardWidth(width, columns), [columns, width]);
-
-  const sectionCard = isDark ? styles.sectionCardDark : styles.sectionCardLight;
-  const textMain = isDark ? styles.textOnDark : styles.textOnLight;
-  const textSub = isDark ? styles.subtleOnDark : styles.subtleOnLight;
+  const all = deliveryBoys.data?.items ?? [];
+  const activeCount = useMemo(() => all.filter((b) => b.status === 'Active').length, [all]);
+  const statusCounts: Record<StatusFilter, number> = {
+    all: all.length,
+    Active: activeCount,
+    Inactive: all.length - activeCount,
+  };
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const items = deliveryBoys.data?.items ?? [];
-    if (!q) return items;
-    return items.filter((b) => `${b.fullName ?? ''} ${b.mobileNumber ?? ''}`.toLowerCase().includes(q));
-  }, [deliveryBoys.data?.items, query]);
+    let items = all;
 
-  const sortedDeliveryBoys = useMemo(() => {
-    const items = [...filtered];
-    items.sort((a, b) => {
-      const an = (a.fullName ?? '').trim().toLowerCase();
-      const bn = (b.fullName ?? '').trim().toLowerCase();
-      const cmp = an.localeCompare(bn);
-      return nameSort === 'asc' ? cmp : -cmp;
-    });
-    return items;
-  }, [filtered, nameSort]);
+    if (statusFilter !== 'all') items = items.filter((b) => b.status === statusFilter);
+    if (q) {
+      items = items.filter((b) =>
+        `${b.fullName ?? ''} ${b.mobileNumber ?? ''} ${b.primaryRouteName ?? ''}`.toLowerCase().includes(q),
+      );
+    }
+
+    switch (sortBy) {
+      case 'name_desc':
+        return [...items].sort((a, b) => (b.fullName ?? '').localeCompare(a.fullName ?? ''));
+      case 'route_asc':
+        return [...items].sort((a, b) => (a.primaryRouteName ?? '').localeCompare(b.primaryRouteName ?? ''));
+      case 'salary_desc':
+        return [...items].sort((a, b) => salarySortValue(b) - salarySortValue(a));
+      case 'name_asc':
+      default:
+        return [...items].sort((a, b) => (a.fullName ?? '').localeCompare(b.fullName ?? ''));
+    }
+  }, [all, query, sortBy, statusFilter]);
+
+  const isFiltering = query.trim() !== '' || statusFilter !== 'all';
+  const summaryText = isFiltering ? t.showing(filtered.length, all.length) : t.summary(all.length, activeCount);
+
+  function clearFilters() {
+    setQuery('');
+    setStatusFilter('all');
+  }
+
+  function requestDelete(b: DeliveryBoyResponse) {
+    setDeleteError(null);
+    setDeleteTarget(b);
+    setConfirmOpen(true);
+  }
 
   async function onConfirmDelete() {
     if (!deleteTarget) return;
-    await del.mutateAsync({ id: deleteTarget.id });
-    setConfirmOpen(false);
-    setDeleteTarget(null);
+    setDeleteError(null);
+    try {
+      await del.mutateAsync({ id: deleteTarget.id });
+      setConfirmOpen(false);
+      setDeleteTarget(null);
+    } catch (err) {
+      // Keep the dialog open and explain why (e.g. the boy is still assigned to customers).
+      setDeleteError(err instanceof Error && err.message ? err.message : t.deleteDialog.failed);
+    }
   }
 
+  if (deliveryBoys.isLoading) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator color={amraleColors.blue} size="large" />
+      </View>
+    );
+  }
+
+  if (deliveryBoys.isError && !all.length) {
+    return <AdminListErrorState title={t.loadError} onRetry={() => void deliveryBoys.refetch()} />;
+  }
+
+  const controls = (
+    <AdminListControls
+      searchValue={query}
+      onSearchChange={setQuery}
+      searchPlaceholder={t.searchPlaceholder}
+      searchFieldName="delivery-boy-search"
+      sortOptions={sortOptions()}
+      sortBy={sortBy}
+      onSortChange={setSortBy}
+      chips={STATUS_FILTERS.map((key) => ({ key, label: statusFilterLabel(key), count: statusCounts[key] }))}
+      activeChip={statusFilter}
+      onChipChange={setStatusFilter}
+      summaryText={summaryText}
+      addLabel={t.add}
+      onAdd={() => router.push('/(admin)/delivery-add')}
+      isMobile={grid.isMobile}
+      containerStyle={grid.containerStyle}
+    />
+  );
+
   return (
-    <>
+    <View style={styles.wrap}>
+      {controlsScroll ? null : controls}
+
       <FlatList
-        data={sortedDeliveryBoys}
-        key={columns}
-        numColumns={columns}
+        ListHeaderComponent={controlsScroll ? <View style={styles.controlsHeader}>{controls}</View> : undefined}
+        data={filtered}
+        key={grid.columns}
+        numColumns={grid.columns}
+        columnWrapperStyle={grid.columns > 1 ? styles.gridRow : undefined}
         keyExtractor={(b) => b.id}
-        columnWrapperStyle={columns > 1 ? styles.gridRow : undefined}
-        contentContainerStyle={[styles.container, styles.containerCentered]}
-        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.listContent, grid.containerStyle, { paddingBottom: amraleSpacing.xl + bottomInset }]}
+        style={styles.list}
         keyboardShouldPersistTaps="handled"
-        removeClippedSubviews
-        initialNumToRender={Math.min(12, sortedDeliveryBoys.length)}
-        windowSize={9}
-        maxToRenderPerBatch={12}
-        updateCellsBatchingPeriod={24}
-        ListHeaderComponent={
-          <View style={styles.controlsRow}>
-            <TextInput
-              mode="outlined"
-              placeholder="Search delivery boy name or mobile number"
-              value={query}
-              onChangeText={setQuery}
-              style={[styles.search, sectionCard]}
-              left={<TextInput.Icon icon="magnify" />}
-              dense
-            />
-
-            <Menu
-              visible={nameSortMenuOpen}
-              onDismiss={() => setNameSortMenuOpen(false)}
-              anchor={
-                <Pressable
-                  onPress={() => setNameSortMenuOpen(true)}
-                  style={({ pressed }) => [styles.chip, sectionCard, pressed && styles.pressed]}
-                >
-                  <MaterialCommunityIcons name="sort" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  <Text variant="labelLarge" style={textMain}>
-                    {nameSort === 'asc' ? 'Name (A to Z)' : 'Name (Z to A)'}
-                  </Text>
-                  <MaterialCommunityIcons name="chevron-down" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                </Pressable>
-              }
-            >
-              <Menu.Item
-                title="Name (A to Z)"
-                onPress={() => {
-                  setNameSort('asc');
-                  setNameSortMenuOpen(false);
-                }}
-              />
-              <Menu.Item
-                title="Name (Z to A)"
-                onPress={() => {
-                  setNameSort('desc');
-                  setNameSortMenuOpen(false);
-                }}
-              />
-            </Menu>
-
-            <LinearGradient
-              colors={[COLORS.primary, COLORS.secondary]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.addGradient}
-            >
-              <Pressable
-                onPress={() => router.push('/(admin)/delivery-add')}
-                style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}
-              >
-                <MaterialCommunityIcons name="plus" size={18} color="white" />
-                <Text variant="labelLarge" style={styles.addText}>
-                  Add Delivery Boy
-                </Text>
-              </Pressable>
-            </LinearGradient>
-
-            {sortedDeliveryBoys.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Text variant="bodyMedium" style={isDark ? styles.textOnDark : styles.textOnLight}>
-                  No delivery boys found.
-                </Text>
-              </View>
-            ) : null}
-          </View>
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <AdminListEmptyState
+            icon={all.length ? 'filter-off-outline' : 'truck-outline'}
+            title={all.length ? t.empty.noMatchTitle : t.empty.noneTitle}
+            text={all.length ? t.empty.noMatchText : t.empty.noneText}
+            actionLabel={all.length ? t.empty.clearFilters : t.add}
+            onAction={all.length ? clearFilters : () => router.push('/(admin)/delivery-add')}
+          />
         }
-        renderItem={({ item: b }) => (
-          <Pressable
-            onPress={() => router.push({ pathname: '/(admin)/delivery-detail', params: { id: b.id } })}
-            style={({ pressed }) => [pressed && styles.pressed]}
-          >
-            <Card style={[styles.deliveryCard, sectionCard, { width: cardWidth }]} mode="elevated">
-              <Card.Content style={styles.cardBody}>
-                <View style={styles.badgeRow}>
-                  <View style={[styles.statusBadge, b.status === 'Active' ? styles.statusBadgeActive : styles.statusBadgeInactive]}>
-                    <Text variant="labelSmall" style={styles.statusBadgeText}>
-                      {b.status}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.inlineRow}>
-                  <Text variant="titleSmall" style={[styles.name, textMain]} numberOfLines={1}>
-                    {b.fullName}
-                  </Text>
-                  <Text variant="bodySmall" style={[textSub, styles.sep]}>
-                    {' | '}
-                  </Text>
-                  <Text variant="bodySmall" style={[textSub, styles.routeInline]} numberOfLines={1}>
-                    {routeLabel(b.primaryRouteName)}
-                  </Text>
-                  <Text variant="bodySmall" style={[textSub, styles.sep]}>
-                    {' | '}
-                  </Text>
-                  <Text variant="bodySmall" style={[textSub, styles.mobileInline]} numberOfLines={1}>
-                    {b.mobileNumber ?? '—'}
-                  </Text>
-                </View>
-
-                <View style={styles.actionsRow}>
-                  <Pressable
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      const tel = (b.mobileNumber ?? '').trim();
-                      if (!tel) return;
-                      Linking.openURL(`tel:${tel}`);
-                    }}
-                    style={({ pressed }) => [styles.actionIconBtn, styles.callBtn, pressed && styles.pressed]}
-                    hitSlop={8}
-                  >
-                    <MaterialCommunityIcons name="phone" size={16} color="white" />
-                  </Pressable>
-
-                  <Pressable
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      router.push({ pathname: '/(admin)/delivery-edit', params: { id: b.id } });
-                    }}
-                    style={({ pressed }) => [styles.actionIconBtn, styles.neutralBtn, pressed && styles.pressed]}
-                    hitSlop={8}
-                  >
-                    <MaterialCommunityIcons name="pencil-outline" size={16} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-
-                  <Pressable
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      setDeleteTarget(b);
-                      setConfirmOpen(true);
-                    }}
-                    style={({ pressed }) => [styles.actionIconBtn, styles.neutralBtn, pressed && styles.pressed]}
-                    hitSlop={8}
-                  >
-                    <MaterialCommunityIcons name="trash-can-outline" size={16} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                </View>
-              </Card.Content>
-            </Card>
-          </Pressable>
-        )}
+        renderItem={({ item }) => <DeliveryBoyCard boy={item} cellStyle={grid.cellStyle} onDelete={requestDelete} />}
       />
 
       <Portal>
         <Dialog
-          visible={confirmOpen}
+          visible={confirmOpen && !!deleteTarget}
           onDismiss={() => {
             if (del.isPending) return;
             setConfirmOpen(false);
             setDeleteTarget(null);
+            setDeleteError(null);
           }}
-          style={[isDark ? styles.dialogDark : styles.dialogLight, isMobile && styles.dialogMobile]}
+          style={[styles.dialog, dialogStyle]}
         >
-          <Dialog.Title>Delete delivery boy?</Dialog.Title>
+          <Dialog.Title style={styles.dialogTitle}>{t.deleteDialog.title}</Dialog.Title>
           <Dialog.Content>
-            <Text variant="bodyMedium" style={isDark ? styles.textOnDark : styles.textOnLight}>
-              {deleteTarget ? `Are you sure you want to delete "${deleteTarget.fullName}"?` : 'Are you sure?'}
-            </Text>
+            <Text style={styles.dialogBody}>{deleteTarget ? t.deleteDialog.body(deleteTarget.fullName) : ''}</Text>
+            {deleteError ? <Text style={styles.dialogError}>{deleteError}</Text> : null}
           </Dialog.Content>
           <Dialog.Actions>
             <Button
               onPress={() => {
                 setConfirmOpen(false);
                 setDeleteTarget(null);
+                setDeleteError(null);
               }}
               disabled={del.isPending}
             >
-              Cancel
+              {c.actions.cancel}
             </Button>
-            <Button onPress={onConfirmDelete} loading={del.isPending} disabled={del.isPending} textColor="#B91C1C">
-              Delete
+            <Button onPress={onConfirmDelete} loading={del.isPending} disabled={del.isPending} textColor={amraleColors.error}>
+              {c.actions.delete}
             </Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
-    </>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, paddingBottom: 24, gap: 12 },
-  containerCentered: { width: '100%', maxWidth: 1200, alignSelf: 'center' },
+  wrap: { flex: 1 },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: amraleSpacing.lg },
 
-  controlsRow: { flexDirection: 'row', gap: 10, alignItems: 'center', flexWrap: 'wrap' },
-  search: { flex: 1, minWidth: 0, flexGrow: 1 },
 
-  sectionCardLight: { backgroundColor: 'white', borderColor: 'rgba(37,99,235,0.10)' },
-  sectionCardDark: { backgroundColor: 'rgba(15,23,42,0.70)', borderColor: 'rgba(255,255,255,0.10)' },
+  list: { flex: 1 },
+  listContent: { paddingHorizontal: amraleSpacing.md, paddingBottom: amraleSpacing.xl, gap: ADMIN_LIST_GAP },
+  gridRow: { gap: ADMIN_LIST_GAP },
 
-  textOnLight: { color: COLORS.text },
-  textOnDark: { color: 'rgba(255,255,255,0.96)' },
-  subtleOnLight: { color: 'rgba(30,41,59,0.70)' },
-  subtleOnDark: { color: 'rgba(255,255,255,0.78)' },
-
-  addGradient: { borderRadius: 16 },
-  addBtn: { height: 56, paddingHorizontal: 14, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  addText: { color: 'white', fontWeight: '900' },
-  chip: { height: 56, paddingHorizontal: 12, borderRadius: 16, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
-
-  gridRow: { gap: 12 },
-  emptyState: { width: '100%', paddingVertical: 36, alignItems: 'center', justifyContent: 'center' },
-
-  deliveryCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
+  cardTop: { flexGrow: 1, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  // Pinned to the bottom, so cards sharing a grid row line their actions up.
+  cardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: -2,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(53, 81, 161, 0.08)',
   },
-  cardBody: { paddingVertical: 10, paddingHorizontal: 14, height: 102, justifyContent: 'space-between' },
+  salary: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  salaryText: { flexShrink: 1, fontFamily: amraleTypography.fontFamily.semiBold, fontSize: 14, color: amraleColors.text },
+  controlsHeader: { marginHorizontal: -ADMIN_LIST_PAD },
 
-  badgeRow: { flexDirection: 'row', alignItems: 'center' },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-    minHeight: 18,
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: amraleRadius.pill,
+    backgroundColor: amraleColors.inputBgLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  statusBadgeActive: { backgroundColor: 'rgba(34,197,94,0.90)' },
-  statusBadgeInactive: { backgroundColor: 'rgba(239,68,68,0.90)' },
-  statusBadgeText: { color: 'white', fontWeight: '900', fontSize: 11, lineHeight: 13 },
+  avatarText: { fontFamily: amraleTypography.fontFamily.bold, fontSize: 16, color: amraleColors.blue },
+  cardBody: { flex: 1, minWidth: 0, gap: 4 },
+  badgeActive: { backgroundColor: 'rgba(37, 117, 252, 0.1)' },
+  badgeInactive: { backgroundColor: 'rgba(195, 198, 214, 0.4)' },
+  badgeTextActive: { color: amraleColors.blue },
+  badgeTextInactive: { color: amraleColors.textMuted },
 
-  inlineRow: { flexDirection: 'row', alignItems: 'center', gap: 0, flexWrap: 'wrap', flexShrink: 1 },
-  sep: { fontSize: 12, lineHeight: 16, opacity: 0.55 },
-  name: { fontWeight: '800', fontSize: 16, lineHeight: 20, flexShrink: 1, minWidth: 0 },
-  routeInline: { fontSize: 13, lineHeight: 16, opacity: 0.85, flexShrink: 1, minWidth: 0 },
-  mobileInline: { fontSize: 13, lineHeight: 16, opacity: 0.85, flexShrink: 0 },
 
-  actionsRow: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'flex-start', marginTop: 2 },
-  actionIconBtn: { width: 30, height: 30, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
-  callBtn: { backgroundColor: 'rgba(34,197,94,0.96)' },
-  neutralBtn: { backgroundColor: 'rgba(148,163,184,0.16)', borderWidth: 1, borderColor: 'rgba(148,163,184,0.22)' },
 
-  dialogLight: { backgroundColor: '#FFFFFF', borderRadius: 16 },
-  dialogDark: { backgroundColor: '#0F172A', borderRadius: 16 },
-  dialogMobile: { alignSelf: 'center', width: '92%', maxWidth: 420 },
+  dialog: { backgroundColor: amraleColors.white },
+  dialogTitle: { fontFamily: amraleTypography.fontFamily.bold, color: amraleColors.text },
+  dialogBody: { fontFamily: amraleTypography.fontFamily.regular, fontSize: 14, lineHeight: 20, color: amraleColors.textMuted },
+  dialogError: { marginTop: 10, fontFamily: amraleTypography.fontFamily.medium, fontSize: 13, color: amraleColors.error },
+
+  pressed: { opacity: 0.88 },
 });

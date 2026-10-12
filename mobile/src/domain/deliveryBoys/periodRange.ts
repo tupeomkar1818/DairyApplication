@@ -1,3 +1,5 @@
+import { strings } from '@/src/i18n/strings';
+
 /** Preset ranges for admin filters (contract-first; backend can mirror). */
 export type PeriodPreset = 'today' | 'thisWeek' | 'thisMonth' | 'lastMonth' | 'last3Months' | 'last6Months' | 'custom';
 
@@ -47,21 +49,22 @@ export function resolvePeriodRange(preset: PeriodPreset, custom?: { startIso: st
 }
 
 export function presetLabel(p: PeriodPreset): string {
+  const t = strings('deliveryBoys').periods;
   switch (p) {
     case 'today':
-      return 'Today';
+      return t.today;
     case 'thisWeek':
-      return 'This Week';
+      return t.thisWeek;
     case 'thisMonth':
-      return 'This Month';
+      return t.thisMonth;
     case 'lastMonth':
-      return 'Last Month';
+      return t.lastMonth;
     case 'last3Months':
-      return 'Last 3 Months';
+      return t.last3Months;
     case 'last6Months':
-      return 'Last 6 Months';
+      return t.last6Months;
     case 'custom':
-      return 'Custom';
+      return t.custom;
     default:
       return p;
   }

@@ -1,6 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import DateTimePicker from '@react-native-community/datetimepicker';
-import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   BackHandler,
@@ -10,81 +9,171 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
-  TextInput,
   View,
+  type LayoutChangeEvent,
 } from 'react-native';
-import { Button, Dialog, Portal, Text as PaperText } from 'react-native-paper';
-import { Calendar } from 'react-native-calendars';
+import { DeferredTextInput, type DeferredTextInputHandle } from '@/src/components/DeferredTextInput';
+import { DatePickerModal } from '@/src/components/shared/DatePickerModal';
 
 import type { AdminProductLite } from '@/src/components/admin/buildSubscriptionPayloadFromPlans';
+import type { CustomerFormMode, CustomerFormState, CustomerFormTab } from '@/src/components/admin/customerFormShared';
 import {
-  dateToDob,
-  dobToDate,
-  dobToIsoDate,
-  isoDateToDob,
-} from '@/src/components/admin/customerFormDates';
-import type { CustomerFormState, CustomerFormTab } from '@/src/components/admin/customerFormShared';
-import { validateCustomerForm } from '@/src/components/admin/customerFormShared';
+  buildAutoAddress,
+  sanitizeMobileInput,
+  sanitizePincodeInput,
+  validateCustomerFormForMode,
+} from '@/src/components/admin/customerFormShared';
+import {
+  FieldError,
+  FieldLabel,
+  FormSection,
+  formInputStyles,
+  OptionChips,
+  plainTextInputProps,
+  ToggleCard,
+} from '@/src/components/shared/formFields';
+import {
+  RESPONSIVE_CONTAINER_MAX_WIDTH,
+  ResponsiveContainer,
+  useResponsiveContainerStyle,
+} from '@/src/components/shared/ResponsiveContainer';
 import { useDeliveryBoys } from '@/src/hooks/deliveryBoys';
 import { useProducts } from '@/src/hooks/products';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
+import { useLanguage, useStrings } from '@/src/i18n/useStrings';
 import {
+  amraleColors,
   amraleRadius,
   amraleSpacing,
   amraleTypography,
   dairyTactileColors,
-  primaryButtonElevation,
   tactileCardElevation,
 } from '@/src/theme/dairyTactile';
 import { formFieldAttrs } from '@/src/theme/platformStyles';
+import { useResponsiveLayout } from '@/src/utils/responsiveLayout';
 
 export type CustomerFormScreenProps = {
   title: string;
   saveLabel: string;
   initialForm: CustomerFormState;
+  /** `edit` validates only the profile/address/billing fields (no subscription lines required). Default `create`. */
+  mode?: CustomerFormMode;
+  /** Scroll to this section on open (the details screen's per-section Edit links). */
+  initialSection?: CustomerFormTab;
   isPending?: boolean;
   onSave: (form: CustomerFormState) => Promise<void>;
   onCancel: () => void;
 };
 
-const TABS: { key: CustomerFormTab; label: string }[] = [
-  { key: 'basic', label: 'Basic' },
-  { key: 'address', label: 'Address' },
-  { key: 'billing', label: 'Billing' },
-];
+/** Sections, in screen order — the same three the Customer Details overview shows. */
+const SECTION_ORDER: CustomerFormTab[] = ['basic', 'address', 'billing'];
 
-function monthLabel(monthIndex0: number) {
-  return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][monthIndex0] ?? '';
+/** Debounced text fields; flushed on Save so a tap that does not blur (native) never saves stale text. */
+const TEXT_FIELDS = ['name', 'mobile', 'alternateMobile', 'houseFlatNumber', 'societyName', 'streetArea', 'landmark', 'mapLink', 'city', 'pincode'] as const;
+type TextFieldKey = (typeof TEXT_FIELDS)[number];
+
+/** Schema field → form section, to scroll a failed Save to the first problem. Unlisted fields fall back to Basic. */
+const FIELD_SECTION: Partial<Record<string, CustomerFormTab>> = {
+  houseFlatNumber: 'address',
+  societyName: 'address',
+  streetArea: 'address',
+  landmark: 'address',
+  mapLink: 'address',
+  city: 'address',
+  pincode: 'address',
+  address: 'address',
+  routeName: 'address',
+  assignedDeliveryBoyId: 'address',
+  assignedDeliveryBoyName: 'address',
+  billingType: 'billing',
+  billingCycleDate: 'billing',
+  paymentType: 'billing',
+};
+
+/** Fields that show their message inline; anything else shows at the bottom of the form. */
+const INLINE_ERROR_FIELDS = new Set([
+  'name',
+  'mobile',
+  'alternateMobile',
+  'dateOfBirth',
+  'houseFlatNumber',
+  'societyName',
+  'streetArea',
+  'landmark',
+  'city',
+  'pincode',
+  'address',
+  'billingCycleDate',
+]);
+
+/** Room for a pasted "+91 98765 43210"; `sanitizeMobileInput` reduces it to the 10-digit number. */
+const MOBILE_INPUT_MAX_LENGTH = 16;
+
+type IssueLike = { path: PropertyKey[]; message: string };
+
+function errorsByField(issues: readonly IssueLike[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const issue of issues) {
+    const key = String(issue.path[0] ?? '');
+    const field = INLINE_ERROR_FIELDS.has(key) ? key : 'other';
+    out[field] ??= issue.message;
+  }
+  return out;
 }
 
 export function CustomerFormScreen({
   title,
   saveLabel,
   initialForm,
+  mode = 'create',
+  initialSection,
   isPending = false,
   onSave,
   onCancel,
 }: CustomerFormScreenProps) {
   const { headerPaddingTop, scrollPaddingBottom } = useScreenSafeInsets();
+  const customersText = useStrings('customers');
+  const t = customersText.form;
+  const lang = useLanguage();
   const products = useProducts();
   const deliveryBoys = useDeliveryBoys();
 
+  // Phones: full width. Tablets/desktops: header row, form body and footer row share one centered 720px column.
+  const formContainerStyle = useResponsiveContainerStyle('form');
+  const { width: windowWidth } = useResponsiveLayout();
+  const pickerSheetWidth = Math.min(windowWidth - amraleSpacing.md * 2, RESPONSIVE_CONTAINER_MAX_WIDTH.sheet);
+
   const [form, setForm] = useState<CustomerFormState>(initialForm);
-  const [formTab, setFormTab] = useState<CustomerFormTab>('basic');
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [dobPickerOpen, setDobPickerOpen] = useState(false);
-  const [dobPickerStep, setDobPickerStep] = useState<'calendar' | 'year' | 'month'>('calendar');
-  const [dobCursor, setDobCursor] = useState(() => new Date());
   const [dateTarget, setDateTarget] = useState<{ field: keyof CustomerFormState } | null>(null);
   const [deliveryBoyOpen, setDeliveryBoyOpen] = useState(false);
 
+  const scrollRef = useRef<ScrollView>(null);
+  /** Section top offsets inside the scroll content (for initialSection and for scrolling to errors). */
+  const sectionY = useRef<Partial<Record<CustomerFormTab, number>>>({});
+  const initialScrollDone = useRef(false);
+
+  const inputRefs = useRef<Partial<Record<TextFieldKey, DeferredTextInputHandle | null>>>({});
+  // Stable callback refs (one per field) so React does not detach/re-attach them on every render.
+  const inputRefBinders = useMemo(
+    () =>
+      Object.fromEntries(
+        TEXT_FIELDS.map((key) => [
+          key,
+          (handle: DeferredTextInputHandle | null) => {
+            inputRefs.current[key] = handle;
+          },
+        ]),
+      ) as Record<TextFieldKey, (handle: DeferredTextInputHandle | null) => void>,
+    [],
+  );
+
   useEffect(() => {
     setForm(initialForm);
-    setFormTab('basic');
     setTouched(false);
     setError(null);
   }, [initialForm]);
@@ -94,12 +183,17 @@ export function CustomerFormScreen({
     return items.filter((p) => p.isActive) as AdminProductLite[];
   }, [products.data?.items]);
 
-  const autoAddress = useMemo(() => {
-    const parts = [form.houseFlatNumber, form.societyName, form.streetArea, form.city, form.pincode]
-      .map((x) => (x ?? '').trim())
-      .filter(Boolean);
-    return parts.join(', ');
-  }, [form.city, form.houseFlatNumber, form.pincode, form.societyName, form.streetArea]);
+  const autoAddress = useMemo(
+    () =>
+      buildAutoAddress({
+        houseFlatNumber: form.houseFlatNumber,
+        societyName: form.societyName,
+        streetArea: form.streetArea,
+        city: form.city,
+        pincode: form.pincode,
+      }),
+    [form.city, form.houseFlatNumber, form.pincode, form.societyName, form.streetArea],
+  );
 
   useEffect(() => {
     setForm((s) => (s.address === autoAddress ? s : { ...s, address: autoAddress }));
@@ -108,15 +202,33 @@ export function CustomerFormScreen({
   const deferredForm = useDeferredValue(form);
   const deferredAdminProducts = useDeferredValue(adminProducts);
 
+  // Validation messages are in the app language, so a language change re-validates.
   const parsed = useMemo(
-    () => validateCustomerForm(deferredForm, deferredAdminProducts),
-    [deferredAdminProducts, deferredForm],
+    () => validateCustomerFormForMode(mode, deferredForm, deferredAdminProducts),
+    [deferredAdminProducts, deferredForm, mode, lang],
   );
+
+  // Once the user has tried to save, problems show under their own fields.
+  const fieldErrors = useMemo(
+    () => (touched && !parsed.success ? errorsByField(parsed.error.issues) : {}),
+    [touched, parsed],
+  );
+
+  const onSectionLayout = (key: CustomerFormTab) => (e: LayoutChangeEvent) => {
+    sectionY.current[key] = e.nativeEvent.layout.y;
+    if (!initialScrollDone.current && initialSection && initialSection !== 'basic' && key === initialSection) {
+      initialScrollDone.current = true;
+      scrollRef.current?.scrollTo({ y: Math.max(0, e.nativeEvent.layout.y - amraleSpacing.sm), animated: false });
+    }
+  };
+
+  function scrollToSection(section: CustomerFormTab) {
+    scrollRef.current?.scrollTo({ y: Math.max(0, (sectionY.current[section] ?? 0) - amraleSpacing.sm), animated: true });
+  }
 
   function closeTopmostOverlay(): boolean {
     if (dobPickerOpen) {
       setDobPickerOpen(false);
-      setDateTarget(null);
       return true;
     }
     if (deliveryBoyOpen) {
@@ -138,18 +250,11 @@ export function CustomerFormScreen({
 
   function openDatePicker(field: keyof CustomerFormState) {
     setDateTarget({ field });
-    const v = String(form[field] ?? '').trim();
-    const asDate = dobToDate(v) ?? (isoDateToDob(v) ? dobToDate(isoDateToDob(v) as string) : null);
-    setDobCursor(asDate ?? new Date());
-    setDobPickerStep('calendar');
     setDobPickerOpen(true);
   }
 
   function openDobPicker() {
     setDateTarget(null);
-    const fromForm = dobToDate(form.dateOfBirth);
-    setDobCursor(fromForm ?? new Date(1995, 0, 1));
-    setDobPickerStep('calendar');
     setDobPickerOpen(true);
   }
 
@@ -159,22 +264,41 @@ export function CustomerFormScreen({
     } else {
       setForm((s) => ({ ...s, [dateTarget.field]: ddmmyyyy }));
     }
-    setDateTarget(null);
+    // `dateTarget` stays until the next opening sets it, so the picker's title does not flip while it fades out.
     setDobPickerOpen(false);
+  }
+
+  /**
+   * Form state with every mounted text field flushed. Tapping Save does not blur the focused input on native, so the
+   * last keystrokes may still sit in a DeferredTextInput debounce; `flush()` also queues them into `form`.
+   */
+  function readLatestForm(): CustomerFormState {
+    let latest = form;
+    for (const key of TEXT_FIELDS) {
+      const handle = inputRefs.current[key];
+      if (!handle) continue;
+      const text = handle.flush();
+      if (latest[key] !== text) latest = { ...latest, [key]: text };
+    }
+    const address = buildAutoAddress(latest);
+    return latest.address === address ? latest : { ...latest, address };
   }
 
   async function handleSave() {
     setTouched(true);
     setError(null);
-    const current = validateCustomerForm(form, adminProducts);
+    const latest = readLatestForm();
+    const current = validateCustomerFormForMode(mode, latest, adminProducts);
     if (!current.success) {
-      setError(current.error.issues[0]?.message ?? 'Please check the form');
+      const sections = current.error.issues.map((i) => FIELD_SECTION[String(i.path[0] ?? '')] ?? 'basic');
+      const first = SECTION_ORDER.find((s) => sections.includes(s)) ?? 'basic';
+      scrollToSection(first);
       return;
     }
     try {
-      await onSave(form);
+      await onSave(latest);
     } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : 'Unable to save customer. Please try again.');
+      setError(err instanceof Error && err.message ? err.message : t.saveFailed);
     }
   }
 
@@ -183,389 +307,309 @@ export function CustomerFormScreen({
     onCancel();
   }
 
+  /** Rounded text field: label, icon + input, inline error. */
+  function textField(
+    key: TextFieldKey,
+    label: string,
+    icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'],
+    input: Omit<React.ComponentProps<typeof DeferredTextInput>, 'value' | 'onChangeText'>,
+  ) {
+    return (
+      <View style={styles.fieldBlock}>
+        <FieldLabel>{label}</FieldLabel>
+        <View style={[formInputStyles.inputRow, fieldErrors[key] && formInputStyles.inputRowError]}>
+          <MaterialCommunityIcons name={icon} size={20} color={amraleColors.blue} />
+          <DeferredTextInput
+            ref={inputRefBinders[key]}
+            {...plainTextInputProps}
+            placeholderTextColor={amraleColors.textSubtle}
+            {...input}
+            value={form[key]}
+            onChangeText={(t) => setForm((s) => ({ ...s, [key]: t }))}
+            style={formInputStyles.inputText}
+          />
+        </View>
+        <FieldError message={fieldErrors[key]} />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.screen}>
       <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
-        <Pressable onPress={handleCancel} style={({ pressed }) => [styles.headerIconBtn, pressed && styles.pressed]} accessibilityLabel="Go back">
-          <MaterialCommunityIcons name="arrow-left" size={24} color={dairyTactileColors.primaryContainer} />
-        </Pressable>
-        <Text style={styles.headerTitle}>{title}</Text>
-        <View style={styles.headerIconBtn} />
-      </View>
-
-      <View style={styles.tabBar}>
-        {TABS.map((tab) => {
-          const active = formTab === tab.key;
-          return (
-            <Pressable
-              key={tab.key}
-              onPress={() => setFormTab(tab.key)}
-              style={({ pressed }) => [styles.tab, active && styles.tabActive, pressed && styles.pressed]}
-            >
-              <Text style={[styles.tabText, active && styles.tabTextActive]}>{tab.label}</Text>
-            </Pressable>
-          );
-        })}
+        {/* Title row shares the form's centered column so it lines up with the fields on tablets/laptops. */}
+        <View style={[styles.headerRow, formContainerStyle]}>
+          <Pressable
+            onPress={handleCancel}
+            hitSlop={4}
+            style={({ pressed }) => [styles.headerIconBtn, pressed && styles.pressed]}
+            accessibilityLabel={t.goBack}
+          >
+            <MaterialCommunityIcons name="arrow-left" size={24} color={amraleColors.blue} />
+          </Pressable>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {title}
+          </Text>
+        </View>
       </View>
 
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView
-          contentContainerStyle={[styles.scroll, { paddingBottom: scrollPaddingBottom(120) }]}
+          ref={scrollRef}
+          contentContainerStyle={[styles.scroll, formContainerStyle, { paddingBottom: scrollPaddingBottom(120) }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {formTab === 'basic' ? (
-            <>
-              <View style={styles.card}>
-                <View style={styles.cardHeading}>
-                  <MaterialCommunityIcons name="account-plus-outline" size={20} color={dairyTactileColors.primaryContainer} />
-                  <Text style={styles.cardHeadingText}>Basic Information</Text>
-                </View>
+          {/* ── Basic information ── */}
+          <FormSection title={t.sections.basic} icon="account-outline" onLayout={onSectionLayout('basic')}>
+            {textField('name', t.fullName, 'account-outline', {
+              ...formFieldAttrs('customer-full-name', { autoComplete: 'name' }),
+              placeholder: t.fullNamePlaceholder,
+            })}
 
-                <LabeledField label="Customer Full Name">
-                  <TextInput
-                    {...formFieldAttrs('customer-full-name', { autoComplete: 'name' })}
-                    value={form.name}
-                    onChangeText={(t) => setForm((s) => ({ ...s, name: t }))}
-                    placeholder="e.g. Rahul Amrale"
-                    placeholderTextColor={dairyTactileColors.outline}
-                    style={styles.input}
-                  />
-                </LabeledField>
-
-                <LabeledField label="Mobile Number">
-                  <TextInput
-                    {...formFieldAttrs('customer-mobile', { autoComplete: 'tel' })}
-                    value={form.mobile}
-                    onChangeText={(t) => setForm((s) => ({ ...s, mobile: t.replace(/[^\d]/g, '').slice(0, 10) }))}
-                    placeholder="+91 98765 43210"
-                    placeholderTextColor={dairyTactileColors.outline}
-                    keyboardType="number-pad"
-                    style={styles.input}
-                  />
-                </LabeledField>
-
-                <LabeledField label="Alternate Mobile Number">
-                  <TextInput
-                    {...formFieldAttrs('customer-alternate-mobile', { autoComplete: 'tel' })}
-                    value={form.alternateMobile}
-                    onChangeText={(t) => setForm((s) => ({ ...s, alternateMobile: t.replace(/[^\d]/g, '').slice(0, 10) }))}
-                    placeholder="Optional"
-                    placeholderTextColor={dairyTactileColors.outline}
-                    keyboardType="number-pad"
-                    style={styles.input}
-                  />
-                </LabeledField>
-
-                <LabeledField label="Date of Birth">
-                  <Pressable onPress={openDobPicker} style={({ pressed }) => [styles.inputRow, pressed && styles.pressed]}>
-                    <Text style={[styles.inputValue, !form.dateOfBirth && styles.placeholder]}>
-                      {form.dateOfBirth || 'dd / mm / yyyy'}
-                    </Text>
-                    <MaterialCommunityIcons name="calendar" size={22} color={dairyTactileColors.outline} />
-                  </Pressable>
-                </LabeledField>
+            {/* Two columns once the card is wide enough (tablet/desktop); stacks on phones. */}
+            <View style={styles.row2}>
+              <View style={styles.fieldCellWide}>
+                {textField('mobile', t.mobile, 'cellphone', {
+                  ...formFieldAttrs('customer-mobile', { autoComplete: 'tel' }),
+                  sanitize: sanitizeMobileInput,
+                  maxLength: MOBILE_INPUT_MAX_LENGTH,
+                  placeholder: t.mobilePlaceholder,
+                  keyboardType: 'number-pad',
+                })}
               </View>
-
-              <View style={styles.card}>
-                <View style={styles.cardHeading}>
-                  <MaterialCommunityIcons name="shield-check-outline" size={20} color={dairyTactileColors.primaryContainer} />
-                  <Text style={styles.cardHeadingText}>Access & Status</Text>
-                </View>
-
-                <ToggleRow
-                  icon="cellphone"
-                  label="App Access"
-                  chipLabel={form.appAccessEnabled ? 'ENABLED' : 'DISABLED'}
-                  chipTone={form.appAccessEnabled ? 'blue' : 'neutral'}
-                  value={form.appAccessEnabled}
-                  onValueChange={(v) =>
-                    setForm((s) => ({ ...s, appAccessEnabled: v, status: v ? 'Active' : 'Inactive' }))
-                  }
-                />
-
-                <ToggleRow
-                  icon="shield-check"
-                  label="Customer Status"
-                  chipLabel={form.status === 'Active' ? 'ACTIVE' : 'INACTIVE'}
-                  chipTone={form.status === 'Active' ? 'green' : 'neutral'}
-                  value={form.status === 'Active'}
-                  onValueChange={(v) =>
-                    setForm((s) => ({ ...s, status: v ? 'Active' : 'Inactive', appAccessEnabled: v }))
-                  }
-                  statusSwitch
-                />
+              <View style={styles.fieldCellWide}>
+                {textField('alternateMobile', t.alternateMobile, 'phone-outline', {
+                  ...formFieldAttrs('customer-alternate-mobile', { autoComplete: 'tel' }),
+                  sanitize: sanitizeMobileInput,
+                  maxLength: MOBILE_INPUT_MAX_LENGTH,
+                  placeholder: t.optional,
+                  keyboardType: 'number-pad',
+                })}
               </View>
+            </View>
 
-              <Text style={styles.hint}>
-                Subscription products and delivery plans are managed from the customer&apos;s Subscription tab after you save.
-              </Text>
-            </>
-          ) : null}
+            <View style={styles.fieldBlock}>
+              <FieldLabel>{t.dateOfBirth}</FieldLabel>
+              <Pressable
+                onPress={openDobPicker}
+                style={({ pressed }) => [
+                  formInputStyles.inputRow,
+                  fieldErrors.dateOfBirth && formInputStyles.inputRowError,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <MaterialCommunityIcons name="cake-variant-outline" size={20} color={amraleColors.blue} />
+                <Text style={[formInputStyles.inputValue, !form.dateOfBirth && formInputStyles.placeholder]}>
+                  {form.dateOfBirth || t.dobPlaceholder}
+                </Text>
+                <MaterialCommunityIcons name="calendar" size={20} color={amraleColors.textMuted} />
+              </Pressable>
+              <FieldError message={fieldErrors.dateOfBirth} />
+            </View>
 
-          {formTab === 'address' ? (
-            <View style={styles.card}>
-              <View style={styles.cardHeading}>
-                <MaterialCommunityIcons name="map-marker-outline" size={20} color={dairyTactileColors.primaryContainer} />
-                <Text style={styles.cardHeadingText}>Address Information</Text>
+            <ToggleCard
+              icon="cellphone-key"
+              label={t.appAccess}
+              hint={t.appAccessHint}
+              value={form.appAccessEnabled}
+              onChange={(v) => setForm((s) => ({ ...s, appAccessEnabled: v, status: v ? 'Active' : 'Inactive' }))}
+            />
+            <ToggleCard
+              icon="account-check-outline"
+              label={t.activeCustomer}
+              hint={t.activeCustomerHint}
+              value={form.status === 'Active'}
+              onChange={(v) => setForm((s) => ({ ...s, status: v ? 'Active' : 'Inactive', appAccessEnabled: v }))}
+            />
+
+            {mode === 'create' ? (
+              <Text style={styles.hint}>{t.subscriptionHint}</Text>
+            ) : null}
+          </FormSection>
+
+          {/* ── Address ── */}
+          <FormSection title={t.sections.address} icon="map-marker-outline" onLayout={onSectionLayout('address')}>
+            <View style={styles.row2}>
+              <View style={styles.fieldCell}>
+                {textField('houseFlatNumber', t.houseFlat, 'home-outline', {
+                  ...formFieldAttrs('customer-house-flat', { autoComplete: 'address-line1' }),
+                  placeholder: t.houseFlatPlaceholder,
+                })}
               </View>
-
-              <LabeledField label="House / Flat Number">
-                <TextInput
-                  {...formFieldAttrs('customer-house-flat', { autoComplete: 'address-line1' })}
-                  value={form.houseFlatNumber}
-                  onChangeText={(t) => setForm((s) => ({ ...s, houseFlatNumber: t }))}
-                  placeholder="e.g. A-402"
-                  placeholderTextColor={dairyTactileColors.outline}
-                  style={styles.input}
-                />
-              </LabeledField>
-
-              <LabeledField label="Building / Society Name">
-                <TextInput
-                  {...formFieldAttrs('customer-society', { autoComplete: 'organization' })}
-                  value={form.societyName}
-                  onChangeText={(t) => setForm((s) => ({ ...s, societyName: t }))}
-                  placeholder="Society or building"
-                  placeholderTextColor={dairyTactileColors.outline}
-                  style={styles.input}
-                />
-              </LabeledField>
-
-              <LabeledField label="Street / Area">
-                <TextInput
-                  {...formFieldAttrs('customer-street', { autoComplete: 'street-address' })}
-                  value={form.streetArea}
-                  onChangeText={(t) => setForm((s) => ({ ...s, streetArea: t }))}
-                  placeholder="Street or area"
-                  placeholderTextColor={dairyTactileColors.outline}
-                  style={styles.input}
-                />
-              </LabeledField>
-
-              <View style={styles.row2}>
-                <View style={styles.flex}>
-                  <LabeledField label="City">
-                    <TextInput
-                      {...formFieldAttrs('customer-city', { autoComplete: 'address-level2' })}
-                      value={form.city}
-                      onChangeText={(t) => setForm((s) => ({ ...s, city: t }))}
-                      placeholder="City"
-                      placeholderTextColor={dairyTactileColors.outline}
-                      style={styles.input}
-                    />
-                  </LabeledField>
-                </View>
-                <View style={styles.flex}>
-                  <LabeledField label="Pincode">
-                    <TextInput
-                      {...formFieldAttrs('customer-pincode', { autoComplete: 'postal-code' })}
-                      value={form.pincode}
-                      onChangeText={(t) => setForm((s) => ({ ...s, pincode: t.replace(/[^\d]/g, '').slice(0, 6) }))}
-                      placeholder="Pincode"
-                      placeholderTextColor={dairyTactileColors.outline}
-                      keyboardType="number-pad"
-                      style={styles.input}
-                    />
-                  </LabeledField>
-                </View>
+              <View style={styles.fieldCell}>
+                {textField('societyName', t.society, 'office-building-outline', {
+                  ...formFieldAttrs('customer-society', { autoComplete: 'organization' }),
+                  placeholder: t.societyPlaceholder,
+                })}
               </View>
+            </View>
 
-              <LabeledField label="Assigned Delivery Boy">
+            {textField('streetArea', t.street, 'road-variant', {
+              ...formFieldAttrs('customer-street', { autoComplete: 'street-address' }),
+              placeholder: t.streetPlaceholder,
+            })}
+
+            {textField('landmark', t.landmark, 'map-marker-star-outline', {
+              ...formFieldAttrs('customer-landmark'),
+              placeholder: t.landmarkPlaceholder,
+              maxLength: 80,
+            })}
+
+            {textField('mapLink', t.mapLink, 'map-marker-radius-outline', {
+              ...formFieldAttrs('customer-map-link'),
+              placeholder: t.mapLinkPlaceholder,
+              autoCapitalize: 'none',
+              autoCorrect: false,
+              maxLength: 500,
+            })}
+            <Text style={styles.mapHint}>{t.mapHint}</Text>
+
+            <View style={styles.row2}>
+              <View style={styles.fieldCell}>
+                {textField('city', t.city, 'city-variant-outline', {
+                  ...formFieldAttrs('customer-city'),
+                  placeholder: t.city,
+                })}
+              </View>
+              <View style={styles.fieldCell}>
+                {textField('pincode', t.pincode, 'mailbox-outline', {
+                  ...formFieldAttrs('customer-pincode', { autoComplete: 'postal-code' }),
+                  sanitize: sanitizePincodeInput,
+                  placeholder: t.pincode,
+                  keyboardType: 'number-pad',
+                })}
+              </View>
+            </View>
+
+            <View style={styles.fieldBlock}>
+              <FieldLabel>{t.fullAddress}</FieldLabel>
+              <View
+                style={[
+                  formInputStyles.inputRow,
+                  formInputStyles.inputRowMultiline,
+                  formInputStyles.inputRowReadonly,
+                  fieldErrors.address && formInputStyles.inputRowError,
+                ]}
+              >
+                <MaterialCommunityIcons name="map-marker-outline" size={20} color={amraleColors.textMuted} />
+                <Text style={[formInputStyles.inputValue, !form.address && formInputStyles.placeholder]}>
+                  {form.address || t.fullAddressPlaceholder}
+                </Text>
+              </View>
+              <FieldError message={fieldErrors.address} />
+            </View>
+
+            <View style={styles.fieldBlock}>
+              <FieldLabel>{t.deliveryBoy}</FieldLabel>
+              <Pressable
+                onPress={() => setDeliveryBoyOpen(true)}
+                style={({ pressed }) => [formInputStyles.inputRow, pressed && styles.pressed]}
+              >
+                <MaterialCommunityIcons name="truck-outline" size={20} color={amraleColors.blue} />
+                <Text style={[formInputStyles.inputValue, !form.assignedDeliveryBoyName && formInputStyles.placeholder]}>
+                  {form.assignedDeliveryBoyName || t.deliveryBoyPlaceholder}
+                </Text>
+                <MaterialCommunityIcons name="chevron-down" size={22} color={amraleColors.textMuted} />
+              </Pressable>
+            </View>
+
+            <View style={styles.fieldBlock}>
+              <FieldLabel>{t.route}</FieldLabel>
+              <View style={[formInputStyles.inputRow, formInputStyles.inputRowReadonly]}>
+                <MaterialCommunityIcons name="routes" size={20} color={amraleColors.textMuted} />
+                <Text style={[formInputStyles.inputValue, !form.routeName && formInputStyles.placeholder]}>
+                  {form.routeName || t.routePlaceholder}
+                </Text>
+              </View>
+            </View>
+          </FormSection>
+
+          {/* ── Billing ── */}
+          <FormSection title={t.sections.billing} icon="credit-card-outline" onLayout={onSectionLayout('billing')}>
+            <View style={styles.fieldBlock}>
+              <FieldLabel>{t.billingType}</FieldLabel>
+              <OptionChips
+                options={['Postpaid', 'Prepaid'] as const}
+                value={form.billingType}
+                onChange={(billingType) => setForm((s) => ({ ...s, billingType }))}
+                labelFor={(option) => customersText.billingTypes[option]}
+              />
+            </View>
+
+            {form.billingType === 'Postpaid' ? (
+              <View style={styles.fieldBlock}>
+                <FieldLabel>{t.billingDate}</FieldLabel>
                 <Pressable
-                  onPress={() => setDeliveryBoyOpen(true)}
-                  style={({ pressed }) => [styles.inputRow, pressed && styles.pressed]}
+                  onPress={() => openDatePicker('billingDate')}
+                  style={({ pressed }) => [
+                    formInputStyles.inputRow,
+                    fieldErrors.billingCycleDate && formInputStyles.inputRowError,
+                    pressed && styles.pressed,
+                  ]}
                 >
-                  <Text style={[styles.inputValue, !form.assignedDeliveryBoyName && styles.placeholder]}>
-                    {form.assignedDeliveryBoyName || 'Select delivery boy'}
+                  <MaterialCommunityIcons name="calendar-month-outline" size={20} color={amraleColors.blue} />
+                  <Text style={[formInputStyles.inputValue, !form.billingDate && formInputStyles.placeholder]}>
+                    {form.billingDate || t.billingDatePlaceholder}
                   </Text>
-                  <MaterialCommunityIcons name="chevron-down" size={22} color={dairyTactileColors.outline} />
+                  <MaterialCommunityIcons name="calendar" size={20} color={amraleColors.textMuted} />
                 </Pressable>
-              </LabeledField>
-
-              <LabeledField label="Delivery Route">
-                <TextInput
-                  {...formFieldAttrs('customer-route')}
-                  value={form.routeName}
-                  editable={false}
-                  placeholder="Auto-filled from delivery boy"
-                  placeholderTextColor={dairyTactileColors.outline}
-                  style={[styles.input, styles.inputDisabled]}
-                />
-              </LabeledField>
-
-              <LabeledField label="Full Address">
-                <TextInput
-                  {...formFieldAttrs('customer-full-address', { autoComplete: 'street-address' })}
-                  value={form.address}
-                  editable={false}
-                  multiline
-                  placeholder="Auto-generated from fields above"
-                  placeholderTextColor={dairyTactileColors.outline}
-                  style={[styles.input, styles.inputMultiline, styles.inputDisabled]}
-                />
-              </LabeledField>
-            </View>
-          ) : null}
-
-          {formTab === 'billing' ? (
-            <View style={styles.card}>
-              <View style={styles.cardHeading}>
-                <MaterialCommunityIcons name="credit-card-outline" size={20} color={dairyTactileColors.primaryContainer} />
-                <Text style={styles.cardHeadingText}>Billing Information</Text>
+                <Text style={styles.fieldHint}>{t.billingDateHint}</Text>
+                <FieldError message={fieldErrors.billingCycleDate} />
               </View>
+            ) : (
+              <Text style={styles.fieldHint}>{t.prepaidHint}</Text>
+            )}
+          </FormSection>
 
-              <LabeledField label="Billing Type">
-                <Pressable
-                  onPress={() =>
-                    setForm((s) => ({ ...s, billingType: s.billingType === 'Postpaid' ? 'Prepaid' : 'Postpaid' }))
-                  }
-                  style={({ pressed }) => [styles.inputRow, pressed && styles.pressed]}
-                >
-                  <Text style={styles.inputValue}>{form.billingType}</Text>
-                  <MaterialCommunityIcons name="swap-horizontal" size={20} color={dairyTactileColors.outline} />
-                </Pressable>
-              </LabeledField>
-
-              {form.billingType === 'Postpaid' ? (
-                <LabeledField label="Billing Date">
-                  <Pressable
-                    onPress={() => openDatePicker('billingDate')}
-                    style={({ pressed }) => [styles.inputRow, pressed && styles.pressed]}
-                  >
-                    <Text style={[styles.inputValue, !form.billingDate && styles.placeholder]}>
-                      {form.billingDate || 'DD/MM/YYYY'}
-                    </Text>
-                    <MaterialCommunityIcons name="calendar" size={22} color={dairyTactileColors.outline} />
-                  </Pressable>
-                </LabeledField>
-              ) : null}
-            </View>
-          ) : null}
-
-          {touched && !parsed.success ? (
-            <Text style={styles.errorText}>{parsed.error.issues[0]?.message}</Text>
-          ) : null}
+          {/* Field problems show under their fields; this is for form-wide issues and save failures only. */}
+          {fieldErrors.other ? <Text style={styles.errorText}>{fieldErrors.other}</Text> : null}
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
         </ScrollView>
 
         <View style={[styles.footer, { paddingBottom: scrollPaddingBottom(amraleSpacing.md) }]}>
-          <Pressable
-            onPress={handleSave}
-            disabled={isPending}
-            style={({ pressed }) => [styles.saveBtn, pressed && styles.pressed, isPending && styles.disabled]}
-          >
-            {isPending ? (
-              <ActivityIndicator color={dairyTactileColors.onPrimary} />
-            ) : (
-              <>
-                <MaterialCommunityIcons name="content-save" size={20} color={dairyTactileColors.onPrimary} />
-                <Text style={styles.saveText}>{saveLabel}</Text>
-              </>
-            )}
-          </Pressable>
-          <Pressable onPress={handleCancel} disabled={isPending} style={({ pressed }) => [styles.cancelBtn, pressed && styles.pressed]}>
-            <Text style={styles.cancelText}>Cancel</Text>
-          </Pressable>
+          <ResponsiveContainer variant="form" style={styles.footerRow}>
+            <Pressable onPress={handleCancel} disabled={isPending} style={({ pressed }) => [styles.cancelBtn, pressed && styles.pressed]}>
+              <Text style={styles.cancelText}>{t.cancel}</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSave}
+              disabled={isPending}
+              style={({ pressed }) => [styles.saveBtn, pressed && styles.pressed, isPending && styles.disabled]}
+            >
+              {isPending ? (
+                <ActivityIndicator color={amraleColors.white} />
+              ) : (
+                <>
+                  <Text style={styles.saveText} numberOfLines={1}>
+                    {saveLabel}
+                  </Text>
+                  <View style={styles.saveIconCircle}>
+                    <MaterialCommunityIcons name="check" size={18} color={amraleColors.blue} />
+                  </View>
+                </>
+              )}
+            </Pressable>
+          </ResponsiveContainer>
         </View>
       </KeyboardAvoidingView>
 
-      {dobPickerOpen && Platform.OS !== 'web' ? (
-        <DateTimePicker
-          value={dobCursor}
-          mode="date"
-          display={Platform.OS === 'android' ? 'default' : 'calendar'}
-          onChange={(_event, selected) => {
-            setDobPickerOpen(false);
-            if (!selected) return;
-            applyPickedDate(dateToDob(selected));
-          }}
-          maximumDate={new Date(2100, 11, 31)}
-        />
-      ) : null}
-
-      <Portal>
-        <Dialog visible={dobPickerOpen && Platform.OS === 'web'} onDismiss={() => setDobPickerOpen(false)} style={styles.dialog}>
-          <Dialog.Title>Select Date</Dialog.Title>
-          <Dialog.Content>
-            {dobPickerStep === 'calendar' ? (
-              <Calendar
-                current={`${dobCursor.getFullYear()}-${String(dobCursor.getMonth() + 1).padStart(2, '0')}-01`}
-                markedDates={(() => {
-                  const current = dateTarget
-                    ? String(form[dateTarget.field] ?? '')
-                    : form.dateOfBirth;
-                  const iso = dobToIsoDate(String(current ?? '').trim());
-                  return iso ? { [iso]: { selected: true, selectedColor: dairyTactileColors.primaryContainer } } : undefined;
-                })()}
-                renderHeader={() => (
-                  <Pressable onPress={() => setDobPickerStep('year')} style={styles.webCalHeaderPress}>
-                    <PaperText variant="titleSmall">
-                      {monthLabel(dobCursor.getMonth())} {dobCursor.getFullYear()}
-                    </PaperText>
-                    <MaterialCommunityIcons name="chevron-down" size={18} color={dairyTactileColors.onSurface} />
-                  </Pressable>
-                )}
-                onMonthChange={(m) => setDobCursor(new Date(m.year, m.month - 1, 1))}
-                onDayPress={(day) => {
-                  const dob = isoDateToDob(day.dateString);
-                  if (dob) applyPickedDate(dob);
-                }}
-                theme={{
-                  todayTextColor: dairyTactileColors.primaryContainer,
-                  selectedDayBackgroundColor: dairyTactileColors.primaryContainer,
-                  arrowColor: dairyTactileColors.primaryContainer,
-                }}
-              />
-            ) : null}
-            {dobPickerStep === 'year' ? (
-              <ScrollView style={{ maxHeight: 360 }}>
-                {Array.from({ length: new Date().getFullYear() - 1950 + 1 }, (_, i) => new Date().getFullYear() - i).map(
-                  (y) => (
-                    <Pressable
-                      key={y}
-                      onPress={() => {
-                        setDobCursor((d) => new Date(y, d.getMonth(), 1));
-                        setDobPickerStep('month');
-                      }}
-                      style={styles.pickItem}
-                    >
-                      <PaperText>{String(y)}</PaperText>
-                    </Pressable>
-                  ),
-                )}
-              </ScrollView>
-            ) : null}
-            {dobPickerStep === 'month' ? (
-              <View style={styles.monthGrid}>
-                {Array.from({ length: 12 }, (_, i) => i).map((mi) => (
-                  <Pressable
-                    key={mi}
-                    onPress={() => {
-                      setDobCursor((d) => new Date(d.getFullYear(), mi, 1));
-                      setDobPickerStep('calendar');
-                    }}
-                    style={[styles.monthCell, dobCursor.getMonth() === mi && styles.monthCellActive]}
-                  >
-                    <PaperText>{monthLabel(mi)}</PaperText>
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
-          </Dialog.Content>
-          <Dialog.Actions>
-            {dobPickerStep !== 'calendar' ? (
-              <Button onPress={() => setDobPickerStep(dobPickerStep === 'month' ? 'year' : 'calendar')}>Back</Button>
-            ) : null}
-            <Button onPress={() => setDobPickerOpen(false)}>Close</Button>
-          </Dialog.Actions>
-        </Dialog>
-      </Portal>
+      {/* Shared JS picker on every platform: the native iOS picker crashed the app here (it aborts on display="calendar"). */}
+      <DatePickerModal
+        visible={dobPickerOpen}
+        value={dateTarget ? String(form[dateTarget.field] ?? '') : form.dateOfBirth}
+        // Date of birth opens on a typical adult birth year and stops at this year; other dates may be a few years ahead.
+        fallbackDate={dateTarget ? undefined : new Date(1995, 0, 1)}
+        yearsAhead={dateTarget ? 5 : 0}
+        title={dateTarget ? t.selectDate : t.dateOfBirth}
+        onSelect={applyPickedDate}
+        onDismiss={() => setDobPickerOpen(false)}
+      />
 
       <Modal visible={deliveryBoyOpen} transparent animationType="fade" onRequestClose={() => setDeliveryBoyOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setDeliveryBoyOpen(false)} />
-        <View style={styles.modalSheet}>
-          <Text style={styles.modalTitle}>Select Delivery Boy</Text>
+        <View style={[styles.modalSheet, { width: pickerSheetWidth }]}>
+          <Text style={styles.modalTitle}>{t.selectDeliveryBoy}</Text>
           <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled">
             {(deliveryBoys.data?.items ?? []).map((b) => (
               <Pressable
@@ -582,8 +626,12 @@ export function CustomerFormScreen({
                 style={({ pressed }) => [styles.pickItem, pressed && styles.pressed]}
               >
                 <View style={styles.flex}>
-                  <Text style={styles.pickItemTitle}>{b.fullName}</Text>
-                  <Text style={styles.pickItemSub}>{b.primaryRouteName}</Text>
+                  <Text style={styles.pickItemTitle} numberOfLines={1}>
+                    {b.fullName}
+                  </Text>
+                  <Text style={styles.pickItemSub} numberOfLines={1}>
+                    {b.primaryRouteName}
+                  </Text>
                 </View>
                 {form.assignedDeliveryBoyId === b.id ? (
                   <MaterialCommunityIcons name="check" size={18} color={dairyTactileColors.primaryContainer} />
@@ -592,7 +640,7 @@ export function CustomerFormScreen({
             ))}
           </ScrollView>
           <Pressable onPress={() => setDeliveryBoyOpen(false)} style={styles.modalCloseBtn}>
-            <Text style={styles.cancelText}>Close</Text>
+            <Text style={styles.cancelText}>{t.close}</Text>
           </Pressable>
         </View>
       </Modal>
@@ -600,66 +648,21 @@ export function CustomerFormScreen({
   );
 }
 
-function LabeledField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.fieldBlock}>
-      <Text style={styles.label}>{label}</Text>
-      {children}
-    </View>
-  );
-}
-
-function ToggleRow({
-  icon,
-  label,
-  chipLabel,
-  chipTone,
-  value,
-  onValueChange,
-  statusSwitch,
-}: {
-  icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
-  label: string;
-  chipLabel: string;
-  chipTone: 'blue' | 'green' | 'neutral';
-  value: boolean;
-  onValueChange: (v: boolean) => void;
-  statusSwitch?: boolean;
-}) {
-  const chipStyle =
-    chipTone === 'green' ? styles.chipGreen : chipTone === 'blue' ? styles.chipBlue : styles.chipNeutral;
-
-  return (
-    <View style={styles.toggleRow}>
-      <MaterialCommunityIcons name={icon} size={22} color={dairyTactileColors.primaryContainer} />
-      <Text style={styles.toggleLabel}>{label}</Text>
-      <View style={[styles.chip, chipStyle]}>
-        <Text style={[styles.chipText, chipTone === 'green' && styles.chipTextGreen]}>{chipLabel}</Text>
-      </View>
-      <Switch
-        value={value}
-        onValueChange={onValueChange}
-        trackColor={{
-          false: dairyTactileColors.outlineVariant,
-          true: statusSwitch ? '#22C55E' : dairyTactileColors.primaryContainer,
-        }}
-        thumbColor={dairyTactileColors.surfaceContainerLowest}
-      />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: dairyTactileColors.surface },
+  screen: { flex: 1, backgroundColor: amraleColors.surface },
   flex: { flex: 1 },
   header: {
+    paddingBottom: amraleSpacing.sm,
+    backgroundColor: amraleColors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: amraleColors.inputBorderLight,
+  },
+  /** Same centered column + side padding as the form, so the title lines up with the fields. */
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: amraleSpacing.sm,
     paddingHorizontal: amraleSpacing.md,
-    paddingBottom: amraleSpacing.sm,
-    backgroundColor: dairyTactileColors.surfaceContainerLowest,
-    borderBottomWidth: 1,
-    borderBottomColor: dairyTactileColors.outlineVariant,
   },
   headerIconBtn: {
     width: 40,
@@ -669,204 +672,89 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     flex: 1,
-    textAlign: 'center',
+    minWidth: 0,
     fontFamily: amraleTypography.fontFamily.bold,
     fontSize: 18,
-    color: dairyTactileColors.primaryContainer,
-  },
-  tabBar: {
-    flexDirection: 'row',
-    marginHorizontal: amraleSpacing.md,
-    marginTop: amraleSpacing.sm,
-    marginBottom: amraleSpacing.sm,
-    padding: 4,
-    borderRadius: amraleRadius.lg,
-    backgroundColor: dairyTactileColors.surfaceContainerLow,
-    gap: 4,
-  },
-  tab: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 40,
-    borderRadius: amraleRadius.md,
-  },
-  tabActive: {
-    backgroundColor: dairyTactileColors.primaryContainer,
-    ...primaryButtonElevation(),
-  },
-  tabText: {
-    fontFamily: amraleTypography.fontFamily.semiBold,
-    fontSize: 14,
-    color: dairyTactileColors.onSurfaceVariant,
-  },
-  tabTextActive: {
-    color: dairyTactileColors.onPrimary,
+    color: amraleColors.blue,
   },
   scroll: {
-    paddingHorizontal: amraleSpacing.md,
+    padding: amraleSpacing.md,
     gap: amraleSpacing.md,
   },
-  card: {
-    backgroundColor: dairyTactileColors.surfaceContainerLowest,
-    borderRadius: amraleRadius.lg,
-    padding: amraleSpacing.md,
-    gap: amraleSpacing.sm,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 85, 199, 0.06)',
-    ...tactileCardElevation(),
-  },
-  cardHeading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  cardHeadingText: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 12,
-    letterSpacing: 1,
-    color: dairyTactileColors.primaryContainer,
-    textTransform: 'uppercase',
-  },
-  fieldBlock: { gap: 6 },
-  label: {
-    fontFamily: amraleTypography.fontFamily.medium,
-    fontSize: 13,
-    color: dairyTactileColors.onSurfaceVariant,
-  },
-  input: {
-    minHeight: 48,
-    paddingHorizontal: 14,
-    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
-    borderRadius: amraleRadius.sm,
-    backgroundColor: dairyTactileColors.surfaceContainerLow,
-    borderWidth: 1,
-    borderColor: dairyTactileColors.outlineVariant,
-    fontFamily: amraleTypography.fontFamily.regular,
-    fontSize: 15,
-    color: dairyTactileColors.onSurface,
-  },
-  inputRow: {
-    minHeight: 48,
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: amraleRadius.sm,
-    backgroundColor: dairyTactileColors.surfaceContainerLow,
-    borderWidth: 1,
-    borderColor: dairyTactileColors.outlineVariant,
-  },
-  inputValue: {
-    flex: 1,
-    fontFamily: amraleTypography.fontFamily.regular,
-    fontSize: 15,
-    color: dairyTactileColors.onSurface,
-  },
-  placeholder: { color: dairyTactileColors.outline },
-  inputDisabled: { opacity: 0.85 },
-  inputMultiline: { minHeight: 72, textAlignVertical: 'top' },
-  row2: { flexDirection: 'row', gap: 12 },
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 52,
-    paddingVertical: 6,
-  },
-  toggleLabel: {
-    flex: 1,
-    fontFamily: amraleTypography.fontFamily.semiBold,
-    fontSize: 15,
-    color: dairyTactileColors.onSurface,
-  },
-  chip: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: amraleRadius.pill,
-    borderWidth: 1,
-  },
-  chipBlue: {
-    backgroundColor: dairyTactileColors.surfaceTintBlue,
-    borderColor: 'rgba(0, 85, 199, 0.2)',
-  },
-  chipGreen: {
-    backgroundColor: 'rgba(34, 197, 94, 0.12)',
-    borderColor: 'rgba(34, 197, 94, 0.25)',
-  },
-  chipNeutral: {
-    backgroundColor: dairyTactileColors.secondaryContainer,
-    borderColor: dairyTactileColors.outlineVariant,
-  },
-  chipText: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 10,
-    letterSpacing: 0.8,
-    color: dairyTactileColors.primaryContainer,
-  },
-  chipTextGreen: { color: '#16A34A' },
+  fieldBlock: { gap: 8 },
+  mapHint: { marginTop: -4, fontFamily: amraleTypography.fontFamily.regular, fontSize: 12, lineHeight: 17, color: amraleColors.textMuted },
+  /** Side-by-side fields that wrap to one column when the card is too narrow (e.g. 320px phones). */
+  row2: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 12, rowGap: amraleSpacing.md },
+  /** Short fields (City / Pincode, House / Society): two columns from ~360px phones up. */
+  fieldCell: { flexGrow: 1, flexShrink: 1, flexBasis: 140, minWidth: 0 },
+  /** Mobile numbers: two columns only on tablet/desktop-width cards, stacked on phones. */
+  fieldCellWide: { flexGrow: 1, flexShrink: 1, flexBasis: 240, minWidth: 0 },
   hint: {
     fontFamily: amraleTypography.fontFamily.regular,
     fontSize: 13,
     lineHeight: 20,
-    color: dairyTactileColors.onSurfaceVariant,
-    paddingHorizontal: 4,
+    color: amraleColors.textMuted,
   },
+  fieldHint: {
+    fontFamily: amraleTypography.fontFamily.regular,
+    fontSize: 12,
+    color: amraleColors.textMuted,
+  },
+  /** Full-bleed bar; Cancel + Save sit in `footerRow`, the same centered 720px column as the form. */
   footer: {
-    paddingHorizontal: amraleSpacing.md,
     paddingTop: amraleSpacing.md,
-    gap: amraleSpacing.sm,
-    backgroundColor: dairyTactileColors.surfaceContainerLowest,
+    backgroundColor: amraleColors.white,
     borderTopWidth: 1,
-    borderTopColor: dairyTactileColors.outlineVariant,
+    borderTopColor: amraleColors.inputBorderLight,
   },
-  saveBtn: {
+  footerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    minHeight: 52,
-    borderRadius: amraleRadius.lg,
-    backgroundColor: dairyTactileColors.primaryContainer,
-    ...primaryButtonElevation(),
+    gap: 12,
+    paddingHorizontal: amraleSpacing.md,
   },
-  saveText: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 15,
-    letterSpacing: 0.6,
-    color: dairyTactileColors.onPrimary,
-    textTransform: 'uppercase',
-  },
-  cancelBtn: { alignItems: 'center', paddingVertical: 10 },
+  cancelBtn: { minHeight: 44, justifyContent: 'center', paddingVertical: 12, paddingHorizontal: 8 },
   cancelText: {
     fontFamily: amraleTypography.fontFamily.semiBold,
     fontSize: 15,
-    color: dairyTactileColors.primaryContainer,
+    color: amraleColors.blue,
+  },
+  saveBtn: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    minHeight: 52,
+    borderRadius: amraleRadius.lg,
+    backgroundColor: amraleColors.blue,
+    shadowColor: amraleColors.blue,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  saveText: {
+    fontFamily: amraleTypography.fontFamily.bold,
+    fontSize: 16,
+    color: amraleColors.white,
+  },
+  saveIconCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: amraleColors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   errorText: {
     fontFamily: amraleTypography.fontFamily.medium,
     fontSize: 13,
-    color: dairyTactileColors.error,
+    color: amraleColors.error,
   },
   pressed: { opacity: 0.9 },
   disabled: { opacity: 0.6 },
-  dialog: { backgroundColor: dairyTactileColors.surfaceContainerLowest },
-  webCalHeaderPress: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 },
-  monthGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  monthCell: {
-    width: '30%',
-    minWidth: 92,
-    height: 44,
-    borderRadius: amraleRadius.md,
-    borderWidth: 1,
-    borderColor: dairyTactileColors.outlineVariant,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  monthCellActive: {
-    borderColor: dairyTactileColors.primaryContainer,
-    backgroundColor: dairyTactileColors.surfaceTintBlue,
-  },
   pickItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -887,11 +775,12 @@ const styles = StyleSheet.create({
     color: dairyTactileColors.onSurfaceVariant,
   },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(11, 29, 45, 0.45)',
   },
+  /** Width is set inline: window minus a 16px gutter on phones, capped at the 560px sheet width and centered. */
   modalSheet: {
-    marginHorizontal: amraleSpacing.md,
+    alignSelf: 'center',
     marginTop: 'auto',
     marginBottom: amraleSpacing.xl,
     maxHeight: '70%',
@@ -907,5 +796,5 @@ const styles = StyleSheet.create({
     marginBottom: amraleSpacing.sm,
   },
   modalList: { maxHeight: 320 },
-  modalCloseBtn: { alignItems: 'center', marginTop: amraleSpacing.sm },
+  modalCloseBtn: { alignItems: 'center', justifyContent: 'center', minHeight: 44, marginTop: amraleSpacing.sm },
 });

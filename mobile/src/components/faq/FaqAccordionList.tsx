@@ -37,7 +37,7 @@ export function FaqAccordionList({ items }: Props) {
           <View key={item.id} style={styles.card}>
             <Pressable
               onPress={() => toggle(item.id)}
-              style={({ pressed }) => [styles.questionRow, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.questionRow, open && styles.questionRowOpen, pressed && styles.pressed]}
               accessibilityRole="button"
               accessibilityState={{ expanded: open }}
             >
@@ -67,7 +67,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: amraleColors.inputBorderLight,
     paddingHorizontal: amraleSpacing.md,
-    paddingVertical: amraleSpacing.md,
+    // Most of the vertical padding lives on the question row so the whole card height is tappable (≥44px).
+    paddingVertical: amraleSpacing.xs,
     shadowColor: amraleColors.cardShadow,
     shadowOpacity: 1,
     shadowRadius: 10,
@@ -79,6 +80,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
+    minHeight: 44,
+    paddingVertical: 12,
+  },
+  questionRowOpen: {
+    paddingBottom: amraleSpacing.sm,
   },
   question: {
     flex: 1,
@@ -88,7 +94,7 @@ const styles = StyleSheet.create({
     color: amraleColors.text,
   },
   answer: {
-    marginTop: amraleSpacing.sm,
+    paddingBottom: 12,
     fontFamily: amraleTypography.fontFamily.regular,
     fontSize: 14,
     lineHeight: 21,

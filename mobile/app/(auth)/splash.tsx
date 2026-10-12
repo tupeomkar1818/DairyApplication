@@ -1,9 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 
 import { AmraleAuthShell, AmraleLogo } from '@/src/components/auth';
-import { useAuthSession, useAuthStore } from '@/src/hooks/auth';
+import { useAuthSession } from '@/src/hooks/auth';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleTypography } from '@/src/theme/dairyTactile';
 
 function roleToRoute(role: string) {
@@ -20,10 +21,13 @@ function roleToRoute(role: string) {
 }
 
 export default function SplashRoute() {
+  const t = useStrings('auth');
   const fade = useRef(new Animated.Value(0)).current;
-  const session = useAuthStore((s) => s.session);
-
-  useAuthSession();
+  const sessionQuery = useAuthSession();
+  const sessionResolved = sessionQuery.isFetched;
+  const sessionRole = sessionQuery.data?.role;
+  const [minDelayElapsed, setMinDelayElapsed] = useState(false);
+  const navigatedRef = useRef(false);
 
   useEffect(() => {
     Animated.timing(fade, {
@@ -35,22 +39,23 @@ export default function SplashRoute() {
   }, [fade]);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      if (session) {
-        router.replace(roleToRoute(session.role));
-        return;
-      }
-      router.replace('/(auth)/login');
-    }, 1400);
+    const t = setTimeout(() => setMinDelayElapsed(true), 1400);
     return () => clearTimeout(t);
-  }, [session]);
+  }, []);
+
+  useEffect(() => {
+    // Decide only after the session read has finished — a slow read must not bounce a signed-in user to login.
+    if (!minDelayElapsed || !sessionResolved || navigatedRef.current) return;
+    navigatedRef.current = true;
+    router.replace(sessionRole ? roleToRoute(sessionRole) : '/(auth)/login');
+  }, [minDelayElapsed, sessionResolved, sessionRole]);
 
   return (
     <AmraleAuthShell>
       <View style={styles.frame}>
         <Animated.View style={[styles.center, { opacity: fade }]}>
           <AmraleLogo size="splash" />
-          <Text style={styles.tagline}>Pure & Vital · Since 1976</Text>
+          <Text style={styles.tagline}>{t.splash.tagline}</Text>
         </Animated.View>
         <View style={styles.loader}>
           <ActivityIndicator color={amraleColors.white} size="small" />
@@ -65,6 +70,8 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     justifyContent: 'center',
+    // Reserve the loader's strip so the centered logo + tagline can never slide underneath it.
+    paddingBottom: 64,
   },
   center: {
     alignItems: 'center',
@@ -82,7 +89,7 @@ const styles = StyleSheet.create({
   },
   loader: {
     position: 'absolute',
-    bottom: 32,
+    bottom: 20,
     left: 0,
     right: 0,
     alignItems: 'center',

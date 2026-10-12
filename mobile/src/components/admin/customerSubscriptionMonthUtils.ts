@@ -1,6 +1,16 @@
 import { toIsoYmdFromFlexibleDate } from '@/src/components/admin/customerFormDates';
+import { deliveredAddOnTotalForMonth } from '@/src/domain/customers/addOns';
 import type { CustomerSubscriptionItemDto, CustomerSubscriptionPlanDto } from '@/src/domain/customers/dtos';
-import { milkLineDuplicateKey } from '@/src/domain/customers/milkLineDuplicate';
+import type { Customer } from '@/src/domain/customers/entities';
+import {
+  planLineTotal,
+  subscriptionPlanActiveOnDateYmd,
+  subscriptionPlanActiveSegments,
+} from '@/src/domain/customers/planSchedule';
+import { strings } from '@/src/i18n/strings';
+
+/** Plan calendar rules live in the domain layer (also used by the mock service); re-exported for existing UI imports. */
+export { planLineTotal, subscriptionPlanActiveOnDateYmd, subscriptionPlanActiveSegments };
 
 export function daysInMonth(yyyyMm: string): number {
   const m = yyyyMm.match(/^(\d{4})-(\d{2})$/);
@@ -23,10 +33,31 @@ export function shiftMonth(yyyyMm: string, deltaMonths: number): string {
 export function monthLabel(yyyyMm: string): string {
   const m = yyyyMm.match(/^(\d{4})-(\d{2})$/);
   if (!m) return yyyyMm;
-  const yyyy = Number(m[1]);
   const mm = Number(m[2]);
-  const d = new Date(yyyy, mm - 1, 1);
-  return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+  if (mm < 1 || mm > 12) return yyyyMm;
+  // "Sep 2026" — month names follow the app language, not the phone's locale.
+  return `${strings('common').dates.monthsShort[mm - 1]} ${m[1]}`;
+}
+
+/** Display label for a stored enum value (the value itself when it has no label). */
+function enumLabel(labels: Record<string, string>, value: string | undefined | null): string {
+  const v = String(value ?? '');
+  return Object.prototype.hasOwnProperty.call(labels, v) ? labels[v]! : v;
+}
+
+/** A line's delivery frequency ("Daily", "Alternate Day", …) in the app language. */
+export function frequencyLabel(value: string | undefined | null): string {
+  return enumLabel(strings('subscriptionEditor').enums.frequency, value);
+}
+
+/** "Morning", "Evening", "Both" in the app language. */
+export function deliveryTimeLabel(value: string | undefined | null): string {
+  return enumLabel(strings('subscriptionEditor').enums.deliveryTime, value);
+}
+
+/** A plan line's status ("Active", "Paused", …) in the app language. */
+export function planStatusLabel(value: string | undefined | null): string {
+  return enumLabel(strings('subscriptionEditor').enums.planStatus, value);
 }
 
 export function monthIndex(yyyyMm: string): number {
@@ -43,64 +74,6 @@ export function parseSubscriptionMonthKey(v: unknown): string {
   const ddmmyyyy = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (ddmmyyyy) return `${ddmmyyyy[3]}-${ddmmyyyy[2]}`;
   return '';
-}
-
-function addDaysIsoYmd(ymd: string, deltaDays: number): string {
-  const [yy, mm, dd] = ymd.slice(0, 10).split('-').map((x) => Number(x));
-  const d = new Date(yy, mm - 1, dd);
-  d.setDate(d.getDate() + deltaDays);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function minIsoYmd(a: string, b: string): string {
-  return a <= b ? a : b;
-}
-
-function maxIsoYmd(a: string, b: string): string {
-  return a >= b ? a : b;
-}
-
-export function subscriptionPlanActiveSegments(p: CustomerSubscriptionPlanDto): Array<[string, string]> {
-  const start = toIsoYmdFromFlexibleDate(p.startDate as string);
-  if (!start) return [];
-  const endParsed = toIsoYmdFromFlexibleDate(p.endDate as string);
-  const end = endParsed ?? '9999-12-31';
-
-  const ps = toIsoYmdFromFlexibleDate(p.pauseStartDate as string) ?? '';
-  if (!ps || ps > end) {
-    return [[start, end]];
-  }
-
-  const pe = toIsoYmdFromFlexibleDate(p.pauseEndDate as string) ?? '';
-  const res = toIsoYmdFromFlexibleDate(p.resumeDate as string) ?? '';
-
-  const dayBeforePause = addDaysIsoYmd(ps, -1);
-  const out: Array<[string, string]> = [];
-  const preEnd = minIsoYmd(end, dayBeforePause);
-  if (start <= preEnd) out.push([start, preEnd]);
-
-  let activeAgainFrom = '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(res)) activeAgainFrom = res;
-  else if (/^\d{4}-\d{2}-\d{2}$/.test(pe)) activeAgainFrom = addDaysIsoYmd(pe, 1);
-  if (activeAgainFrom && activeAgainFrom <= end) {
-    const segStart = maxIsoYmd(activeAgainFrom, start);
-    if (segStart <= end) out.push([segStart, end]);
-  }
-
-  return out.length ? out : [[start, end]];
-}
-
-/** True when the plan delivers / is active on the given calendar day (YYYY-MM-DD). */
-export function subscriptionPlanActiveOnDateYmd(p: CustomerSubscriptionPlanDto, ymd: string): boolean {
-  const kind = p.subscriptionKind ?? 'Monthly';
-  if (kind === 'Daily') {
-    const dd = toIsoYmdFromFlexibleDate(p.deliveryDate as string);
-    return !!dd && dd === ymd;
-  }
-  for (const [a, b] of subscriptionPlanActiveSegments(p)) {
-    if (ymd >= a && ymd <= b) return true;
-  }
-  return false;
 }
 
 function normQtyLabel(s: string | undefined): string {
@@ -126,12 +99,22 @@ export type CustomerDeliveryRowInput = {
   productName: string;
   quantityLabel: string;
   status: string;
+  /** Packs of the subscription delivered that day; absent on rows written before per-day quantities existed. */
+  subscriptionItems?: number;
+};
+
+type DeliveredPlanDay = {
+  /** Quantity shown for the day: delivered subscription packs, else the calendar's day quantity, else 1. */
+  quantity: number;
+  /** Delivered subscription packs recorded on the row, when the row has them. */
+  subscriptionItems?: number;
 };
 
 /**
  * Subscription-aligned, delivery-based days: a date counts only when `deliveries` has **Delivered** for the same
  * product + quantity label, the plan is active that day, and this plan wins duplicate-key attribution.
- * Per-day quantity is the sum of matching daily order lines (calendar) for that plan/day, or 1 if none (subscription-only mark).
+ * Per-day quantity is the subscription packs recorded on the delivery row; for older rows, the sum of matching daily
+ * order lines (calendar) for that plan/day, or 1 if none (subscription-only mark).
  */
 export function billableDeliveredDatesForPlan(
   planIndex: number,
@@ -140,13 +123,40 @@ export function billableDeliveredDatesForPlan(
   deliveries: CustomerDeliveryRowInput[],
   monthYyyyMm?: string,
 ): Map<string, number> {
-  const plan = plans[planIndex];
   const byDate = new Map<string, number>();
+  for (const [ymd, day] of deliveredPlanDays(planIndex, plans, dailyOrderLines, deliveries, monthYyyyMm)) {
+    byDate.set(ymd, day.quantity);
+  }
+  return byDate;
+}
+
+function deliveredPlanDays(
+  planIndex: number,
+  plans: CustomerSubscriptionPlanDto[],
+  dailyOrderLines: BillableDeliveryLineInput[],
+  deliveries: CustomerDeliveryRowInput[],
+  monthYyyyMm?: string,
+): Map<string, DeliveredPlanDay> {
+  const plan = plans[planIndex];
+  const byDate = new Map<string, DeliveredPlanDay>();
   if (!plan) return byDate;
 
   const pn = String(plan.productName ?? '').trim();
   const ql = normQtyLabel(plan.quantityLabel);
   if (!pn || !ql) return byDate;
+
+  // Index dailyOrderLines by date for O(1) lookup
+  const dailyOrdersByDate = new Map<string, number>();
+  for (const l of dailyOrderLines) {
+    if (monthYyyyMm && !ymdInMonth(l.dateYmd, monthYyyyMm)) continue;
+    if (String(l.productName ?? '').trim() !== pn) continue;
+    if (normQtyLabel(l.quantityLabel) !== ql) continue;
+    if (!subscriptionPlanActiveOnDateYmd(plan, l.dateYmd)) continue;
+    if (!subscriptionPlanWinsDeliveryAttributionAtYmd(planIndex, l.dateYmd, plans)) continue;
+
+    const qty = Math.max(1, Math.floor(Number(l.quantity ?? 1)));
+    dailyOrdersByDate.set(l.dateYmd, (dailyOrdersByDate.get(l.dateYmd) ?? 0) + qty);
+  }
 
   for (const d of deliveries) {
     if (d.status !== 'Delivered') continue;
@@ -158,23 +168,34 @@ export function billableDeliveredDatesForPlan(
     if (!subscriptionPlanActiveOnDateYmd(plan, ymd)) continue;
     if (!subscriptionPlanWinsDeliveryAttributionAtYmd(planIndex, ymd, plans)) continue;
 
-    let q = 0;
-    for (const l of dailyOrderLines) {
-      if (l.dateYmd !== ymd) continue;
-      if (String(l.productName ?? '').trim() !== pn) continue;
-      if (normQtyLabel(l.quantityLabel) !== ql) continue;
-      if (!subscriptionPlanActiveOnDateYmd(plan, l.dateYmd)) continue;
-      if (!subscriptionPlanWinsDeliveryAttributionAtYmd(planIndex, l.dateYmd, plans)) continue;
-      q += Math.max(1, Math.floor(Number(l.quantity ?? 1)));
+    const recorded = d.subscriptionItems;
+    if (recorded !== undefined && recorded !== null) {
+      const items = Math.floor(Number(recorded));
+      // The row exists for a one-off order of the same pack; none of the subscription went that day.
+      if (!Number.isFinite(items) || items <= 0) continue;
+      byDate.set(ymd, { quantity: items, subscriptionItems: items });
+      continue;
     }
-    if (q <= 0) q = 1;
-    byDate.set(ymd, q);
+    byDate.set(ymd, { quantity: dailyOrdersByDate.get(ymd) ?? 1 });
   }
 
   return byDate;
 }
 
-/** Month total: sum over subscription plan lines of (delivered billable days in month × `planLineTotal`). */
+/**
+ * What one pack of a line costs. `planLineTotal` prices the line's usual quantity, so a day with a different
+ * quantity is charged per pack.
+ */
+function planUnitPrice(plan: CustomerSubscriptionPlanDto): number {
+  const usual = Math.max(1, Math.floor(Number(plan.numberOfItems ?? 1)) || 1);
+  return planLineTotal(plan) / usual;
+}
+
+/**
+ * Month total for the subscription: for every delivered day, the packs of the subscription that were delivered times
+ * the pack price. A day recorded before per-day quantities existed bills at the line's usual quantity, so older bills
+ * come out exactly as they did.
+ */
 export function computeSubscriptionBillingTotalForMonth(
   monthYyyyMm: string,
   subscriptionPlans: CustomerSubscriptionPlanDto[],
@@ -184,14 +205,86 @@ export function computeSubscriptionBillingTotalForMonth(
   let total = 0;
   for (let i = 0; i < subscriptionPlans.length; i += 1) {
     const plan = subscriptionPlans[i]!;
-    const byDate = billableDeliveredDatesForPlan(i, subscriptionPlans, dailyOrderLines, deliveries, monthYyyyMm);
-    total += Math.round(byDate.size * planLineTotal(plan));
+    const lineTotal = planLineTotal(plan);
+    const unit = planUnitPrice(plan);
+    for (const day of deliveredPlanDays(i, subscriptionPlans, dailyOrderLines, deliveries, monthYyyyMm).values()) {
+      total += day.subscriptionItems !== undefined ? day.subscriptionItems * unit : lineTotal;
+    }
   }
   return Math.round(total);
 }
 
+export type DeliveredSubscriptionCharge = {
+  ymd: string;
+  planIndex: number;
+  productName: string;
+  packLabel: string;
+  /** Subscription packs billed that day (the line's usual quantity for rows written before per-day quantities). */
+  packs: number;
+  /** Unrounded rupees; a month's charges add up to `computeSubscriptionBillingTotalForMonth` once rounded. */
+  amount: number;
+};
+
 /**
- * When several plan rows share the same milk duplicate key and overlap on a calendar day, attribute that day to the
+ * Every delivered subscription day the bill charges for, one entry per line and day — the per-day form of
+ * `computeSubscriptionBillingTotalForMonth`, so reports over any date range count exactly what the bills count.
+ */
+export function deliveredSubscriptionCharges(
+  subscriptionPlans: CustomerSubscriptionPlanDto[],
+  deliveries: CustomerDeliveryRowInput[],
+  dailyOrderLines: BillableDeliveryLineInput[] = [],
+): DeliveredSubscriptionCharge[] {
+  const out: DeliveredSubscriptionCharge[] = [];
+  for (let i = 0; i < subscriptionPlans.length; i += 1) {
+    const plan = subscriptionPlans[i]!;
+    const lineTotal = planLineTotal(plan);
+    const unit = planUnitPrice(plan);
+    const usual = Math.max(1, Math.floor(Number(plan.numberOfItems ?? 1)) || 1);
+    for (const [ymd, day] of deliveredPlanDays(i, subscriptionPlans, dailyOrderLines, deliveries)) {
+      const recorded = day.subscriptionItems !== undefined;
+      out.push({
+        ymd,
+        planIndex: i,
+        productName: String(plan.productName ?? '').trim(),
+        packLabel: String(plan.quantityLabel ?? '').trim(),
+        packs: recorded ? day.subscriptionItems! : usual,
+        amount: recorded ? day.subscriptionItems! * unit : lineTotal,
+      });
+    }
+  }
+  return out.sort((a, b) => a.ymd.localeCompare(b.ymd) || a.productName.localeCompare(b.productName));
+}
+
+/**
+ * What a customer owes for a month: delivered subscription days plus delivered one-off orders.
+ *
+ * Both halves bill on the same rule — the delivery boy marked it delivered — so a skipped day, a paused line and a
+ * cancelled add-on all simply never appear.
+ */
+export function computeCustomerMonthBillTotal(
+  customer: Pick<Customer, 'subscriptionPlans' | 'deliveries' | 'extraOrders'>,
+  monthYyyyMm: string,
+  dailyOrderLines: BillableDeliveryLineInput[] = [],
+): number {
+  const subscription = computeSubscriptionBillingTotalForMonth(
+    monthYyyyMm,
+    (customer.subscriptionPlans ?? []) as CustomerSubscriptionPlanDto[],
+    dailyOrderLines,
+    (customer.deliveries ?? []) as CustomerDeliveryRowInput[],
+  );
+  return Math.round(subscription + deliveredAddOnTotalForMonth(customer, monthYyyyMm));
+}
+
+/**
+ * Grouping key for delivery attribution. Must match how deliveries are matched to plans (product name + normalized
+ * pack label — see `billableDeliveredDatesForPlan`); a finer key would let one Delivered row bill two plans.
+ */
+function deliveryAttributionKey(p: CustomerSubscriptionPlanDto): string {
+  return `${String(p.productName ?? '').trim()}\u{1F}${normQtyLabel(p.quantityLabel)}`;
+}
+
+/**
+ * When several plan rows share the same product + pack and overlap on a calendar day, attribute that day to the
  * segment with the latest start date (and latest index on tie) so delivery-based amounts do not double-count.
  */
 export function subscriptionPlanWinsDeliveryAttributionAtYmd(
@@ -200,11 +293,11 @@ export function subscriptionPlanWinsDeliveryAttributionAtYmd(
   plans: CustomerSubscriptionPlanDto[],
 ): boolean {
   if (planIndex < 0 || planIndex >= plans.length) return false;
-  const key = milkLineDuplicateKey(plans[planIndex]!);
+  const key = deliveryAttributionKey(plans[planIndex]!);
   let bestIdx = -1;
   let bestStart = '';
   for (let j = 0; j < plans.length; j++) {
-    if (milkLineDuplicateKey(plans[j]!) !== key) continue;
+    if (deliveryAttributionKey(plans[j]!) !== key) continue;
     if (!subscriptionPlanActiveOnDateYmd(plans[j]!, ymd)) continue;
     const sy = toIsoYmdFromFlexibleDate(plans[j]!.startDate as string) ?? '';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sy)) continue;
@@ -232,18 +325,6 @@ export function subscriptionPlanShowsInCalendarMonth(yyyyMm: string, p: Customer
   return false;
 }
 
-/** Roll-up line total for a subscription plan row (used for temporary/permanent charge summaries). */
-export function planLineTotal(p: CustomerSubscriptionPlanDto): number {
-  const items = Math.max(1, Number(p.numberOfItems ?? 1));
-  const base = Number(p.originalPrice ?? 0);
-  const disc = Number(p.discountedPrice ?? 0);
-  const unit = disc > 0 && disc < base ? disc : base;
-  if ((p.subscriptionKind ?? 'Monthly') === 'Daily' && p.dailyCost != null && Number.isFinite(Number(p.dailyCost))) {
-    return Math.round(Number(p.dailyCost) * items);
-  }
-  return Math.round(items * unit);
-}
-
 /** Sum of temporary add-on line totals that fall in the given calendar month (YYYY-MM). */
 export function extraTemporaryChargesForCalendarMonth(
   yyyyMm: string,
@@ -258,7 +339,7 @@ export function extraTemporaryChargesForCalendarMonth(
 export function formatSubscriptionPlanAsOrderExample(p: CustomerSubscriptionPlanDto): string {
   const u = p.unitType ? ` (${p.unitType})` : '';
   const q = Math.max(1, Number(p.numberOfItems ?? 1));
-  return `${p.productName} ${p.quantityLabel}${u} · Quantity ${q}`;
+  return strings('subscriptionEditor').orderExample(p.productName, `${p.quantityLabel}${u}`, q);
 }
 
 /**
@@ -281,7 +362,7 @@ export function pickDailySubscriptionExamples(
   for (const p of active.slice(0, maxExamples)) out.push(formatSubscriptionPlanAsOrderExample(p));
   if (out.length) return out;
   for (const s of (subscriptionItems ?? []).slice(0, maxExamples)) {
-    out.push(`${s.productName} ${s.quantityLabel} · Quantity 1`);
+    out.push(strings('subscriptionEditor').orderExample(s.productName, s.quantityLabel, 1));
   }
   return out;
 }

@@ -1,0 +1,37 @@
+{
+  // The dairy's API. `npm run dev` runs it locally against a local copy of the database;
+  // `npm run deploy` puts it on Cloudflare.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "amrale-dairy-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-06",
+  "observability": { "enabled": true },
+  // The dairy’s day, in UTC: 6 am India (00:30) for the bills, 6 pm (12:30) for the evening reminders,
+  // and midnight (18:30) for the offers starting that day.
+  "triggers": {
+    "crons": ["30 0 * * *", "30 12 * * *", "30 18 * * *"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "amrale-dairy",
+      // Created with `wrangler d1 create amrale-dairy`.
+      "database_id": "1f2678f8-357f-4b16-a1aa-5e93c611334a",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Pictures and videos (offer posters, announcement pictures). R2 has to be turned on for the account first:
+  // Cloudflare dashboard → R2 → Enable, then `npx wrangler r2 bucket create amrale-dairy-media`. Until then this
+  // stays commented out, the Worker runs without it, and `/media` answers MEDIA_NOT_SET_UP.
+  // "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "amrale-dairy-media" }],
+
+  "vars": {
+    // Where the apps run from, for CORS. The phone apps send no Origin; the web build and the website do.
+    "ALLOWED_ORIGINS": "http://localhost:8081,https://dairy.matdarraja.in,https://amrale-dairy-site.pages.dev",
+    // No SMS provider yet: the code is written to the Worker log (read it with `wrangler tail`) and never
+    // handed back in the answer. With MSG91 registered this becomes "msg91" and the keys go in as secrets.
+    "SMS_PROVIDER": "log",
+    "OTP_DEV_ECHO": "false"
+  }
+}

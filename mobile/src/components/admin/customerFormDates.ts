@@ -59,6 +59,22 @@ export function toIsoYmdFromFlexibleDate(value: string | undefined | null): stri
 }
 
 /**
+ * Any stored date shape → DD/MM/YYYY for form fields ('' when empty/unparseable).
+ * Accepts DD/MM/YYYY, YYYY-MM-DD and full ISO timestamps (timestamps use the local calendar day, not the UTC one).
+ */
+export function toDdMmYyyyFromFlexibleDate(value: string | undefined | null): string {
+  const v = String(value ?? '').trim();
+  if (!v) return '';
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(v)) return dobToDate(v) ? v : '';
+  if (/^\d{4}-\d{2}-\d{2}T/.test(v)) {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return dateToDob(d);
+  }
+  const ymd = toIsoYmdFromFlexibleDate(v);
+  return ymd ? isoDateToDob(ymd) ?? '' : '';
+}
+
+/**
  * Last day of the calendar month that is `monthsAfterStartMonth` after the start date’s month
  * (e.g. start Jan + 11 → last day of December same year).
  */

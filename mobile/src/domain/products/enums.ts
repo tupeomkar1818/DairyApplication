@@ -13,7 +13,8 @@ export type DayOfWeek =
   | 'Saturday'
   | 'Sunday';
 
-export type ProductAvailability = 'Available' | 'Out of Stock' | 'Seasonal Product' | 'Discontinued';
+/** Stock levels aren't tracked in this ERP, so there is no 'Out of Stock' state. */
+export type ProductAvailability = 'Available' | 'Seasonal Product' | 'Discontinued';
 
 export type DeliveryTimeSlot = 'Morning' | 'Afternoon' | 'Evening';
 

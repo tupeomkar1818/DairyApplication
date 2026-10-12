@@ -11,9 +11,13 @@ import {
   defaultPackLabelWhenNoOptions,
   isMilkCatalogProduct,
   moneyInr,
+  packForLabel,
   packSizeOptionsForProduct,
+  planPatchForPack,
 } from '@/src/components/admin/milkSubscriptionLineUi';
+import { useStrings } from '@/src/i18n/useStrings';
 import { formFieldAttrs } from '@/src/theme/platformStyles';
+import { useResponsiveDialogStyle } from '@/src/utils/responsiveLayout';
 
 const COLORS = {
   primary: '#2563EB',
@@ -50,9 +54,13 @@ export function MilkSubscriptionLineCompactFields({
   textMain,
   textSub,
 }: MilkSubscriptionLineCompactFieldsProps) {
-  const { width: winW, height: winH } = useWindowDimensions();
-  const pickerDialogMaxW = Math.max(260, Math.min(winW - 24, 520));
-  const productListScrollMaxH = Math.max(160, Math.min(Math.round(winH * 0.52), winH - 200));
+  const t = useStrings('subscriptionEditor');
+  const common = useStrings('common');
+  const { height: winH } = useWindowDimensions();
+  // Window-capped width (16px gutter on phones, 520 max) + viewport max height; Paper's default margin is replaced.
+  const pickerDialogStyle = useResponsiveDialogStyle(520);
+  // Leaves room for the search field, title and actions so the dialog fits inside its viewport-capped height.
+  const productListScrollMaxH = Math.max(140, Math.min(Math.round(winH * 0.5), winH - 300));
   const packListScrollMaxH = Math.max(140, Math.min(Math.round(winH * 0.42), winH - 220));
 
   const [choiceDialog, setChoiceDialog] = useState<null | 'product' | 'pack'>(null);
@@ -65,17 +73,19 @@ export function MilkSubscriptionLineCompactFields({
 
   const applyProductSelection = useCallback(
     (prod: Product) => {
-      const unitPrice = Number(prod.price ?? 0);
+      // Price comes from the chosen pack. With a single pack there is nothing to choose, so it is picked here.
       const opts = packSizeOptionsForProduct(prod);
-      const ql = opts.length > 0 ? '' : defaultPackLabelWhenNoOptions(prod);
+      const onlyPack = opts.length === 1 ? packForLabel(prod, opts[0]) : undefined;
       onPatch({
         productName: prod.name,
         unitType: prod.unit,
         numberOfItems: 1,
-        quantityLabel: ql,
-        originalPrice: unitPrice,
+        quantityLabel: opts.length > 0 ? '' : defaultPackLabelWhenNoOptions(prod),
+        packId: undefined,
+        originalPrice: 0,
         discountedPrice: 0,
-        effectiveFinalPrice: unitPrice,
+        effectiveFinalPrice: 0,
+        ...(onlyPack ? planPatchForPack(onlyPack) : null),
       });
       setChoiceDialog(null);
     },
@@ -88,6 +98,7 @@ export function MilkSubscriptionLineCompactFields({
   }, [draft.productName, products]);
 
   const packOptions = useMemo(() => packSizeOptionsForProduct(selectedProduct), [selectedProduct]);
+  const selectedPack = useMemo(() => packForLabel(selectedProduct, draft.quantityLabel), [selectedProduct, draft.quantityLabel]);
 
   const needsPackStep = packOptions.length > 0;
   const hasProduct = !!draft.productName?.trim();
@@ -100,10 +111,10 @@ export function MilkSubscriptionLineCompactFields({
       <View style={styles.block}>
         <Pressable onPress={() => setChoiceDialog('product')} style={({ pressed }) => [styles.pickerFieldCompact, pressed && styles.pressed]}>
           <Text variant="labelLarge" style={styles.pickerLabel}>
-            {productFieldLabel ?? 'Milk product'}
+            {productFieldLabel ?? t.lineFields.milkProduct}
           </Text>
           <Text variant="bodyMedium" numberOfLines={2} style={[textMain, styles.compactValue]}>
-            {draft.productName.trim() ? draft.productName : 'Select'}
+            {draft.productName.trim() ? draft.productName : common.actions.select}
           </Text>
           <MaterialCommunityIcons name="chevron-down" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
         </Pressable>
@@ -111,10 +122,10 @@ export function MilkSubscriptionLineCompactFields({
         {hasProduct && needsPackStep ? (
           <Pressable onPress={() => setChoiceDialog('pack')} style={({ pressed }) => [styles.pickerFieldCompact, pressed && styles.pressed]}>
             <Text variant="labelLarge" style={styles.pickerLabel}>
-              Pack / size
+              {t.fields.packSize}
             </Text>
             <Text variant="bodyMedium" numberOfLines={2} style={[textMain, styles.compactValue]}>
-              {draft.quantityLabel.trim() ? draft.quantityLabel : 'Select'}
+              {draft.quantityLabel.trim() ? draft.quantityLabel : common.actions.select}
             </Text>
             <MaterialCommunityIcons name="chevron-down" size={20} color={scheme === 'dark' ? 'white' : COLORS.text} />
           </Pressable>
@@ -124,7 +135,7 @@ export function MilkSubscriptionLineCompactFields({
           <>
             <View style={[styles.pickerFieldCompact, styles.quantityRow]}>
               <Text variant="labelLarge" style={styles.pickerLabel}>
-                Quantity
+                {common.fields.quantity}
               </Text>
               <View style={styles.stepperRowInline}>
                 <Pressable
@@ -149,14 +160,14 @@ export function MilkSubscriptionLineCompactFields({
 
             <View style={[styles.pickerFieldCompact, styles.readonlyCompactRow]}>
               <Text variant="labelLarge" style={styles.pickerLabel}>
-                Price
+                {common.fields.price}
               </Text>
               <View style={{ flex: 1, minWidth: 0, alignItems: 'flex-end' }}>
                 <Text variant="bodyLarge" style={[textMain, styles.bold]}>
                   {moneyInr(planLineTotal(lineForTotal))}
                 </Text>
                 <Text variant="bodySmall" style={textSub} numberOfLines={2}>
-                  {moneyInr(Number(selectedProduct?.price ?? 0))} × {Math.max(1, Number(draft.numberOfItems ?? 1))}
+                  {moneyInr(selectedPack ? planPatchForPack(selectedPack).effectiveFinalPrice : draft.effectiveFinalPrice)} × {Math.max(1, Number(draft.numberOfItems ?? 1))}
                 </Text>
               </View>
             </View>
@@ -174,17 +185,17 @@ export function MilkSubscriptionLineCompactFields({
           style={[
             scheme === 'dark' ? styles.dialogDark : styles.dialogLight,
             styles.pickerDialogSurface,
-            { maxWidth: pickerDialogMaxW, width: pickerDialogMaxW },
+            pickerDialogStyle,
           ]}
         >
-          <Dialog.Title>{productPickerTitle ?? 'Select milk product'}</Dialog.Title>
+          <Dialog.Title>{productPickerTitle ?? t.lineFields.selectMilkProduct}</Dialog.Title>
           <Dialog.Content style={[styles.pickerDialogContent, { maxHeight: productListScrollMaxH + 120 }]}>
             <View style={styles.pickerDialogInner}>
               <TextInput
                 {...formFieldAttrs('subscription-product-search', { autoComplete: 'off' })}
                 mode="outlined"
                 dense
-                label="Search product"
+                label={t.lineFields.searchProduct}
                 value={productQuery}
                 onChangeText={setProductQuery}
                 autoCapitalize="none"
@@ -223,7 +234,7 @@ export function MilkSubscriptionLineCompactFields({
                         {prod.name}
                       </Text>
                       <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                        {prod.unit} • {prod.category}
+                        {[packSizeOptionsForProduct(prod).join(' · '), prod.category].filter(Boolean).join(' • ')}
                       </Text>
                     </View>
                     {selected ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
@@ -234,7 +245,7 @@ export function MilkSubscriptionLineCompactFields({
             </View>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setChoiceDialog(null)}>Close</Button>
+            <Button onPress={() => setChoiceDialog(null)}>{common.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
@@ -244,10 +255,10 @@ export function MilkSubscriptionLineCompactFields({
           style={[
             scheme === 'dark' ? styles.dialogDark : styles.dialogLight,
             styles.pickerDialogSurface,
-            { maxWidth: pickerDialogMaxW, width: pickerDialogMaxW },
+            pickerDialogStyle,
           ]}
         >
-          <Dialog.Title>Pack / size</Dialog.Title>
+          <Dialog.Title>{t.fields.packSize}</Dialog.Title>
           <Dialog.Content style={[styles.pickerDialogContent, { maxHeight: packListScrollMaxH + 40 }]}>
             <ScrollView
               style={{ maxHeight: packListScrollMaxH }}
@@ -263,12 +274,23 @@ export function MilkSubscriptionLineCompactFields({
                   <Pressable
                     key={q}
                     onPress={() => {
-                      onPatch({ quantityLabel: q });
+                      const pack = packForLabel(selectedProduct, q);
+                      onPatch(pack ? planPatchForPack(pack) : { quantityLabel: q });
                       setChoiceDialog(null);
                     }}
                     style={({ pressed }) => [styles.pickItem, pressed && styles.pressed, selected && styles.pickItemSelected]}
                   >
-                    <Text variant="bodyMedium">{q}</Text>
+                    <Text variant="bodyMedium" style={{ flex: 1, minWidth: 0 }} numberOfLines={1}>
+                      {q}
+                    </Text>
+                    {(() => {
+                      const pack = packForLabel(selectedProduct, q);
+                      return pack ? (
+                        <Text variant="bodyMedium" style={[textSub, styles.bold]}>
+                          {moneyInr(planPatchForPack(pack).effectiveFinalPrice)}
+                        </Text>
+                      ) : null;
+                    })()}
                     {selected ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
                   </Pressable>
                 );
@@ -276,7 +298,7 @@ export function MilkSubscriptionLineCompactFields({
             </ScrollView>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setChoiceDialog(null)}>Close</Button>
+            <Button onPress={() => setChoiceDialog(null)}>{common.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
       </Portal>
@@ -321,8 +343,8 @@ const styles = StyleSheet.create({
   stepperRowInline: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   readonlyCompactRow: { alignItems: 'center' },
   stepperBtn: {
-    width: 34,
-    height: 34,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
@@ -331,6 +353,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(148,163,184,0.22)',
   },
   pickItem: {
+    minHeight: 44,
+    gap: 10,
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 14,

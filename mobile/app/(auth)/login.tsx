@@ -1,33 +1,36 @@
-import { useMemo, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import {
-  AmraleLogo,
-  AuthFooterLinks,
-  AuthPrimaryButton,
-  LoginLightShell,
-  MobileNumberField,
-} from '@/src/components/auth';
+import { MobileNumberField } from '@/src/components/auth';
+import { AuthBrandLayout, AuthCard } from '@/src/components/auth/AuthBrandLayout';
+import { authFormStyles } from '@/src/components/auth/authFormStyles';
 import { RequestOtpRequestSchema } from '@/src/domain/auth/validations';
 import { DomainError } from '@/src/domain/shared/errors';
 import { useRequestOtp } from '@/src/hooks/auth';
-import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { useStrings } from '@/src/i18n/useStrings';
+import { amraleColors, amraleTypography } from '@/src/theme/dairyTactile';
 
 export default function LoginScreen() {
+  const t = useStrings('auth');
+  const c = useStrings('common');
   const requestOtp = useRequestOtp();
+
   const [mobileNumber, setMobileNumber] = useState('');
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const validation = useMemo(() => RequestOtpRequestSchema.safeParse({ mobileNumber }), [mobileNumber]);
+  // Say what is wrong only once they have finished typing (or tried to continue), not on the first digit.
   const fieldError =
-    touched && !validation.success ? (validation.error.issues[0]?.message ?? 'Invalid mobile number') : null;
+    touched && !validation.success ? (validation.error.issues[0]?.message ?? c.errors.invalidMobile) : null;
+  const busy = requestOtp.isPending;
 
-  async function onVerifyWithOtp() {
+  async function onGetOtp() {
     setTouched(true);
     setError(null);
-    if (!validation.success) return;
+    if (!validation.success || busy) return;
 
     try {
       const res = await requestOtp.mutateAsync({ mobileNumber });
@@ -42,130 +45,87 @@ export default function LoginScreen() {
         },
       });
     } catch (e) {
-      if (e instanceof DomainError) {
-        setError(e.message);
-        return;
-      }
-      setError('Network issue, please try again');
+      setError(e instanceof DomainError ? e.message : c.errors.network);
     }
   }
 
   return (
-    <LoginLightShell
-      footer={
-        <>
-          <AuthFooterLinks
-            variant="light"
-            onNeedHelp={() => router.push('/(auth)/faq')}
-            onContactAdmin={() => router.push('/(auth)/contact-admin')}
-            onPrivacyPolicy={() => router.push('/(auth)/privacy-policy')}
-          />
-          <Text style={styles.copyright}>© 2024 Amrale Dairy. All rights reserved.</Text>
-        </>
-      }
-    >
-      <AmraleLogo size="login" rounded style={styles.logo} />
-
-      <View style={styles.card}>
-        <Text style={styles.title}>Welcome Back</Text>
-        <Text style={styles.subtitle}>
-          Experience the purest farm fresh dairy, delivered to your door.
-        </Text>
+    <AuthBrandLayout>
+      <AuthCard>
+        <Text style={authFormStyles.title}>{t.login.title}</Text>
+        <Text style={authFormStyles.subtitle}>{t.login.subtitle}</Text>
 
         <MobileNumberField
           variant="light"
           showLabel
+          label={c.fields.mobileNumber}
+          prominent
           value={mobileNumber}
-          onChangeText={(t) => {
-            setTouched(true);
+          onChangeText={(text) => {
             setError(null);
-            setMobileNumber(t);
+            setMobileNumber(text);
+            if (text.length === 10) setTouched(true);
           }}
-          onBlur={() => setTouched(true)}
+          onBlur={() => mobileNumber.length > 0 && setTouched(true)}
+          onSubmitEditing={() => void onGetOtp()}
+          returnKeyType="go"
           error={fieldError}
         />
 
-        {error ? <Text style={styles.apiError}>{error}</Text> : null}
+        {error ? (
+          <View style={authFormStyles.errorBox} accessibilityLiveRegion="polite">
+            <MaterialCommunityIcons name="wifi-alert" size={16} color={amraleColors.error} />
+            <Text style={authFormStyles.errorBoxText}>{error}</Text>
+          </View>
+        ) : null}
 
-        <AuthPrimaryButton
-          label="Verify with OTP"
-          variant="filled"
-          onPress={onVerifyWithOtp}
-          loading={requestOtp.isPending}
-          disabled={requestOtp.isPending}
-        />
+        <Pressable
+          onPress={() => void onGetOtp()}
+          disabled={busy}
+          style={({ pressed }) => [
+            authFormStyles.button,
+            !validation.success && authFormStyles.buttonIdle,
+            pressed && !busy && authFormStyles.buttonPressed,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={t.login.getOtp}
+          accessibilityState={{ disabled: busy, busy }}
+        >
+          {busy ? (
+            <ActivityIndicator color={amraleColors.white} />
+          ) : (
+            <>
+              <Text style={authFormStyles.buttonText}>{t.login.getOtp}</Text>
+              <MaterialCommunityIcons name="arrow-right" size={20} color={amraleColors.white} />
+            </>
+          )}
+        </Pressable>
 
-        <View style={styles.secureRow}>
-          <View style={styles.secureLine} />
-          <Text style={styles.secureLabel}>SECURE ACCESS</Text>
-          <View style={styles.secureLine} />
+        <View style={authFormStyles.note}>
+          <MaterialCommunityIcons name="shield-lock-outline" size={16} color={amraleColors.textSubtle} />
+          <Text style={authFormStyles.noteText}>{t.login.privacyNote}</Text>
         </View>
-      </View>
-    </LoginLightShell>
+
+        <View style={authFormStyles.divider} />
+
+        <View style={styles.roles}>
+          <Text style={styles.rolesText}>{t.login.whoSignsIn}</Text>
+          <Pressable onPress={() => router.push('/(auth)/contact-admin')} hitSlop={6} accessibilityRole="link">
+            <Text style={authFormStyles.link}>{t.login.newCustomer}</Text>
+          </Pressable>
+        </View>
+      </AuthCard>
+    </AuthBrandLayout>
   );
 }
 
 const styles = StyleSheet.create({
-  logo: {
-    marginBottom: amraleSpacing.lg,
-  },
-  card: {
-    width: '100%',
-    backgroundColor: amraleColors.white,
-    borderRadius: amraleRadius.xxl,
-    padding: amraleSpacing.lg,
-    borderWidth: 1,
-    borderColor: amraleColors.inputBorderLight,
-    shadowColor: amraleColors.cardShadow,
-    shadowOpacity: 1,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 5,
-  },
-  title: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 26,
-    color: amraleColors.text,
-    textAlign: 'center',
-  },
-  subtitle: {
-    marginTop: amraleSpacing.sm,
-    fontFamily: amraleTypography.fontFamily.regular,
-    fontSize: 14,
-    lineHeight: 21,
-    color: amraleColors.textMuted,
-    textAlign: 'center',
-    paddingHorizontal: amraleSpacing.xs,
-  },
-  apiError: {
-    marginTop: amraleSpacing.sm,
-    fontFamily: amraleTypography.fontFamily.regular,
-    fontSize: 13,
-    color: amraleColors.error,
-    textAlign: 'center',
-  },
-  secureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: amraleSpacing.lg,
-    gap: 10,
-  },
-  secureLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: amraleColors.inputBorderLight,
-  },
-  secureLabel: {
-    fontFamily: amraleTypography.fontFamily.semiBold,
-    fontSize: 11,
-    letterSpacing: 1.4,
-    color: amraleColors.textSubtle,
-  },
-  copyright: {
-    marginTop: amraleSpacing.sm,
+  roles: { alignItems: 'center', gap: 6 },
+  rolesText: {
     fontFamily: amraleTypography.fontFamily.regular,
     fontSize: 12,
-    color: amraleColors.textSubtle,
+    lineHeight: 18,
+    color: amraleColors.textMuted,
     textAlign: 'center',
   },
 });

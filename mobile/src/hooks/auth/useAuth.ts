@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { LogoutConfirmDialogProps } from '@/src/components/auth/LogoutConfirmDialog';
 
 import type { AuthSessionResponse, RequestOtpRequest, RequestOtpResponse, VerifyOtpRequest, VerifyOtpResponse } from '@/src/domain/auth/dtos';
+import { strings } from '@/src/i18n/strings';
 import { services } from '@/src/infrastructure/service-registry';
 
 type AuthState = {
@@ -18,10 +19,12 @@ export const useAuthStore = create<AuthState>((set) => ({
   setSession: (session) => set({ session }),
 }));
 
+const AUTH_SESSION_QUERY_KEY = ['auth', 'session'] as const;
+
 export function useAuthSession() {
   const setSession = useAuthStore((s) => s.setSession);
   return useQuery({
-    queryKey: ['auth', 'session'],
+    queryKey: AUTH_SESSION_QUERY_KEY,
     queryFn: async () => {
       const session = await services.auth.getSession();
       setSession(session);
@@ -43,9 +46,13 @@ export function useVerifyOtp() {
 
   return useMutation<VerifyOtpResponse, unknown, VerifyOtpRequest>({
     mutationFn: (data) => services.auth.verifyOtp(data),
-    onSuccess: async (res) => {
+    onSuccess: (res) => {
+      // Never show a previous user's cached profile to the newly signed-in user.
+      qc.removeQueries({ queryKey: ['profile'] });
+      // Seed the session directly: route guards / dashboards mount with refetchOnMount:false and would
+      // otherwise keep the pre-login `null` (an invalidate while unobserved does not refetch).
+      qc.setQueryData<AuthSessionResponse | null>(AUTH_SESSION_QUERY_KEY, res.session);
       setSession(res.session);
-      await qc.invalidateQueries({ queryKey: ['auth', 'session'] });
     },
   });
 }
@@ -55,28 +62,42 @@ export function useLogout() {
   const setSession = useAuthStore((s) => s.setSession);
   return useMutation<void, unknown, void>({
     mutationFn: () => services.auth.logout(),
-    onSuccess: async () => {
+    onSuccess: () => {
+      // Drop every cached query (profile, dashboards, lists) so the next user starts clean.
+      qc.clear();
+      qc.setQueryData<AuthSessionResponse | null>(AUTH_SESSION_QUERY_KEY, null);
       setSession(null);
-      await qc.invalidateQueries({ queryKey: ['auth', 'session'] });
     },
   });
 }
 
 export function useConfirmLogout() {
-  const logout = useLogout();
+  const { mutateAsync: logoutAsync, isPending: isLoggingOut } = useLogout();
   const [visible, setVisible] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const confirmLogout = useCallback(() => setVisible(true), []);
+  const confirmLogout = useCallback(() => {
+    setError(null);
+    setVisible(true);
+  }, []);
 
   const dismissLogout = useCallback(() => {
-    if (!logout.isPending) setVisible(false);
-  }, [logout.isPending]);
+    if (isLoggingOut) return;
+    setVisible(false);
+    setError(null);
+  }, [isLoggingOut]);
 
   const handleConfirm = useCallback(async () => {
-    await logout.mutateAsync();
+    setError(null);
+    try {
+      await logoutAsync();
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : strings('auth').logout.failed);
+      return;
+    }
     setVisible(false);
     router.replace('/(auth)/login');
-  }, [logout]);
+  }, [logoutAsync]);
 
   const logoutDialogProps: LogoutConfirmDialogProps = {
     visible,
@@ -84,9 +105,9 @@ export function useConfirmLogout() {
     onConfirm: () => {
       void handleConfirm();
     },
-    loading: logout.isPending,
+    loading: isLoggingOut,
+    error,
   };
 
-  return { confirmLogout, isLoggingOut: logout.isPending, logoutDialogProps };
+  return { confirmLogout, isLoggingOut, logoutDialogProps };
 }
-

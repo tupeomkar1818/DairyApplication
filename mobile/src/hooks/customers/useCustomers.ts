@@ -6,11 +6,13 @@ import { services } from '@/src/infrastructure/service-registry';
 import { CUSTOMERS_STORE_KEY } from '@/src/infrastructure/storage/keys';
 import { subscribeStorageKey } from '@/src/infrastructure/storage/storage';
 
-export function useCustomers() {
+export function useCustomers(options: { enabled?: boolean } = {}) {
   const qc = useQueryClient();
   const query = useQuery<CustomerListResponse>({
     queryKey: ['customers', 'list'],
     queryFn: () => services.customers.list(),
+    // The customer app has no business reading the whole list; it asks the server for its own record instead.
+    enabled: options.enabled ?? true,
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 30 * 60_000,
     refetchOnMount: false,

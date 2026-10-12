@@ -1,5 +1,11 @@
 import type { DeliveryBoyRouteCoverageCredit } from '@/src/domain/deliveryBoys/entities';
 
+/**
+ * Upper bound on days produced by one range (~3 years). Guards payroll/render loops against a typo'd or
+ * far-future end date (e.g. 9999-12-31) turning a single leave/replacement row into millions of iterations.
+ */
+export const MAX_ENUMERATED_DAYS = 1100;
+
 export function enumerateDatesInclusive(fromIso: string, toIso: string): string[] {
   const start = String(fromIso).slice(0, 10);
   const end = String(toIso || fromIso).slice(0, 10);
@@ -10,7 +16,7 @@ export function enumerateDatesInclusive(fromIso: string, toIso: string): string[
   const endD = new Date(ey, em - 1, ed);
   if (Number.isNaN(d.getTime()) || Number.isNaN(endD.getTime())) return [];
   const out: string[] = [];
-  while (d.getTime() <= endD.getTime()) {
+  while (d.getTime() <= endD.getTime() && out.length < MAX_ENUMERATED_DAYS) {
     out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
     d.setDate(d.getDate() + 1);
   }
@@ -27,6 +33,23 @@ export function stripCreditsBySourceLeaveId(credits: DeliveryBoyRouteCoverageCre
 
 export function stripCreditsBySourceReplacementId(credits: DeliveryBoyRouteCoverageCredit[], replacementId: string): DeliveryBoyRouteCoverageCredit[] {
   return (credits ?? []).filter((c) => c.sourceReplacementId !== replacementId);
+}
+
+/**
+ * Removes credits that came from one leaver's leave/replacement rows (`sourceIds`), leaving credits for any
+ * other leaver untouched even when source ids collide (legacy attendance ids were only date-scoped).
+ */
+export function stripCreditsForLeaverSources(
+  credits: DeliveryBoyRouteCoverageCredit[] | undefined,
+  leaverDeliveryBoyId: string,
+  sourceIds: string[],
+): DeliveryBoyRouteCoverageCredit[] {
+  const ids = new Set(sourceIds);
+  return (credits ?? []).filter((c) => {
+    if (c.leaverDeliveryBoyId !== leaverDeliveryBoyId) return true;
+    const fromSource = (!!c.sourceLeaveId && ids.has(c.sourceLeaveId)) || (!!c.sourceReplacementId && ids.has(c.sourceReplacementId));
+    return !fromSource;
+  });
 }
 
 export function buildRouteCoverageCreditsForRange(params: {

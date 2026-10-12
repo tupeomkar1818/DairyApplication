@@ -1,8 +1,10 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AuthPrimaryButton } from '@/src/components/auth/AuthPrimaryButton';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+import { useResponsiveLayout } from '@/src/utils/responsiveLayout';
 
 export type DeleteProductConfirmDialogProps = {
   visible: boolean;
@@ -10,6 +12,8 @@ export type DeleteProductConfirmDialogProps = {
   onDismiss: () => void;
   onConfirm: () => void;
   loading?: boolean;
+  /** Shown under the message when the delete was refused (e.g. product still used by subscriptions). */
+  errorMessage?: string | null;
 };
 
 export function DeleteProductConfirmDialog({
@@ -18,8 +22,13 @@ export function DeleteProductConfirmDialog({
   onDismiss,
   onConfirm,
   loading = false,
+  errorMessage = null,
 }: DeleteProductConfirmDialogProps) {
-  const name = productName.trim() || 'this product';
+  const t = useStrings('products');
+  const tc = useStrings('common');
+  const name = productName.trim() || t.deleteDialog.thisProduct;
+  // Capped to the viewport so the card scrolls instead of clipping in phone landscape (~375px tall).
+  const { dialogMaxHeight } = useResponsiveLayout();
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={loading ? undefined : onDismiss}>
@@ -28,40 +37,53 @@ export function DeleteProductConfirmDialog({
           style={styles.backdrop}
           onPress={loading ? undefined : onDismiss}
           accessibilityRole="button"
-          accessibilityLabel="Dismiss delete product dialog"
+          accessibilityLabel={t.deleteDialog.dismissLabel}
         />
 
-        <View style={styles.card} accessibilityViewIsModal>
-          <View style={styles.iconCircle}>
-            <MaterialCommunityIcons name="trash-can-outline" size={28} color={amraleColors.error} />
-          </View>
-
-          <Text style={styles.title}>Delete product?</Text>
-          <Text style={styles.message}>
-            {"Are you sure you want to delete '"}
-            <Text style={styles.messageBold}>{name}</Text>
-            {"'? This action cannot be undone."}
-          </Text>
-
-          <View style={styles.primaryWrap}>
-            {loading ? (
-              <View style={styles.loadingBtn}>
-                <ActivityIndicator color={amraleColors.white} />
-              </View>
-            ) : (
-              <AuthPrimaryButton label="Delete" onPress={onConfirm} variant="filled" compact />
-            )}
-          </View>
-
-          <Pressable
-            onPress={onDismiss}
-            disabled={loading}
-            style={({ pressed }) => [styles.cancelBtn, pressed && !loading && styles.cancelPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel delete product"
+        <View style={[styles.card, { maxHeight: dialogMaxHeight }]} accessibilityViewIsModal>
+          <ScrollView
+            style={styles.cardScroll}
+            contentContainerStyle={styles.cardContent}
+            bounces={false}
+            showsVerticalScrollIndicator={false}
           >
-            <Text style={[styles.cancelText, loading && styles.cancelDisabled]}>Cancel</Text>
-          </Pressable>
+            <View style={styles.iconCircle}>
+              <MaterialCommunityIcons name="trash-can-outline" size={28} color={amraleColors.error} />
+            </View>
+
+            <Text style={styles.title}>{t.deleteDialog.title}</Text>
+            <Text style={styles.message}>
+              {t.deleteDialog.messageBefore}
+              <Text style={styles.messageBold}>{name}</Text>
+              {t.deleteDialog.messageAfter}
+            </Text>
+
+            {errorMessage ? (
+              <Text style={styles.errorText} accessibilityLiveRegion="polite">
+                {errorMessage}
+              </Text>
+            ) : null}
+
+            <View style={styles.primaryWrap}>
+              {loading ? (
+                <View style={styles.loadingBtn}>
+                  <ActivityIndicator color={amraleColors.white} />
+                </View>
+              ) : (
+                <AuthPrimaryButton label={tc.actions.delete} onPress={onConfirm} variant="filled" compact />
+              )}
+            </View>
+
+            <Pressable
+              onPress={onDismiss}
+              disabled={loading}
+              style={({ pressed }) => [styles.cancelBtn, pressed && !loading && styles.cancelPressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t.deleteDialog.cancelLabel}
+            >
+              <Text style={[styles.cancelText, loading && styles.cancelDisabled]}>{tc.actions.cancel}</Text>
+            </Pressable>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -76,7 +98,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: amraleSpacing.lg,
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(26, 43, 75, 0.52)',
   },
   card: {
@@ -84,16 +106,19 @@ const styles = StyleSheet.create({
     maxWidth: 360,
     backgroundColor: amraleColors.white,
     borderRadius: amraleRadius.xxl,
-    paddingHorizontal: amraleSpacing.lg,
-    paddingTop: amraleSpacing.xl,
-    paddingBottom: amraleSpacing.lg,
-    alignItems: 'center',
     shadowColor: amraleColors.text,
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.14,
     shadowRadius: 24,
     elevation: 8,
     zIndex: 1,
+  },
+  cardScroll: { flexGrow: 0 },
+  cardContent: {
+    paddingHorizontal: amraleSpacing.lg,
+    paddingTop: amraleSpacing.xl,
+    paddingBottom: amraleSpacing.lg,
+    alignItems: 'center',
   },
   iconCircle: {
     width: 64,
@@ -123,6 +148,15 @@ const styles = StyleSheet.create({
   messageBold: {
     fontFamily: amraleTypography.fontFamily.bold,
     color: amraleColors.text,
+  },
+  errorText: {
+    fontFamily: amraleTypography.fontFamily.medium,
+    fontSize: 13,
+    lineHeight: 19,
+    color: amraleColors.error,
+    textAlign: 'center',
+    marginTop: -amraleSpacing.sm,
+    marginBottom: amraleSpacing.md,
   },
   primaryWrap: {
     width: '100%',

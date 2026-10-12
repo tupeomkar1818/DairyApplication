@@ -6,6 +6,7 @@ import { Portal } from 'react-native-paper';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { ProductUnit } from '@/src/domain/products/enums';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
 /** Units shown in the picker (matches product form options). */
@@ -50,6 +51,8 @@ export type UnitTypePickerSheetProps = {
 };
 
 export function UnitTypePickerSheet({ visible, selectedUnit, onDismiss, onConfirm }: UnitTypePickerSheetProps) {
+  const t = useStrings('products');
+  const tc = useStrings('common');
   const insets = useSafeAreaInsets();
   const [pendingUnit, setPendingUnit] = useState<ProductUnit>(selectedUnit);
 
@@ -63,7 +66,7 @@ export function UnitTypePickerSheet({ visible, selectedUnit, onDismiss, onConfir
     <Portal>
       <Modal visible transparent animationType="slide" onRequestClose={onDismiss} statusBarTranslucent>
         <View style={[styles.overlay, Platform.OS === 'web' && styles.overlayWeb]}>
-          <Pressable style={styles.backdrop} onPress={onDismiss} accessibilityRole="button" accessibilityLabel="Close" />
+          <Pressable style={styles.backdrop} onPress={onDismiss} accessibilityRole="button" accessibilityLabel={t.unitPicker.close} />
 
           <View
             style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
@@ -72,12 +75,13 @@ export function UnitTypePickerSheet({ visible, selectedUnit, onDismiss, onConfir
             <View style={styles.handle} />
 
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Select unit type</Text>
+              <Text style={styles.sheetTitle}>{t.unitPicker.title}</Text>
               <Pressable
                 onPress={onDismiss}
+                hitSlop={4}
                 style={({ pressed }) => [styles.closeBtn, pressed && styles.pressed]}
                 accessibilityRole="button"
-                accessibilityLabel="Close unit picker"
+                accessibilityLabel={t.unitPicker.closeLabel}
               >
                 <MaterialCommunityIcons name="close" size={22} color={amraleColors.textMuted} />
               </Pressable>
@@ -103,7 +107,7 @@ export function UnitTypePickerSheet({ visible, selectedUnit, onDismiss, onConfir
                         color={selected ? amraleColors.white : amraleColors.blue}
                       />
                     </View>
-                    <Text style={[styles.optionLabel, selected && styles.optionLabelSelected]}>{unit}</Text>
+                    <Text style={[styles.optionLabel, selected && styles.optionLabelSelected]}>{t.units[unit]}</Text>
                     {selected ? (
                       <MaterialCommunityIcons name="check-circle" size={22} color={amraleColors.blue} />
                     ) : (
@@ -116,13 +120,13 @@ export function UnitTypePickerSheet({ visible, selectedUnit, onDismiss, onConfir
 
             <View style={styles.footer}>
               <Pressable onPress={onDismiss} style={({ pressed }) => [styles.cancelBtn, pressed && styles.pressed]}>
-                <Text style={styles.cancelText}>Cancel</Text>
+                <Text style={styles.cancelText}>{tc.actions.cancel}</Text>
               </Pressable>
               <Pressable
                 onPress={() => onConfirm(pendingUnit)}
                 style={({ pressed }) => [styles.confirmBtn, pressed && styles.pressed]}
               >
-                <Text style={styles.confirmText}>Confirm Unit</Text>
+                <Text style={styles.confirmText}>{t.unitPicker.confirm}</Text>
                 <View style={styles.confirmIconCircle}>
                   <MaterialCommunityIcons name="check" size={16} color={amraleColors.blue} />
                 </View>
@@ -150,7 +154,7 @@ const styles = StyleSheet.create({
     zIndex: 9999,
   } as const,
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(26, 43, 75, 0.45)',
     zIndex: 0,
   },
@@ -162,7 +166,10 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     zIndex: 2,
     elevation: 8,
+    // Full-width bottom sheet on phones; on tablets/desktops a centered 560px sheet instead of a window-wide bar.
     width: '100%',
+    maxWidth: 560,
+    alignSelf: 'center',
   },
   handle: {
     alignSelf: 'center',
@@ -180,6 +187,7 @@ const styles = StyleSheet.create({
     paddingBottom: amraleSpacing.sm,
   },
   sheetTitle: {
+    flexShrink: 1,
     fontFamily: amraleTypography.fontFamily.bold,
     fontSize: 18,
     color: amraleColors.text,

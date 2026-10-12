@@ -19,9 +19,11 @@ import { DomainError } from '@/src/domain/shared/errors';
 import {
   OTP_EXPIRY_MS,
   OTP_RESEND_COOLDOWN_MS,
-  otpResendCooldownMessage,
+  formatOtpCountdownMmSs,
+  msUntilIso,
 } from '@/src/domain/shared/otpPolicy';
 import type { UserRole } from '@/src/domain/shared/enums';
+import { strings } from '@/src/i18n/strings';
 import { readAuthSessionResponse, updateAuthSessionMobile } from '@/src/infrastructure/auth/sessionRead';
 import { readJson, writeJson } from '@/src/infrastructure/storage/storage';
 import {
@@ -72,22 +74,35 @@ function otpKey(purpose: 'save' | 'old' | 'new', mobile: string): string {
 }
 
 function roleLabel(role: UserRole): string {
-  switch (role) {
-    case 'admin':
-      return 'Administrator';
-    case 'customer':
-      return 'Customer';
-    case 'delivery_boy':
-      return 'Delivery Partner';
-    default:
-      return role;
-  }
+  return strings('profile').roles[role] ?? role;
 }
 
 function formatMobile(mobile: string): string {
   const digits = mobile.replace(/\D/g, '').slice(-10);
   if (digits.length !== 10) return mobile;
   return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+}
+
+/** `undefined` = field not sent (keep existing); blank string = user cleared the field. */
+function nextOptionalText(incoming: string | undefined, existing: string | undefined): string | undefined {
+  if (incoming === undefined) return existing;
+  return incoming.trim() || undefined;
+}
+
+/** Required on the Customer record (admin schema) — a blank value cannot clear it, so the existing value stays. */
+function nextRequiredText(incoming: string | undefined, existing: string): string {
+  return incoming?.trim() || existing;
+}
+
+function hasRoleSpecificValues(data: UpdateProfileWithOtpRequest): boolean {
+  return [
+    data.address,
+    data.societyName,
+    data.houseFlatNumber,
+    data.alternateMobile,
+    data.emergencyContactName,
+    data.emergencyContactNumber,
+  ].some((v) => (v ?? '').trim().length > 0);
 }
 
 async function readChallenges(): Promise<StoredOtpChallenges> {
@@ -113,7 +128,7 @@ async function writeMobileChangeState(state: ProfileMobileChangeState | null): P
 async function requireSession() {
   const session = await readAuthSessionResponse();
   if (!session) {
-    throw new DomainError('SESSION_NOT_FOUND', 'You are not signed in');
+    throw new DomainError('SESSION_NOT_FOUND', strings('profile').errors.notSignedIn);
   }
   return session;
 }
@@ -127,7 +142,10 @@ async function sendOtp(mobileNumber: string, purpose: 'save' | 'old' | 'new'): P
   if (existing) {
     const resendAvailableAtMs = new Date(existing.resendAvailableAt).getTime();
     if (Date.now() < resendAvailableAtMs) {
-      throw new DomainError('OTP_RESEND_COOLDOWN', otpResendCooldownMessage(existing.resendAvailableAt));
+      throw new DomainError(
+        'OTP_RESEND_COOLDOWN',
+        strings('auth').errors.resendOtpIn(formatOtpCountdownMmSs(msUntilIso(existing.resendAvailableAt))),
+      );
     }
   }
 
@@ -161,24 +179,24 @@ async function verifyOtpForMobile(mobileNumber: string, purpose: 'save' | 'old' 
   const challenge = challenges[key];
 
   if (!challenge) {
-    throw new DomainError('OTP_EXPIRED', 'OTP expired, resend OTP');
+    throw new DomainError('OTP_EXPIRED', strings('auth').errors.otpExpired);
   }
 
   const expiryMs = new Date(challenge.otpExpiryAt).getTime();
   if (Date.now() > expiryMs) {
     delete challenges[key];
     await writeChallenges(challenges);
-    throw new DomainError('OTP_EXPIRED', 'OTP expired, resend OTP');
+    throw new DomainError('OTP_EXPIRED', strings('auth').errors.otpExpired);
   }
 
   if (challenge.attempts >= MAX_OTP_ATTEMPTS) {
-    throw new DomainError('OTP_TOO_MANY_ATTEMPTS', 'Maximum OTP attempts reached. Please resend OTP.');
+    throw new DomainError('OTP_TOO_MANY_ATTEMPTS', strings('auth').errors.tooManyAttempts);
   }
 
   if (challenge.otp !== otp) {
     challenges[key] = { ...challenge, attempts: challenge.attempts + 1 };
     await writeChallenges(challenges);
-    throw new DomainError('OTP_INVALID', 'Invalid OTP entered');
+    throw new DomainError('OTP_INVALID', strings('auth').errors.invalidOtpEntered);
   }
 
   delete challenges[key];
@@ -205,7 +223,7 @@ function buildProfile(
       userId: session.userId,
       role: session.role,
       roleLabel: roleLabel(session.role),
-      displayName: user?.name ?? 'Admin',
+      displayName: user?.name ?? strings('common').roles.admin,
       mobileNumberRaw: session.mobileNumber,
       mobileNumberFormatted: formatMobile(session.mobileNumber),
       email: undefined,
@@ -219,7 +237,7 @@ function buildProfile(
       userId: session.userId,
       role: session.role,
       roleLabel: roleLabel(session.role),
-      displayName: customer?.name ?? user?.name ?? 'Customer',
+      displayName: customer?.name ?? user?.name ?? strings('common').roles.customer,
       mobileNumberRaw: customer?.mobile ?? session.mobileNumber,
       mobileNumberFormatted: formatMobile(customer?.mobile ?? session.mobileNumber),
       address: customer?.address,
@@ -235,7 +253,7 @@ function buildProfile(
     userId: session.userId,
     role: session.role,
     roleLabel: roleLabel(session.role),
-    displayName: deliveryBoy?.fullName ?? user?.name ?? 'Delivery Partner',
+    displayName: deliveryBoy?.fullName ?? user?.name ?? strings('profile').roles.delivery_boy,
     mobileNumberRaw: deliveryBoy?.mobileNumber ?? session.mobileNumber,
     mobileNumberFormatted: formatMobile(deliveryBoy?.mobileNumber ?? session.mobileNumber),
     address: deliveryBoy?.address,
@@ -264,12 +282,15 @@ async function loadContext(session: { userId: string; mobileNumber: string; role
   let customer: Customer | undefined;
   let deliveryBoy: DeliveryBoy | undefined;
 
+  // The record this login was made from first; the session's number only as a fallback (the admin may have changed it).
+  const linkedId = user?.linkedRecordId;
   if (session.role === 'customer') {
     const customers = (await readJson<Customer[]>(CUSTOMERS_STORE_KEY)) ?? [];
-    customer = customers.find((c) => c.mobile === session.mobileNumber);
+    customer = (linkedId && customers.find((c) => c.id === linkedId)) || customers.find((c) => c.mobile === session.mobileNumber);
   } else if (session.role === 'delivery_boy') {
     const deliveryBoys = (await readJson<DeliveryBoy[]>(DELIVERY_BOYS_STORE_KEY)) ?? [];
-    deliveryBoy = deliveryBoys.find((d) => d.mobileNumber === session.mobileNumber);
+    deliveryBoy =
+      (linkedId && deliveryBoys.find((d) => d.id === linkedId)) || deliveryBoys.find((d) => d.mobileNumber === session.mobileNumber);
   }
 
   return { user, customer, deliveryBoy, users };
@@ -292,9 +313,20 @@ export class ProfileServiceMock implements IProfileService {
   async updateProfileWithOtp(data: UpdateProfileWithOtpRequest): Promise<ProfileResponse> {
     await sleep(DEFAULT_DELAY_MS);
     const session = await requireSession();
-    await verifyOtpForMobile(session.mobileNumber, 'save', data.otp);
-
     const { user, customer, deliveryBoy, users } = await loadContext(session);
+
+    // Address / contact details live on the admin-managed Customer / DeliveryBoy record. Without one they
+    // cannot be saved — fail loudly (before consuming the OTP) instead of silently dropping them.
+    const linkedRecordMissing =
+      (session.role === 'customer' && !customer) || (session.role === 'delivery_boy' && !deliveryBoy);
+    if (linkedRecordMissing && hasRoleSpecificValues(data)) {
+      throw new DomainError(
+        'MOBILE_NOT_REGISTERED',
+        session.role === 'customer' ? strings('profile').errors.notLinkedCustomer : strings('profile').errors.notLinkedDeliveryBoy,
+      );
+    }
+
+    await verifyOtpForMobile(session.mobileNumber, 'save', data.otp);
     const now = nowIso();
 
     if (user) {
@@ -312,10 +344,10 @@ export class ProfileServiceMock implements IProfileService {
         customers[idx] = {
           ...customers[idx],
           name: data.displayName.trim(),
-          address: data.address?.trim() || customers[idx].address,
-          societyName: data.societyName?.trim() || customers[idx].societyName,
-          houseFlatNumber: data.houseFlatNumber?.trim() || customers[idx].houseFlatNumber,
-          alternateMobile: data.alternateMobile?.trim() || customers[idx].alternateMobile,
+          address: nextRequiredText(data.address, customers[idx].address),
+          societyName: nextRequiredText(data.societyName, customers[idx].societyName),
+          houseFlatNumber: nextOptionalText(data.houseFlatNumber, customers[idx].houseFlatNumber),
+          alternateMobile: nextOptionalText(data.alternateMobile, customers[idx].alternateMobile),
           updatedAt: now,
         };
         await writeJson(CUSTOMERS_STORE_KEY, customers);
@@ -329,10 +361,10 @@ export class ProfileServiceMock implements IProfileService {
         deliveryBoys[idx] = {
           ...deliveryBoys[idx],
           fullName: data.displayName.trim(),
-          address: data.address?.trim() || deliveryBoys[idx].address,
-          alternateMobileNumber: data.alternateMobile?.trim() || deliveryBoys[idx].alternateMobileNumber,
-          emergencyContactName: data.emergencyContactName?.trim() || deliveryBoys[idx].emergencyContactName,
-          emergencyContactNumber: data.emergencyContactNumber?.trim() || deliveryBoys[idx].emergencyContactNumber,
+          address: nextOptionalText(data.address, deliveryBoys[idx].address),
+          alternateMobileNumber: nextOptionalText(data.alternateMobile, deliveryBoys[idx].alternateMobileNumber),
+          emergencyContactName: nextOptionalText(data.emergencyContactName, deliveryBoys[idx].emergencyContactName),
+          emergencyContactNumber: nextOptionalText(data.emergencyContactNumber, deliveryBoys[idx].emergencyContactNumber),
           updatedAt: now,
         };
         await writeJson(DELIVERY_BOYS_STORE_KEY, deliveryBoys);
@@ -347,7 +379,7 @@ export class ProfileServiceMock implements IProfileService {
     await sleep(DEFAULT_DELAY_MS);
     const parsed = UpdateProfileAvatarRequestSchema.safeParse(data);
     if (!parsed.success) {
-      throw new DomainError('PROFILE_INVALID_AVATAR', parsed.error.issues[0]?.message ?? 'Invalid photo');
+      throw new DomainError('PROFILE_INVALID_AVATAR', parsed.error.issues[0]?.message ?? strings('profile').errors.invalidPhoto);
     }
 
     const session = await requireSession();
@@ -385,7 +417,7 @@ export class ProfileServiceMock implements IProfileService {
     const session = await requireSession();
     const state = await readMobileChangeState();
     if (!state || state.userId !== session.userId) {
-      throw new DomainError('PROFILE_OLD_MOBILE_NOT_VERIFIED', 'Start mobile change again');
+      throw new DomainError('PROFILE_OLD_MOBILE_NOT_VERIFIED', strings('profile').errors.startAgain);
     }
 
     await verifyOtpForMobile(session.mobileNumber, 'old', data.otp);
@@ -399,17 +431,17 @@ export class ProfileServiceMock implements IProfileService {
     const state = await readMobileChangeState();
 
     if (!state || state.userId !== session.userId || !state.oldMobileVerified) {
-      throw new DomainError('PROFILE_OLD_MOBILE_NOT_VERIFIED', 'Verify your current mobile number first');
+      throw new DomainError('PROFILE_OLD_MOBILE_NOT_VERIFIED', strings('profile').errors.verifyCurrentFirst);
     }
 
     const newMobile = data.newMobileNumber.trim();
     if (newMobile === session.mobileNumber) {
-      throw new DomainError('PROFILE_MOBILE_SAME_AS_CURRENT', 'New mobile number must be different');
+      throw new DomainError('PROFILE_MOBILE_SAME_AS_CURRENT', strings('profile').errors.mustBeDifferent);
     }
 
     const users = (await readJson<User[]>(USERS_STORE_KEY)) ?? [];
     if (users.some((u) => u.mobileNumber === newMobile && u.id !== session.userId)) {
-      throw new DomainError('PROFILE_MOBILE_ALREADY_REGISTERED', 'This mobile number is already registered');
+      throw new DomainError('PROFILE_MOBILE_ALREADY_REGISTERED', strings('profile').errors.alreadyRegistered);
     }
 
     await writeMobileChangeState({ ...state, pendingNewMobileNumber: newMobile });
@@ -422,12 +454,12 @@ export class ProfileServiceMock implements IProfileService {
     const state = await readMobileChangeState();
 
     if (!state || state.userId !== session.userId || !state.oldMobileVerified) {
-      throw new DomainError('PROFILE_OLD_MOBILE_NOT_VERIFIED', 'Verify your current mobile number first');
+      throw new DomainError('PROFILE_OLD_MOBILE_NOT_VERIFIED', strings('profile').errors.verifyCurrentFirst);
     }
 
     const newMobile = data.newMobileNumber.trim();
     if (newMobile !== state.pendingNewMobileNumber) {
-      throw new DomainError('OTP_EXPIRED', 'Request OTP for the new mobile number again');
+      throw new DomainError('OTP_EXPIRED', strings('profile').errors.requestNewAgain);
     }
 
     await verifyOtpForMobile(newMobile, 'new', data.otp);

@@ -8,6 +8,7 @@ import type {
   DeliveryBoySalaryPaymentEntry,
   DeliveryBoySalaryRecord,
 } from '@/src/domain/deliveryBoys/entities';
+import { strings } from '@/src/i18n/strings';
 
 export type DeliveryBoySalaryStatus = 'Paid' | 'Partial' | 'Unpaid';
 
@@ -120,9 +121,28 @@ export function rupeesAmountToWords(amount: number): string {
 function resolvePerDaySalary(b: DeliveryBoy, yyyyMm: string): number {
   const dim = daysInMonth(yyyyMm);
   const monthly = Math.max(0, Number(b.monthlySalary ?? 0));
+  // Fixed monthly pay always follows the target month's calendar days; a stored `perDaySalary` on these rows was
+  // frozen at creation (monthly / days-in-that-month) and would over/under-pay 28/29/31-day months.
+  if ((b.salaryType ?? 'Fixed Monthly Salary') === 'Fixed Monthly Salary' && monthly > 0 && dim > 0) {
+    return roundMoney2(monthly / dim);
+  }
   const explicit = b.perDaySalary !== undefined ? Number(b.perDaySalary) : NaN;
   if (Number.isFinite(explicit) && explicit >= 0) return roundMoney2(explicit);
   return monthly > 0 && dim > 0 ? roundMoney2(monthly / dim) : 0;
+}
+
+/**
+ * True when `dateIso` (yyyy-mm-dd) falls inside [joiningDate, lastWorkingDate]. Attendance outside this window
+ * (future-dated or pre-joining rows) never earns pay. Missing/invalid bounds are treated as open.
+ */
+export function isDateWithinEmployment(b: DeliveryBoy | null | undefined, dateIso: string): boolean {
+  if (!b) return false;
+  const d = String(dateIso).slice(0, 10);
+  const join = joiningDatePrefix(b);
+  if (join && d < join) return false;
+  const last = typeof b.lastWorkingDate === 'string' ? b.lastWorkingDate.slice(0, 10) : '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(last) && d > last) return false;
+  return true;
 }
 
 function monthIndex(yyyyMm: string) {
@@ -359,6 +379,7 @@ export function computeRouteCoverageCreditSalaryForMonth(
     const d = String(x.date).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d.slice(0, 7) !== yyyyMm) continue;
     if (x.attendanceStatus !== 'Present') continue;
+    if (!isDateWithinEmployment(b, d)) continue;
     const leaverId = x.coverForDeliveryBoyId;
     if (!leaverId) continue;
     const k = creditDayKey(d, leaverId);
@@ -445,7 +466,10 @@ export function computeDeliveryBoySalaryForMonth(
   const dim = daysInMonth(yyyyMm);
   const perDay = resolvePerDaySalary(b, yyyyMm);
 
-  const attendance = (b.attendance ?? []).filter((x) => clampIsoDateToMonth(x.date, yyyyMm));
+  const attendance = (b.attendance ?? []).filter((x) => {
+    const d = clampIsoDateToMonth(x.date, yyyyMm);
+    return !!d && isDateWithinEmployment(b, d);
+  });
   const presentDates = new Set<string>();
   const halfDates = new Set<string>();
   for (const x of attendance) {
@@ -688,7 +712,8 @@ function dateInClosedRange(dateIso: string, fromIso: string, toIso?: string): bo
   const from = String(fromIso).slice(0, 10);
   const to = String(toIso ?? fromIso).slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return false;
-  return enumerateDatesInclusive(from, to).includes(dateIso);
+  // yyyy-mm-dd strings sort chronologically, so no need to enumerate every day in the range.
+  return dateIso >= from && dateIso <= to;
 }
 
 /**
@@ -803,6 +828,9 @@ function baseMemoForDay(
   if (join && dateIso < join) {
     return { basis: 'Before joining', amount: 0 };
   }
+  if (!isDateWithinEmployment(b, dateIso)) {
+    return { basis: 'After last working date', amount: 0 };
+  }
 
   if (ex) {
     const st = String(ex.attendanceStatus ?? '');
@@ -841,6 +869,8 @@ export function salaryMemoLinesForMonth(
   );
 
   const lines: SalaryMemoDayLine[] = [];
+  // Cover lines are display text in the app language; base-line `basis` values stay fixed codes that callers compare.
+  const memoWords = strings('deliveryBoys').salaryMemo;
 
   for (let day = 1; day <= dim; day++) {
     const dateIso = `${yyyyMm}-${String(day).padStart(2, '0')}`;
@@ -869,21 +899,47 @@ export function salaryMemoLinesForMonth(
       coverSeen.add(k);
       const leaver = boyMap.get(c.leaverDeliveryBoyId);
       const amt = perDayForBoyInMonth(leaver ?? null, yyyyMm);
-      const name = c.leaverDeliveryBoyName ?? leaver?.fullName ?? 'Leaver';
-      lines.push({ date: dateIso, kind: 'cover', basis: `Route cover (${name})`, amount: amt });
+      const name = c.leaverDeliveryBoyName ?? leaver?.fullName ?? memoWords.leaver;
+      lines.push({ date: dateIso, kind: 'cover', basis: memoWords.routeCover(name), amount: amt });
     }
     for (const x of b.attendance ?? []) {
       const d = String(x.date).slice(0, 10);
       if (d !== dateIso || x.attendanceStatus !== 'Present' || !x.coverForDeliveryBoyId) continue;
+      if (!isDateWithinEmployment(b, dateIso)) continue;
       const k = creditDayKey(dateIso, x.coverForDeliveryBoyId);
       if (coverSeen.has(k)) continue;
       coverSeen.add(k);
       const leaver = boyMap.get(x.coverForDeliveryBoyId);
       const amt = perDayForBoyInMonth(leaver ?? null, yyyyMm);
-      const name = x.coverForDeliveryBoyName ?? leaver?.fullName ?? 'Leaver';
-      lines.push({ date: dateIso, kind: 'cover', basis: `Route cover (${name})`, amount: amt });
+      const name = x.coverForDeliveryBoyName ?? leaver?.fullName ?? memoWords.leaver;
+      lines.push({ date: dateIso, kind: 'cover', basis: memoWords.routeCover(name), amount: amt });
     }
   }
 
   return lines;
+}
+
+/**
+ * Payroll for a month as the app displays it: bonus, deduction and any override come from the stored salary row,
+ * while the carry-forward is always recomputed from the previous month (a stored one goes stale once the earlier
+ * month is settled later). Admin and the delivery boy's own salary screen both call this, so they cannot drift.
+ */
+export function computeMonthlyPayrollFromHistory(
+  b: DeliveryBoy | null | undefined,
+  yyyyMm: string,
+  allBoys?: DeliveryBoy[] | null,
+  histRow?: DeliveryBoySalaryRecord | null,
+): UnifiedMonthlyPayroll {
+  const h = histRow ?? getSalaryRecordForMonth(b, yyyyMm);
+  const overrideRaw = h?.finalSalaryOverride;
+  return computeUnifiedMonthlyPayroll(b, yyyyMm, {
+    bonusAmount: Math.max(0, roundMoney2(Number(h?.bonusAmount ?? 0))),
+    deductionAmount: Math.max(0, roundMoney2(Number(h?.deductionAmount ?? 0))),
+    previousBalance: getAutoPreviousBalance(b, yyyyMm),
+    finalSalaryOverride:
+      overrideRaw !== undefined && overrideRaw !== null && Number.isFinite(Number(overrideRaw))
+        ? roundMoney2(Number(overrideRaw))
+        : undefined,
+    allBoys: allBoys ?? undefined,
+  });
 }

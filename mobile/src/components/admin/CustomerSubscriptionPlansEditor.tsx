@@ -1,27 +1,26 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useQueryClient } from '@tanstack/react-query';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
-import { Calendar } from 'react-native-calendars';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Button, Card, Dialog, HelperText, List, Portal, Text, TextInput } from 'react-native-paper';
 
 import { buildSubscriptionPayloadFromPlans } from '@/src/components/admin/buildSubscriptionPayloadFromPlans';
 import {
   buildSubscriptionMonthOptions,
+  deliveryTimeLabel,
   formatSubscriptionPlanAsOrderExample,
+  frequencyLabel,
   monthLabel as subscriptionMonthLabel,
+  planStatusLabel,
   shiftMonth,
   subscriptionPlanShowsInCalendarMonth,
 } from '@/src/components/admin/customerSubscriptionMonthUtils';
 import { MilkSubscriptionLineCompactFields } from '@/src/components/admin/MilkSubscriptionLineCompactFields';
+import { DatePickerModal } from '@/src/components/shared/DatePickerModal';
 import {
   endOfMonthDdMmYyyy,
-  dateToDob,
-  dobToDate,
-  dobToIsoDate,
   fmtDdMmYyyy,
-  isoDateToDob,
+  toDdMmYyyyFromFlexibleDate,
   toIsoYmdFromFlexibleDate,
 } from '@/src/components/admin/customerFormDates';
 import { isMilkCatalogProduct, milkLineHasPackComplete } from '@/src/components/admin/milkSubscriptionLineUi';
@@ -33,6 +32,7 @@ import type {
 import { findDuplicateMilkLineIndex, milkProductNameKey } from '@/src/domain/customers/milkLineDuplicate';
 import { duplicateClosureEndDdMmYyyy, isPlanStartEndMonthRuleOk } from '@/src/domain/shared/planBoundaryDates';
 import type { Product } from '@/src/domain/products/entities';
+import { effectiveUnitPrice } from '@/src/domain/products/pricing';
 import { CustomerSubscriptionFieldsUpdateSchema } from '@/src/domain/customers/validations';
 import {
   subscriptionPlanHistoryMemosQueryKey,
@@ -40,7 +40,11 @@ import {
   useUpdateCustomer,
 } from '@/src/hooks/customers';
 import { useProducts } from '@/src/hooks/products';
+import { strings } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
 import { formFieldAttrs } from '@/src/theme/platformStyles';
+import { amraleRadius, dairyTactileColors, tactileCardElevation } from '@/src/theme/dairyTactile';
+import { useResponsiveDialogStyle } from '@/src/utils/responsiveLayout';
 
 function planIsMilkRow(p: CustomerSubscriptionPlanDto, catalog: Product[]): boolean {
   const prod = catalog.find((x) => x.name === p.productName);
@@ -66,7 +70,12 @@ const COLORS = {
   text: '#1E293B',
 };
 
+/** Customer screens use the light-only DairyTactile surfaces; pin the scheme so text never switches to dark-mode colors. */
+const CUSTOMER_TACTILE_SCHEME = 'light' as 'light' | 'dark';
+
 const DELIVERY_TIME_OPTIONS = ['Morning', 'Evening', 'Both'] as const;
+type DeliveryTimeOption = typeof DELIVERY_TIME_OPTIONS[number];
+
 const SUB_FREQUENCY_OPTIONS = [
   'Daily',
   'Alternate Day',
@@ -77,9 +86,11 @@ const SUB_FREQUENCY_OPTIONS = [
   'Evening Only',
   'Morning and Evening',
 ] as const;
+type SubFrequencyOption = typeof SUB_FREQUENCY_OPTIONS[number];
+
 function createEmptySubscriptionPlan(
-  deliveryTime: (typeof DELIVERY_TIME_OPTIONS)[number],
-  subscriptionFrequency: (typeof SUB_FREQUENCY_OPTIONS)[number],
+  deliveryTime: DeliveryTimeOption,
+  subscriptionFrequency: SubFrequencyOption,
 ): CustomerSubscriptionPlanDto {
   const startDate = fmtDdMmYyyy(new Date());
   const endDate = endOfMonthDdMmYyyy(startDate) ?? undefined;
@@ -111,18 +122,32 @@ function createEmptySubscriptionPlan(
   };
 }
 
-function calendarMonthShortLabel(monthIndex0: number) {
-  return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][monthIndex0] ?? '';
-}
-
 export type CustomerSubscriptionPlansEditorProps = {
   customer: CustomerResponse;
   customerId: string;
+  /** DairyTactile styling for customer detail subscription tab */
+  variant?: 'default' | 'tactile';
+  /** Month to show. Pass it (with `onMonthChange`) to drive this card from the screen's shared month stepper. */
+  month?: string;
+  onMonthChange?: (next: string) => void;
 };
 
-function CustomerSubscriptionPlansEditorInner({ customer, customerId }: CustomerSubscriptionPlansEditorProps) {
-  const scheme = useColorScheme();
-  const { width } = useWindowDimensions();
+function CustomerSubscriptionPlansEditorInner({
+  customer,
+  customerId,
+  variant = 'default',
+  month,
+  onMonthChange,
+}: CustomerSubscriptionPlansEditorProps) {
+  const isTactile = variant === 'tactile';
+  const t = useStrings('subscriptionEditor');
+  const common = useStrings('common');
+  const scheme = CUSTOMER_TACTILE_SCHEME;
+  const { width, height } = useWindowDimensions();
+  // Dialogs: centered, 480 max wide (16px gutter on phones), viewport-capped height.
+  const dialogSize = useResponsiveDialogStyle(480);
+  /** Scrollable dialog body height (year / month lists) so the list scrolls instead of overflowing the dialog. */
+  const dialogScrollMaxH = Math.max(200, Math.min(Math.round(height * 0.6), height - 200));
   const qc = useQueryClient();
   const products = useProducts();
   const update = useUpdateCustomer();
@@ -131,7 +156,11 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
   const isMobileBp = width < 640;
   const inputDense = isMobileBp;
 
-  const sectionCard = scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight;
+  const sectionCard = isTactile
+    ? styles.sectionCardTactile
+    : scheme === 'dark'
+      ? styles.sectionCardDark
+      : styles.sectionCardLight;
   const textMain = scheme === 'dark' ? styles.textOnDark : styles.textOnLight;
   const textSub = scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight;
   const titleColor = scheme === 'dark' ? 'white' : COLORS.text;
@@ -141,7 +170,11 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   }, []);
 
-  const [basicDetailsMonth, setBasicDetailsMonth] = useState(monthKey);
+  // Controlled by the screen when `month` is passed; the local state is the standalone fallback.
+  const [ownBasicMonth, setOwnBasicMonth] = useState(monthKey);
+  const basicDetailsMonth = month ?? ownBasicMonth;
+  const setBasicDetailsMonth = onMonthChange ?? setOwnBasicMonth;
+  const monthIsControlled = month !== undefined;
   const [basicMonthPickerOpen, setBasicMonthPickerOpen] = useState(false);
 
   const subscriptionMonthOptions = useMemo(
@@ -150,15 +183,19 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
   );
 
   useEffect(() => {
-    setBasicDetailsMonth(monthKey);
-  }, [customerId, monthKey]);
+    // Never reset a month the screen owns: that would drag the other tabs back to today.
+    if (monthIsControlled) return;
+    setOwnBasicMonth(monthKey);
+  }, [customerId, monthIsControlled, monthKey]);
 
   useEffect(() => {
+    // Only snap to a month with lines when this card owns the month.
+    if (monthIsControlled) return;
     if (!subscriptionMonthOptions.length) return;
     if (!subscriptionMonthOptions.includes(basicDetailsMonth)) {
-      setBasicDetailsMonth(subscriptionMonthOptions[0]!);
+      setOwnBasicMonth(subscriptionMonthOptions[0]!);
     }
-  }, [subscriptionMonthOptions, basicDetailsMonth]);
+  }, [monthIsControlled, subscriptionMonthOptions, basicDetailsMonth]);
 
   const oldestBasicMonth = subscriptionMonthOptions[subscriptionMonthOptions.length - 1] ?? monthKey;
   const basicPrevDisabled = basicDetailsMonth <= oldestBasicMonth;
@@ -171,12 +208,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
 
   const milkProducts = useMemo(() => adminProducts.filter(isMilkCatalogProduct), [adminProducts]);
 
-  const toDob = useCallback((value: string | undefined | null) => {
-    const v = (value ?? '').trim();
-    if (!v) return '';
-    if (/^\d{2}\/\d{2}\/\d{4}$/.test(v)) return v;
-    return isoDateToDob(v) ?? '';
-  }, []);
+  const toDob = useCallback((value: string | undefined | null) => toDdMmYyyyFromFlexibleDate(value), []);
 
   const [subscriptionPlans, setSubscriptionPlans] = useState<CustomerSubscriptionPlanDto[]>([]);
   const [retainedNonMilkPlans, setRetainedNonMilkPlans] = useState<CustomerSubscriptionPlanDto[]>([]);
@@ -185,8 +217,6 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
   const [error, setError] = useState<string | null>(null);
 
   const [dobPickerOpen, setDobPickerOpen] = useState(false);
-  const [dobPickerStep, setDobPickerStep] = useState<'calendar' | 'year' | 'month'>('calendar');
-  const [dobCursor, setDobCursor] = useState(() => new Date());
   const [wizardDateField, setWizardDateField] = useState<'startDate' | 'endDate' | null>(null);
   const [basicDetailsExpanded, setBasicDetailsExpanded] = useState(false);
   /** `null` = add (only when there are zero milk lines); index = replace that milk row on save */
@@ -219,9 +249,16 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     setBasicDetailsExpanded(false);
   }, [customerId]);
 
-  useEffect(() => {
+  const customerRef = useRef(customer);
+  customerRef.current = customer;
+  const wizardOpenRef = useRef(false);
+  wizardOpenRef.current = wizardDraft != null;
+  /** A customer update arrived while the add/edit wizard was open; applied once the wizard closes. */
+  const syncPendingRef = useRef(false);
+
+  const syncFromCustomer = useCallback(() => {
     const catalog = adminProducts;
-    const all = customer.subscriptionPlans ?? [];
+    const all = customerRef.current.subscriptionPlans ?? [];
     const milkRows = all.filter((p) => planIsMilkRow(p, catalog));
     const other = all.filter((p) => !planIsMilkRow(p, catalog));
     setRetainedNonMilkPlans(other);
@@ -229,6 +266,10 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     setSubscriptionPlans(
       milkRows.length
         ? (milkRows.map((p) => ({
+            // Keep identity so saving re-sends the same line instead of re-issuing it.
+            id: p.id,
+            createdAt: p.createdAt,
+            updatedAt: p.updatedAt,
             productName: p.productName,
             numberOfItems: (p as { numberOfItems?: number }).numberOfItems ?? 1,
             quantityLabel: p.quantityLabel,
@@ -270,7 +311,25 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     setRemoveMilkDialogIndex(null);
     setTouched(false);
     setError(null);
-  }, [customer.id, customer.updatedAt, customer.subscriptionPlans, customer.deliveryTime, customer.subscriptionFrequency, customer.subscriptionStatus, adminProducts, toDob]);
+  }, [adminProducts, toDob]);
+
+  // Re-sync local rows when the customer changes — but never while an add/edit draft is in progress: a refetch
+  // (e.g. another tab saving) would otherwise wipe what the admin is typing.
+  useEffect(() => {
+    if (wizardOpenRef.current) {
+      syncPendingRef.current = true;
+      return;
+    }
+    syncPendingRef.current = false;
+    syncFromCustomer();
+  }, [customer.id, customer.updatedAt, customer.subscriptionPlans, customer.deliveryTime, customer.subscriptionFrequency, customer.subscriptionStatus, syncFromCustomer]);
+
+  const wizardOpen = wizardDraft != null;
+  useEffect(() => {
+    if (wizardOpen || !syncPendingRef.current) return;
+    syncPendingRef.current = false;
+    syncFromCustomer();
+  }, [wizardOpen, syncFromCustomer]);
 
   useEffect(() => {
     if (error) setBasicDetailsExpanded(true);
@@ -281,14 +340,14 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
   }, []);
 
   const startWizard = useCallback(() => {
-    const dt = (customer.deliveryTime ?? 'Morning') as (typeof DELIVERY_TIME_OPTIONS)[number];
-    const fq = (customer.subscriptionFrequency ?? 'Daily') as (typeof SUB_FREQUENCY_OPTIONS)[number];
+    const dt = (customer.deliveryTime ?? 'Morning') as DeliveryTimeOption;
+    const fq = (customer.subscriptionFrequency ?? 'Daily') as SubFrequencyOption;
     const base = createEmptySubscriptionPlan(dt, fq);
     setEditingMilkIndex(null);
     const last = subscriptionPlans.length ? subscriptionPlans[subscriptionPlans.length - 1] : null;
     if (last?.productName?.trim()) {
       const prod = milkProducts.find((p) => p.name === last.productName);
-      const unitPrice = prod ? Number(prod.price ?? 0) : Number(last.originalPrice ?? 0);
+      const unitPrice = prod ? effectiveUnitPrice(prod) : Number(last.originalPrice ?? 0);
       setWizardDraft({
         ...base,
         productName: last.productName,
@@ -311,7 +370,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
       const row = subscriptionPlans[index];
       if (!row) return;
       const prod = milkProducts.find((p) => p.name === row.productName);
-      const unitPrice = prod ? Number(prod.price ?? 0) : Number(row.originalPrice ?? row.effectiveFinalPrice ?? 0);
+      const unitPrice = prod ? effectiveUnitPrice(prod) : Number(row.originalPrice ?? row.effectiveFinalPrice ?? 0);
       setEditingMilkIndex(index);
       setWizardDraft({
         ...row,
@@ -343,10 +402,6 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
   const openDatePickerForDraft = (field: 'startDate' | 'endDate') => {
     if (!wizardDraft) return;
     setWizardDateField(field);
-    const v = String((wizardDraft as unknown as Record<string, string>)[field] ?? '').trim();
-    const asDate = dobToDate(v) ?? (isoDateToDob(v) ? dobToDate(isoDateToDob(v) as string) : null);
-    setDobCursor(asDate ?? new Date());
-    setDobPickerStep('calendar');
     setDobPickerOpen(true);
   };
 
@@ -363,11 +418,11 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
       ];
       const first = milkBuilt.subscriptionPlans[0];
       return {
-        deliveryTime: (customer.deliveryTime ?? 'Morning') as (typeof DELIVERY_TIME_OPTIONS)[number],
+        deliveryTime: (customer.deliveryTime ?? 'Morning') as DeliveryTimeOption,
         subscriptionStartDate: first?.startDate,
         subscriptionEndDate: first?.endDate,
         subscriptionStatus: customer.subscriptionStatus ?? 'Active',
-        subscriptionFrequency: (customer.subscriptionFrequency ?? 'Daily') as (typeof SUB_FREQUENCY_OPTIONS)[number],
+        subscriptionFrequency: (customer.subscriptionFrequency ?? 'Daily') as SubFrequencyOption,
         preferredDeliveryNotes: customer.preferredDeliveryNotes?.trim() ? customer.preferredDeliveryNotes.trim() : undefined,
         subscription: mergedSub,
         subscriptionPlans: mergedPlans,
@@ -403,7 +458,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
       const payload = buildSavePayload(combinedMilk);
       const parsed = CustomerSubscriptionFieldsUpdateSchema.safeParse(payload);
       if (!parsed.success) {
-        setError(parsed.error.issues[0]?.message ?? 'Please check subscription fields');
+        setError(parsed.error.issues[0]?.message ?? strings('subscriptionEditor').plansEditor.errors.checkFields);
         return false;
       }
       try {
@@ -423,7 +478,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
         setDuplicateDialogIndex(null);
         return true;
       } catch {
-        setError('Unable to save subscription. Please try again.');
+        setError(strings('subscriptionEditor').plansEditor.errors.saveFailed);
         return false;
       }
     },
@@ -436,9 +491,9 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     const payload = buildSavePayload(nextMilk);
     const parsed = CustomerSubscriptionFieldsUpdateSchema.safeParse(payload);
     if (!parsed.success) {
-      const msg = parsed.error.issues[0]?.message ?? 'Unable to remove this line';
+      const msg = parsed.error.issues[0]?.message ?? t.plansEditor.errors.removeInvalid;
       setError(msg);
-      Alert.alert('Cannot remove', msg);
+      Alert.alert(t.plansEditor.errors.cannotRemove, msg);
       return;
     }
     try {
@@ -448,9 +503,9 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
       await qc.invalidateQueries({ queryKey: ['customers', 'list'] });
       await qc.refetchQueries({ queryKey: ['customers', 'getById', customerId] });
     } catch {
-      const msg = 'Unable to remove subscription line. Please try again.';
+      const msg = t.plansEditor.errors.removeFailed;
       setError(msg);
-      Alert.alert('Remove failed', msg);
+      Alert.alert(t.plansEditor.errors.removeFailedTitle, msg);
     }
   }
 
@@ -484,7 +539,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     const newStart = wizardDraft.startDate.trim();
     const closureEnd = duplicateClosureEndDdMmYyyy(closed.startDate, newStart);
     if (!isPlanStartEndMonthRuleOk(closed.startDate, closureEnd)) {
-      setError('Unable to close this line with a valid end date. Check start/end fields on the existing line.');
+      setError(t.plansEditor.errors.closeLineInvalid);
       setDuplicateDialogIndex(null);
       return;
     }
@@ -496,7 +551,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
     }
     const newRow: CustomerSubscriptionPlanDto = { ...wizardDraft, endDate: newEnd || wizardDraft.endDate };
     if (!isPlanStartEndMonthRuleOk(newRow.startDate, newRow.endDate)) {
-      setError('Adjust the new line’s end date so it is on or after its start (inherited from the previous line when possible).');
+      setError(t.plansEditor.errors.newEndInvalid);
       setDuplicateDialogIndex(null);
       return;
     }
@@ -509,10 +564,11 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
         ? base.map((row, i) => (i === editingMilkIndex ? { ...newRow } : row))
         : [...base, newRow];
 
-    const alignedToOldStart = closureEnd.trim() === toDob(closed.startDate).trim() && newStart !== closureEnd;
-    const endNote = alignedToOldStart
-      ? `New line start ${newStart}; previous end ${beforeEnd} → ${closureEnd} (end set to previous line’s start because the new start is earlier).`
-      : `Previous end ${beforeEnd} → ${closureEnd} (new line start). New line end ${newRow.endDate?.trim() ?? '—'} (same as previous subscription end when applicable).`;
+    // Without the existing line's start as a floor, closure is simply the day before the new start.
+    const clampedToOldStart = closureEnd !== duplicateClosureEndDdMmYyyy('', newStart);
+    const endNote = clampedToOldStart
+      ? `New line start ${newStart}; previous end ${beforeEnd} → ${closureEnd} (end set to previous line’s start because the new line starts on or before it).`
+      : `Previous end ${beforeEnd} → ${closureEnd} (day before new line start ${newStart}). New line end ${newRow.endDate?.trim() ?? '—'} (same as previous subscription end when applicable).`;
 
     const msg = `Same milk product: closed prior line for "${closed.productName}" (${String(closed.quantityLabel ?? '').trim()}, qty ${closed.numberOfItems ?? 1}, ${closed.frequency}, ${closed.deliveryTime}). ${endNote} Added "${newRow.productName}" (${String(newRow.quantityLabel ?? '').trim()}, qty ${newRow.numberOfItems ?? 1}, ${newRow.frequency}, ${newRow.deliveryTime}).`;
 
@@ -531,65 +587,69 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
   const basicAccordionExpanded = wizardDraft != null ? true : basicDetailsExpanded;
 
   return (
-    <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
+    <Card style={[styles.sectionCard, sectionCard, isTactile ? styles.sectionCardTactileElev : null]} mode={isTactile ? 'contained' : 'elevated'}>
       <Card.Content style={styles.cardInnerAccordion}>
-        <View style={styles.sectionCardClip}>
+        <View style={[styles.sectionCardClip, isTactile ? styles.sectionCardClipTactile : null]}>
         <List.Accordion
-          title="Basic subscription details"
+          title={t.plansEditor.title}
+          titleNumberOfLines={2}
           expanded={basicAccordionExpanded}
           onPress={() => {
             if (wizardDraft != null) return;
             setBasicDetailsExpanded((v) => !v);
           }}
-          titleStyle={[styles.bold, textMain]}
+          titleStyle={[styles.bold, isTactile ? styles.accordionTitleTactile : textMain]}
           style={{ backgroundColor: 'transparent' }}
-          left={(props) => <List.Icon {...props} icon="clipboard-text-outline" />}
+          left={(props) => <List.Icon {...props} icon={isTactile ? 'shopping-outline' : 'clipboard-text-outline'} color={isTactile ? dairyTactileColors.primaryContainer : undefined} />}
         >
           <View style={styles.accordionBody}>
             {!milkProducts.length ? (
               <HelperText type="info" visible>
-                No active milk catalogue products (Milk / Milk Product type). Add them under Admin Products first.
+                {t.plansEditor.noMilkProducts}
               </HelperText>
             ) : null}
 
             {!wizardDraft ? (
               <View style={styles.idleColumn}>
                 <Text variant="bodySmall" style={textSub}>
-                  Month-wise view (same controls as delivery boy history salary memo): only milk lines that overlap{' '}
-                  {subscriptionMonthLabel(basicDetailsMonth)} ({basicDetailsMonth}). Step through months or tap the label to pick.
+                  {monthIsControlled
+                    ? t.plansEditor.overlapShared(subscriptionMonthLabel(basicDetailsMonth))
+                    : t.plansEditor.overlap(subscriptionMonthLabel(basicDetailsMonth))}
                 </Text>
-                <View style={styles.monthNavRow}>
-                  <Pressable
-                    disabled={basicPrevDisabled}
-                    onPress={() => setBasicDetailsMonth(shiftMonth(basicDetailsMonth, -1))}
-                    style={({ pressed }) => [
-                      styles.monthNavBtn,
-                      basicPrevDisabled ? styles.monthNavBtnDisabled : null,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="chevron-left" size={22} color={titleColor} />
-                  </Pressable>
-                  <Pressable onPress={() => setBasicMonthPickerOpen(true)} style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}>
-                    <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                      {subscriptionMonthLabel(basicDetailsMonth)}
-                    </Text>
-                    <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                      {basicDetailsMonth}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    disabled={basicNextDisabled}
-                    onPress={() => setBasicDetailsMonth(shiftMonth(basicDetailsMonth, 1))}
-                    style={({ pressed }) => [
-                      styles.monthNavBtn,
-                      basicNextDisabled ? styles.monthNavBtnDisabled : null,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="chevron-right" size={22} color={titleColor} />
-                  </Pressable>
-                </View>
+                {monthIsControlled ? null : (
+                  <View style={styles.monthNavRow}>
+                    <Pressable
+                      disabled={basicPrevDisabled}
+                      onPress={() => setBasicDetailsMonth(shiftMonth(basicDetailsMonth, -1))}
+                      style={({ pressed }) => [
+                        styles.monthNavBtn,
+                        basicPrevDisabled ? styles.monthNavBtnDisabled : null,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <MaterialCommunityIcons name="chevron-left" size={22} color={titleColor} />
+                    </Pressable>
+                    <Pressable onPress={() => setBasicMonthPickerOpen(true)} style={({ pressed }) => [styles.monthNavCenter, pressed && styles.pressed]}>
+                      <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
+                        {subscriptionMonthLabel(basicDetailsMonth)}
+                      </Text>
+                      <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                        {basicDetailsMonth}
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      disabled={basicNextDisabled}
+                      onPress={() => setBasicDetailsMonth(shiftMonth(basicDetailsMonth, 1))}
+                      style={({ pressed }) => [
+                        styles.monthNavBtn,
+                        basicNextDisabled ? styles.monthNavBtnDisabled : null,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <MaterialCommunityIcons name="chevron-right" size={22} color={titleColor} />
+                    </Pressable>
+                  </View>
+                )}
 
                 {milkPlansForSelectedMonth.length > 0 ? (
                   <View style={styles.savedPlansList}>
@@ -608,9 +668,9 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                               compact
                               disabled={update.isPending}
                               onPress={() => startEditWizard(idx)}
-                              accessibilityLabel={`Update ${p.productName} subscription`}
+                              accessibilityLabel={t.plansEditor.updateA11y(p.productName)}
                             >
-                              Update
+                              {t.plansEditor.update}
                             </Button>
                             <Button
                               mode="text"
@@ -618,9 +678,9 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                               disabled={update.isPending}
                               onPress={() => openRemoveMilkDialog(idx)}
                               textColor="#B91C1C"
-                              accessibilityLabel={`Remove ${p.productName} from subscription`}
+                              accessibilityLabel={t.plansEditor.removeA11y(p.productName)}
                             >
-                              Delete
+                              {common.actions.delete}
                             </Button>
                           </View>
                         </View>
@@ -628,14 +688,14 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                           {formatSubscriptionPlanAsOrderExample(p)}
                         </Text>
                         <Text variant="bodySmall" style={textSub} numberOfLines={2}>
-                          {p.frequency} · {p.deliveryTime}
+                          {frequencyLabel(p.frequency)} · {deliveryTimeLabel(p.deliveryTime)}
                         </Text>
                         <Text variant="bodySmall" style={textSub} numberOfLines={2}>
                           {p.startDate?.trim() ? p.startDate : '—'} → {p.endDate?.trim() ? p.endDate : '—'}
                         </Text>
                         <View style={styles.savedPlanFooter}>
                           <Text variant="labelSmall" style={[styles.bold, textMain]}>
-                            {p.status}
+                            {planStatusLabel(p.status)}
                           </Text>
                           <Text variant="labelSmall" style={[styles.bold, textMain]}>
                             {money(p.effectiveFinalPrice ?? p.originalPrice)}
@@ -646,8 +706,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                   </View>
                 ) : subscriptionPlans.length > 0 ? (
                   <Text variant="bodySmall" style={textSub}>
-                    No milk lines overlap {subscriptionMonthLabel(basicDetailsMonth)}. Use the arrows or month picker to view other months, or add a line (dates
-                    can span this month).
+                    {t.plansEditor.noLinesInMonth(subscriptionMonthLabel(basicDetailsMonth))}
                   </Text>
                 ) : null}
 
@@ -657,7 +716,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                   onPress={startWizard}
                   disabled={!milkProducts.length}
                 >
-                  Add milk product
+                  {t.plansEditor.addMilkProduct}
                 </Button>
               </View>
             ) : (
@@ -678,7 +737,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                         {...formFieldAttrs('subscription-plan-start-date')}
                         dense={inputDense}
                         mode="outlined"
-                        label="Start date"
+                        label={t.fields.startDate}
                         placeholder="DD/MM/YYYY"
                         value={wizardDraft.startDate}
                         onChangeText={(t) => {
@@ -699,13 +758,13 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                       />
 
                       <Text variant="bodySmall" style={[textSub, { marginBottom: -4 }]}>
-                        End date defaults to month-end when you set the start date; you can edit it or use the calendar. End must be on or after the start date (same day is allowed to expire a line).
+                        {t.plansEditor.endDateHint}
                       </Text>
                       <TextInput
                         {...formFieldAttrs('subscription-plan-end-date')}
                         dense={inputDense}
                         mode="outlined"
-                        label="End date"
+                        label={t.fields.endDate}
                         placeholder="DD/MM/YYYY"
                         value={wizardDraft.endDate ?? ''}
                         onChangeText={(t) => {
@@ -730,7 +789,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
 
                 <View style={styles.wizardActions}>
                   <Button mode="outlined" onPress={cancelWizard} disabled={update.isPending}>
-                    Cancel
+                    {common.actions.cancel}
                   </Button>
                   <Button
                     mode="contained"
@@ -739,7 +798,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
                     loading={update.isPending}
                     disabled={update.isPending || !canSaveWizard}
                   >
-                    {editingMilkIndex !== null ? 'Update subscription' : 'Save subscription'}
+                    {editingMilkIndex !== null ? t.plansEditor.updateSubscription : t.plansEditor.saveSubscription}
                   </Button>
                 </View>
               </ScrollView>
@@ -754,129 +813,27 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
       </Card.Content>
 
       <Portal>
-        {dobPickerOpen && Platform.OS !== 'web' ? (
-          <DateTimePicker
-            value={dobCursor}
-            mode="date"
-            display={Platform.OS === 'android' ? 'default' : 'calendar'}
-            onChange={(_event, selected) => {
-              setDobPickerOpen(false);
-              const field = wizardDateField ?? 'startDate';
-              setWizardDateField(null);
-              if (!selected) return;
-              const ddmmyyyy = dateToDob(selected);
-              if (field === 'endDate') {
-                patchWizard({ endDate: ddmmyyyy });
-              } else {
-                patchWizard(startDatePatchWithMonthEnd(ddmmyyyy));
-              }
-            }}
-            maximumDate={new Date(2100, 11, 31)}
-          />
-        ) : null}
-
-        <Dialog
-          visible={dobPickerOpen && Platform.OS === 'web'}
-          onDismiss={() => {
-            setDobPickerOpen(false);
-            setWizardDateField(null);
+        {/* Shared JS picker on every platform: the native iOS picker crashed the app here (it aborts on display="calendar"). */}
+        <DatePickerModal
+          visible={dobPickerOpen}
+          value={wizardDraft && wizardDateField ? String(wizardDraft[wizardDateField] ?? '') : ''}
+          // Plan start/end dates are future-capable (e.g. a December line ending next January).
+          yearsAhead={5}
+          title={wizardDateField === 'endDate' ? t.fields.endDate : t.fields.startDate}
+          onSelect={(ddmmyyyy) => {
+            if (wizardDateField === 'endDate') {
+              patchWizard({ endDate: ddmmyyyy });
+            } else {
+              patchWizard(startDatePatchWithMonthEnd(ddmmyyyy));
+            }
           }}
-          style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}
-        >
-          <Dialog.Title>{dobPickerStep === 'calendar' ? 'Select Date' : dobPickerStep === 'year' ? 'Select Year' : 'Select Month'}</Dialog.Title>
-          <Dialog.Content>
-            {dobPickerStep === 'calendar' ? (
-              <Calendar
-                current={`${dobCursor.getFullYear()}-${String(dobCursor.getMonth() + 1).padStart(2, '0')}-01`}
-                markedDates={
-                  (() => {
-                    if (!wizardDraft || !wizardDateField) return undefined;
-                    const current = String((wizardDraft as unknown as Record<string, string>)[wizardDateField] ?? '').trim();
-                    const iso = dobToIsoDate(current);
-                    return iso ? { [iso]: { selected: true, selectedColor: COLORS.primary } } : undefined;
-                  })()
-                }
-                renderHeader={() => (
-                  <Pressable onPress={() => setDobPickerStep('year')} style={({ pressed }) => [styles.webCalHeaderPress, pressed && styles.pressed]}>
-                    <Text variant="titleSmall" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-                      {calendarMonthShortLabel(dobCursor.getMonth())} {dobCursor.getFullYear()}
-                    </Text>
-                    <MaterialCommunityIcons name="chevron-down" size={18} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                )}
-                onMonthChange={(m) => setDobCursor(new Date(m.year, m.month - 1, 1))}
-                onDayPress={(day) => {
-                  const dob = isoDateToDob(day.dateString);
-                  if (!dob || !wizardDateField) return;
-                  if (wizardDateField === 'endDate') {
-                    patchWizard({ endDate: dob });
-                  } else {
-                    patchWizard(startDatePatchWithMonthEnd(dob));
-                  }
-                  setDobPickerOpen(false);
-                  setWizardDateField(null);
-                }}
-                theme={{
-                  todayTextColor: COLORS.primary,
-                  selectedDayBackgroundColor: COLORS.primary,
-                  arrowColor: COLORS.primary,
-                }}
-              />
-            ) : null}
-            {dobPickerStep === 'year' ? (
-              <ScrollView style={{ maxHeight: 360 }} contentContainerStyle={{ paddingVertical: 6 }}>
-                {Array.from({ length: new Date().getFullYear() - 1950 + 1 }, (_, i) => new Date().getFullYear() - i).map((y) => (
-                  <Pressable
-                    key={y}
-                    onPress={() => {
-                      setDobCursor((d) => new Date(y, d.getMonth(), 1));
-                      setDobPickerStep('month');
-                    }}
-                    style={({ pressed }) => [styles.pickItem, pressed && styles.pressed]}
-                  >
-                    <Text variant="bodyMedium">{String(y)}</Text>
-                    {dobCursor.getFullYear() === y ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
-                  </Pressable>
-                ))}
-              </ScrollView>
-            ) : null}
-            {dobPickerStep === 'month' ? (
-              <View style={styles.monthGrid}>
-                {Array.from({ length: 12 }, (_, i) => i).map((mi) => (
-                  <Pressable
-                    key={mi}
-                    onPress={() => {
-                      setDobCursor((d) => new Date(d.getFullYear(), mi, 1));
-                      setDobPickerStep('calendar');
-                    }}
-                    style={({ pressed }) => [styles.monthCell, dobCursor.getMonth() === mi && styles.monthCellActive, pressed && styles.pressed]}
-                  >
-                    <Text variant="labelLarge" style={dobCursor.getMonth() === mi ? styles.monthCellActiveText : undefined}>
-                      {calendarMonthShortLabel(mi)}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
-          </Dialog.Content>
-          <Dialog.Actions>
-            {dobPickerStep !== 'calendar' ? (
-              <Button onPress={() => setDobPickerStep(dobPickerStep === 'month' ? 'year' : 'calendar')}>Back</Button>
-            ) : null}
-            <Button
-              onPress={() => {
-                setDobPickerOpen(false);
-                setWizardDateField(null);
-              }}
-            >
-              Close
-            </Button>
-          </Dialog.Actions>
-        </Dialog>
+          // `wizardDateField` stays until the next opening sets it, so the title does not flip while the picker fades out.
+          onDismiss={() => setDobPickerOpen(false)}
+        />
 
-        <Dialog visible={basicMonthPickerOpen} onDismiss={() => setBasicMonthPickerOpen(false)} style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}>
-          <Dialog.Title>Basic subscription month</Dialog.Title>
-          <Dialog.Content style={{ maxHeight: 360 }}>
+        <Dialog visible={basicMonthPickerOpen} onDismiss={() => setBasicMonthPickerOpen(false)} style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}>
+          <Dialog.Title>{t.plansEditor.monthPickerTitle}</Dialog.Title>
+          <Dialog.Content style={{ maxHeight: Math.min(360, dialogScrollMaxH) }}>
             <ScrollView>
               {subscriptionMonthOptions.map((m) => {
                 const selected = m === basicDetailsMonth;
@@ -904,35 +861,32 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
             </ScrollView>
           </Dialog.Content>
           <Dialog.Actions>
-            <Button onPress={() => setBasicMonthPickerOpen(false)}>Close</Button>
+            <Button onPress={() => setBasicMonthPickerOpen(false)}>{common.actions.close}</Button>
           </Dialog.Actions>
         </Dialog>
 
         <Dialog
           visible={duplicateDialogIndex !== null}
           onDismiss={() => setDuplicateDialogIndex(null)}
-          style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}
         >
-          <Dialog.Title>Same milk product</Dialog.Title>
+          <Dialog.Title>{t.plansEditor.duplicateTitle}</Dialog.Title>
           <Dialog.Content>
             <Text variant="bodyMedium" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-              This uses the same milk product as an existing basic subscription line. To save anyway, the
-              existing line’s end date is set to the new line’s start date (or to the existing start if the new start is earlier). The new line reuses the previous
-              subscription’s end date when it is still on or after the new start. Subscription history keeps both segments; amounts in history use real delivery days
-              and quantities, with a single segment credited per day when identical line details overlap on one day.
+              {t.plansEditor.duplicateBody}
             </Text>
             {duplicateDialogIndex !== null && subscriptionPlans[duplicateDialogIndex] ? (
               <Text variant="bodySmall" style={[textSub, { marginTop: 10 }]}>
-                Existing: {formatSubscriptionPlanAsOrderExample(subscriptionPlans[duplicateDialogIndex]!)}
+                {t.plansEditor.existing(formatSubscriptionPlanAsOrderExample(subscriptionPlans[duplicateDialogIndex]!))}
               </Text>
             ) : null}
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setDuplicateDialogIndex(null)} disabled={update.isPending}>
-              Cancel
+              {common.actions.cancel}
             </Button>
             <Button mode="contained" onPress={() => void confirmDuplicateMilkLineAndSave()} loading={update.isPending}>
-              End previous & save
+              {t.plansEditor.endPreviousAndSave}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -940,19 +894,19 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
         <Dialog
           visible={removeMilkDialogIndex !== null}
           onDismiss={() => setRemoveMilkDialogIndex(null)}
-          style={scheme === 'dark' ? styles.dialogDark : styles.dialogLight}
+          style={[scheme === 'dark' ? styles.dialogDark : styles.dialogLight, dialogSize]}
         >
-          <Dialog.Title>Remove milk subscription?</Dialog.Title>
+          <Dialog.Title>{t.plansEditor.removeTitle}</Dialog.Title>
           <Dialog.Content>
             <Text variant="bodyMedium" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
               {removeMilkDialogIndex !== null
-                ? `Remove “${subscriptionPlans[removeMilkDialogIndex]?.productName ?? ''}” from this customer’s basic milk subscription?`
+                ? t.plansEditor.removeBody(subscriptionPlans[removeMilkDialogIndex]?.productName ?? '')
                 : ''}
             </Text>
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setRemoveMilkDialogIndex(null)} disabled={update.isPending}>
-              Cancel
+              {common.actions.cancel}
             </Button>
             <Button
               textColor="#B91C1C"
@@ -960,7 +914,7 @@ function CustomerSubscriptionPlansEditorInner({ customer, customerId }: Customer
               loading={update.isPending}
               disabled={update.isPending}
             >
-              Remove
+              {common.actions.remove}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -1010,6 +964,14 @@ const styles = StyleSheet.create({
   savedPlanFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2, gap: 8 },
   sectionCard: { borderRadius: 16, borderWidth: 1 },
   sectionCardClip: { overflow: 'hidden', borderRadius: 16 },
+  sectionCardClipTactile: { borderRadius: amraleRadius.lg },
+  sectionCardTactile: {
+    backgroundColor: dairyTactileColors.surfaceContainerLowest,
+    borderColor: dairyTactileColors.outlineVariant,
+    borderRadius: amraleRadius.lg,
+  },
+  sectionCardTactileElev: tactileCardElevation(),
+  accordionTitleTactile: { color: dairyTactileColors.onSurface, fontWeight: '700' },
   sectionCardLight: { backgroundColor: 'white', borderColor: 'rgba(37,99,235,0.10)' },
   sectionCardDark: { backgroundColor: 'rgba(15,23,42,0.70)', borderColor: 'rgba(255,255,255,0.10)' },
   textOnLight: { color: COLORS.text },
@@ -1023,29 +985,4 @@ const styles = StyleSheet.create({
   wizardScrollContent: { paddingBottom: 12 },
   wizardActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14, justifyContent: 'flex-end' },
   planCard: { borderRadius: 16, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', backgroundColor: 'rgba(148,163,184,0.06)', padding: 10, gap: 10 },
-  pickItem: {
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(148,163,184,0.12)',
-    marginBottom: 8,
-  },
-  webCalHeaderPress: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 },
-  monthGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingVertical: 6 },
-  monthCell: {
-    width: '30%',
-    minWidth: 92,
-    height: 44,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.22)',
-    backgroundColor: 'rgba(148,163,184,0.10)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  monthCellActive: { borderColor: 'rgba(37,99,235,0.35)', backgroundColor: 'rgba(37,99,235,0.14)' },
-  monthCellActiveText: { color: '#1D4ED8', fontWeight: '900' },
 });

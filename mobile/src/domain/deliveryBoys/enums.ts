@@ -14,7 +14,7 @@ export type AttendanceStatus =
 
 /** Admin delivery-boy calendar: only these may be chosen (stored rows may still hold legacy AttendanceStatus values). */
 export const DELIVERY_BOY_ADMIN_ATTENDANCE_STATUS_OPTIONS = ['Present', 'Absent'] as const satisfies readonly AttendanceStatus[];
-export type DeliveryBoyAdminAttendanceStatus = (typeof DELIVERY_BOY_ADMIN_ATTENDANCE_STATUS_OPTIONS)[number];
+export type DeliveryBoyAdminAttendanceStatus = typeof DELIVERY_BOY_ADMIN_ATTENDANCE_STATUS_OPTIONS[number];
 
 /** Maps stored status to the binary admin picker default (new day → Present). */
 export function deliveryBoyAdminAttendanceDraftFromStored(

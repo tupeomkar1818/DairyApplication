@@ -1,0 +1,140 @@
+---
+import '../styles/global.css';
+
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+import Icon from '../components/Icon.astro';
+import { site, whatsappLink } from '../data/site';
+import { languages, localePath, ui, type Lang } from '../i18n/ui';
+
+interface Props {
+  lang: Lang;
+  title: string;
+  description: string;
+  /** Path of the page's share image under /public. */
+  image?: string;
+}
+
+const { lang, title, description, image = '/images/amrale-products-banner.png' } = Astro.props;
+const t = ui[lang];
+const base = Astro.site ?? new URL(site.url);
+const canonical = new URL(Astro.url.pathname, base).toString();
+const imageUrl = new URL(image, base).toString();
+
+// The same page in each language, for search engines ("hreflang") — the path without its /mr prefix.
+const pagePath = Astro.url.pathname.replace(/^\/mr(?=\/|$)/, '') || '/';
+const alternates = (Object.keys(languages) as Lang[]).map((l) => ({
+  hreflang: ui[l].htmlLang,
+  href: new URL(localePath(l, pagePath), base).toString(),
+}));
+const defaultAlternate = new URL(localePath('en', pagePath), base).toString();
+
+// Local business details for search engines (Google Maps / knowledge panel).
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'LocalBusiness',
+  additionalType: 'https://schema.org/GroceryStore',
+  name: t.brand.name,
+  alternateName: [site.name, site.legalName, site.nameMarathi],
+  url: canonical,
+  logo: new URL('/images/amrale-logo.png', base).toString(),
+  image: imageUrl,
+  telephone: site.phoneDial,
+  email: site.email,
+  foundingDate: String(site.foundedYear),
+  inLanguage: t.htmlLang,
+  address: {
+    '@type': 'PostalAddress',
+    streetAddress: site.address.line1,
+    addressLocality: `${site.address.area}, ${site.address.city}`,
+    addressRegion: site.address.region,
+    postalCode: site.address.postalCode,
+    addressCountry: site.address.country,
+  },
+  geo: { '@type': 'GeoCoordinates', latitude: site.geo.latitude, longitude: site.geo.longitude },
+  areaServed: `${site.address.area}, ${site.address.city}`,
+  hasMap: site.mapShareUrl,
+};
+---
+
+<!doctype html>
+<html lang={t.htmlLang} data-lang={lang}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    {alternates.map((a) => <link rel="alternate" hreflang={a.hreflang} href={a.href} />)}
+    <link rel="alternate" hreflang="x-default" href={defaultAlternate} />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/images/amrale-logo.png" />
+    <meta name="theme-color" content="#2b4399" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={t.brand.name} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={imageUrl} />
+    <meta property="og:locale" content={t.ogLocale} />
+    <meta property="og:locale:alternate" content={lang === 'en' ? ui.mr.ogLocale : ui.en.ogLocale} />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Mukta:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    <script is:inline define:vars={{ pageLang: lang, mrHref: localePath('mr', pagePath) }}>
+      // Open the English address in Marathi for a visitor who chose Marathi last time, or whose phone is set to
+      // Marathi on a first visit. A /mr/ link always stays Marathi (it was shared on purpose), and search engines
+      // are never redirected: they keep no choice and do not use Marathi.
+      try {
+        var saved = localStorage.getItem('amrale-lang');
+        var wanted = saved || ((navigator.languages || [navigator.language]).some(function (l) { return /^mr/i.test(l); }) ? 'mr' : '');
+        if (!saved && wanted) localStorage.setItem('amrale-lang', wanted);
+        if (pageLang === 'en' && wanted === 'mr') {
+          location.replace(mrHref + location.hash);
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">{t.a11y.skip}</a>
+    <Header lang={lang} />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer lang={lang} />
+
+    <a class="wa-float" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener" aria-label={t.a11y.whatsappFloat}>
+      <Icon name="whatsapp" size={30} />
+    </a>
+  </body>
+</html>
+
+<style>
+  .wa-float {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    width: 58px;
+    height: 58px;
+    border-radius: 50%;
+    background: var(--whatsapp);
+    color: #fff;
+    box-shadow: 0 10px 28px rgba(28, 156, 82, 0.45);
+    transition: transform 0.15s ease;
+  }
+
+  .wa-float:hover {
+    transform: scale(1.06);
+  }
+</style>

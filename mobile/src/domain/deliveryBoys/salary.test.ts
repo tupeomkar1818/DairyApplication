@@ -8,6 +8,7 @@ import {
   computeUnifiedMonthlyPayroll,
   getAutoPreviousBalance,
   getAutoPreviousPendingSalary,
+  isDateWithinEmployment,
   profileMonthlySalaryDisplay,
   roundMoney2,
   totalAdvanceSalaryForMonthRecord,
@@ -249,6 +250,75 @@ describe('computeUnifiedMonthlyPayroll — aligned with core', () => {
     const perDay = roundMoney2(30_000 / 29);
     expect(u.finalBase).toBe(roundMoney2(u.attendanceSalary + roundMoney2(perDay * u.routeCoverageCreditedDays)));
     expect(u.finalAutoUnified).toBe(u.finalBase);
+  });
+});
+
+describe('Fixed Monthly Salary — per day follows the target month', () => {
+  it('ignores a perDaySalary frozen at creation and divides monthly by the target month days', () => {
+    // 1000/day was frozen from a 31-day creation month; Feb 2024 (29 d) and Apr 2024 (30 d) must re-derive.
+    const b = makeBoy({ salaryType: 'Fixed Monthly Salary', monthlySalary: 31_000, perDaySalary: 1000 });
+    expect(computeUnifiedMonthlyPayroll(b, '2024-02', {}).perDaySalary).toBe(roundMoney2(31_000 / 29));
+    expect(computeUnifiedMonthlyPayroll(b, '2024-04', {}).perDaySalary).toBe(roundMoney2(31_000 / 30));
+    expect(computeUnifiedMonthlyPayroll(b, '2024-01', {}).perDaySalary).toBe(1000);
+  });
+
+  it('pays route cover at the leaver target-month rate even when the leaver has a stale perDaySalary', () => {
+    const leaver = makeBoy({ id: 'leaver', salaryType: 'Fixed Monthly Salary', monthlySalary: 29_000, perDaySalary: 935.48 });
+    const b = makeBoy({
+      routeCoverageCredits: [
+        { id: 'crc', createdAt: nowIso, updatedAt: nowIso, date: '2024-02-10', routeName: 'Route A', leaverDeliveryBoyId: 'leaver' },
+      ],
+    });
+    const core = computeDeliveryBoySalaryForMonth(b, '2024-02', { allBoys: [leaver] });
+    expect(core.routeCoverageCreditSalary).toBe(1000);
+  });
+
+  it('Attendance Based Salary still uses the explicit per day', () => {
+    const b = makeBoy({ salaryType: 'Attendance Based Salary', monthlySalary: 0, perDaySalary: 750 });
+    expect(computeUnifiedMonthlyPayroll(b, '2024-02', {}).perDaySalary).toBe(750);
+  });
+});
+
+describe('attendance outside the employment window', () => {
+  const month = '2024-01';
+
+  it('does not pay Present days before joining or after the last working date', () => {
+    const b = makeBoy({
+      joiningDate: '2024-01-10',
+      lastWorkingDate: '2024-01-20',
+      attendance: presentEntries(month, [5, 10, 15, 20, 25]),
+    });
+    const core = computeDeliveryBoySalaryForMonth(b, month, {});
+    expect(core.presentDays).toBe(3);
+    expect(core.finalAuto).toBe(3000);
+  });
+
+  it('does not credit attendance-based route cover outside the window', () => {
+    const leaver = makeBoy({ id: 'leaver', monthlySalary: 31_000 });
+    const b = makeBoy({
+      joiningDate: '2024-01-10',
+      attendance: [
+        { ...presentEntries(month, [5])[0]!, coverForDeliveryBoyId: 'leaver' },
+        { ...presentEntries(month, [12])[0]!, coverForDeliveryBoyId: 'leaver' },
+      ],
+    });
+    const core = computeDeliveryBoySalaryForMonth(b, month, { allBoys: [leaver] });
+    expect(core.routeCoverageCreditedDays).toBe(1);
+  });
+
+  it('salary memo shows zero for days outside the window', () => {
+    const b = makeBoy({ joiningDate: '2024-01-10', lastWorkingDate: '2024-01-20', attendance: presentEntries(month, [5, 15, 25]) });
+    const base = salaryMemoLinesForMonth(b, month, []).filter((l) => l.kind === 'base');
+    expect(base.find((l) => l.date === `${month}-05`)).toMatchObject({ basis: 'Before joining', amount: 0 });
+    expect(base.find((l) => l.date === `${month}-15`)).toMatchObject({ basis: 'Present', amount: 1000 });
+    expect(base.find((l) => l.date === `${month}-25`)).toMatchObject({ basis: 'After last working date', amount: 0 });
+  });
+
+  it('isDateWithinEmployment treats missing bounds as open', () => {
+    const b = makeBoy({ joiningDate: '', lastWorkingDate: undefined });
+    expect(isDateWithinEmployment(b, '1990-01-01')).toBe(true);
+    expect(isDateWithinEmployment(makeBoy({ joiningDate: '2024-01-10T05:00:00.000Z' }), '2024-01-09')).toBe(false);
+    expect(isDateWithinEmployment(null, '2024-01-09')).toBe(false);
   });
 });
 

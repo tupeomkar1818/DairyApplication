@@ -8,8 +8,13 @@ export function milkProductNameKey(p: CustomerSubscriptionPlanDto): string {
     .toLowerCase();
 }
 
+const duplicateKeyCache = new WeakMap<object, string>();
+
 /** Full line signature (product + pack + qty + schedule + kind) for delivery attribution / overlap rules — not for duplicate dialog. */
 export function milkLineDuplicateKey(p: CustomerSubscriptionPlanDto): string {
+  const cached = duplicateKeyCache.get(p);
+  if (cached) return cached;
+
   const pack = String(p.quantityLabel ?? '')
     .trim()
     .replace(/\s+/g, ' ')
@@ -23,7 +28,9 @@ export function milkLineDuplicateKey(p: CustomerSubscriptionPlanDto): string {
     String(p.subscriptionKind ?? 'Monthly'),
     String(p.unitType ?? '').trim().toLowerCase(),
   ];
-  return parts.join('\u{1F}');
+  const result = parts.join('\u{1F}');
+  duplicateKeyCache.set(p, result);
+  return result;
 }
 
 /** Index of another milk row with the same catalog product name, or -1. Skips `editingIndex` when editing. */

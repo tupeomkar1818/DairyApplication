@@ -1,0 +1,91 @@
+/** Sign-in screens (login, OTP, splash). The Marathi twin is ../mr/auth.ts. */
+export const auth = {
+  brand: {
+    logoLabel: 'Amrale Dairy logo',
+    tagline: 'Pure farm-fresh dairy, delivered daily.',
+    benefits: {
+      freshMilk: 'Fresh milk at your door every morning',
+      changeOrder: "Change tomorrow's order until 9 pm",
+      onePlace: 'Deliveries and bills in one place',
+    },
+    copyright: (year: string) => `© ${year} Amrale Dairy. All rights reserved.`,
+  },
+  splash: {
+    tagline: 'Pure & Vital · Since 1976',
+  },
+  footer: {
+    needHelp: 'Need Help?',
+    contactAdmin: 'Contact Admin',
+    privacyPolicy: 'Privacy Policy',
+  },
+  login: {
+    title: 'Sign in',
+    subtitle: "Enter your registered mobile number. We'll send you a 6-digit OTP.",
+    getOtp: 'Get OTP',
+    privacyNote: 'Your number is used only to sign you in.',
+    whoSignsIn: 'Customers, delivery partners and the dairy team all sign in here.',
+    newCustomer: 'New customer? Contact the dairy',
+  },
+  otp: {
+    changeNumber: 'Change number',
+    title: 'Enter OTP',
+    verified: 'Verified',
+    signingIn: 'Signing you in…',
+    /** Followed by an "Edit" link; the number is shown in bold. */
+    sentTo: (mobile: string) => `We sent a 6-digit code to ${mobile}. `,
+    enterAllDigits: 'Enter all 6 digits of the code.',
+    expiredUseResend: 'This code has expired. Tap “Resend code” to get a new one.',
+    newCodeSent: (mobile: string) => `A new code was sent to ${mobile}.`,
+    codeExpired: 'Code expired. Resend a new one below.',
+    /** The time is shown in bold. */
+    expiresIn: (time: string) => `Code expires in ${time}`,
+    demoMode: 'DEMO MODE',
+    demoCode: (code: string) => `Code: ${code}`,
+    useDemoCode: 'Use the demo code',
+    useCode: 'Use code',
+    verifyAndSignIn: 'Verify & sign in',
+    verifyAndSignInLabel: 'Verify and sign in',
+    didntGetCode: "Didn't get the code?",
+    resendCode: 'Resend code',
+    resendCodeIn: (time: string) => `Resend code in ${time}`,
+    resendIn: (time: string) => `Resend in ${time}`,
+    codeLabel: 'One-time password',
+    digitOf: (index: number, total: number) => `Digit ${index} of ${total}`,
+    otpDigit: (index: number) => `OTP digit ${index}`,
+  },
+  mobileField: {
+    label: 'Mobile Number',
+    placeholderProminent: '10-digit number',
+    placeholderLight: 'Enter mobile number',
+    placeholderDark: 'Mobile number',
+    complete: 'Number complete',
+  },
+  mockOtp: {
+    bannerLabel: 'MOCK OTP',
+    inlineLabel: 'Mock OTP',
+    accessibilityLabel: (otp: string) => `Mock OTP ${otp}`,
+    hint: 'Type this code manually in the boxes above',
+  },
+  logout: {
+    dismiss: 'Dismiss logout dialog',
+    message: 'Are you sure you want to log out of your Amrale Dairy account?',
+    cancelLabel: 'Cancel logout',
+    failed: 'Could not log out. Please try again.',
+  },
+  errors: {
+    invalidOtp: 'Please enter a valid 6-digit OTP',
+    notRegistered: 'Mobile number not registered',
+    inactive: 'Your account is inactive, contact admin.',
+    appAccessDisabled: 'App access is disabled for your account, contact admin.',
+    otpExpired: 'OTP expired, resend OTP',
+    tooManyAttempts: 'Maximum OTP attempts reached. Please resend OTP.',
+    invalidOtpEntered: 'Invalid OTP entered',
+    resendOtpIn: (time: string) => `Resend OTP in ${time}`,
+  },
+  /** One mobile number is one person: refusing a number that already belongs to someone else. */
+  accountLinks: {
+    adminNumber: "This is the admin's mobile number. Use a different number.",
+    belongsToCustomer: (name: string) => `This mobile number already belongs to customer ${name}.`,
+    belongsToDeliveryBoy: (name: string) => `This mobile number already belongs to delivery partner ${name}.`,
+  },
+};

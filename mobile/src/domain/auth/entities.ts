@@ -6,6 +6,11 @@ export interface User extends EntityBase {
   mobileNumber: string;
   role: UserRole;
   isActive: boolean;
+  /**
+   * FK — `Customer.id` (role=customer) or `DeliveryBoy.id` (role=delivery_boy) this login was provisioned from
+   * when an admin created the record. Unset for directly seeded/managed users.
+   */
+  linkedRecordId?: string;
 }
 
 export interface OtpChallenge {

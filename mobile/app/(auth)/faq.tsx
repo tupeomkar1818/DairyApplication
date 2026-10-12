@@ -5,15 +5,18 @@ import { FaqAccordionList } from '@/src/components/faq/FaqAccordionList';
 import { LoginLightShell } from '@/src/components/auth';
 import { ScreenHeader } from '@/src/components/shared';
 import { useFaqList } from '@/src/hooks/faq';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
 export default function FaqScreen() {
+  const t = useStrings('help');
+  const c = useStrings('common');
   const { data, isLoading, isError, refetch, isRefetching } = useFaqList();
 
   return (
     <LoginLightShell alignTop>
       <ScreenHeader
-        title="Help & FAQ"
+        title={t.faq.title}
         onBack={() => router.back()}
         backVariant="pill"
         titleColor={amraleColors.text}
@@ -24,7 +27,7 @@ export default function FaqScreen() {
       />
 
       <Text style={styles.intro}>
-        Find quick answers about signing in, OTP, and dairy delivery support.
+        {t.faq.intro}
       </Text>
 
       {isLoading ? (
@@ -33,9 +36,9 @@ export default function FaqScreen() {
         </View>
       ) : isError ? (
         <View style={styles.centered}>
-          <Text style={styles.errorText}>Could not load FAQs. Please try again.</Text>
+          <Text style={styles.errorText}>{t.faq.loadError}</Text>
           <Pressable onPress={() => refetch()} style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}>
-            <Text style={styles.retryLabel}>{isRefetching ? 'Loading…' : 'Retry'}</Text>
+            <Text style={styles.retryLabel}>{isRefetching ? c.states.loading : t.retry}</Text>
           </Pressable>
         </View>
       ) : (
@@ -73,6 +76,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   retryBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: amraleSpacing.lg,
     paddingVertical: amraleSpacing.sm,
     borderRadius: amraleRadius.lg,

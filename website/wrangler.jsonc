@@ -1,0 +1,16 @@
+{
+  // Cloudflare deployment for the static site: `npm run build` writes ./dist, `npx wrangler deploy` uploads it.
+  // There is no server code — every page is a file — so this config has assets only and no `main` entrypoint.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "amrale-dairy-website",
+  "compatibility_date": "2026-10-06",
+  "assets": {
+    "directory": "./dist",
+    // Clean URLs: /mr/ serves mr/index.html, and an unknown path gets the 404 page.
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

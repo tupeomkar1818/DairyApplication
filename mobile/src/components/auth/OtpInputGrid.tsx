@@ -3,12 +3,14 @@ import { StyleSheet, TextInput, View } from 'react-native';
 
 import { otpCellStyle, otpDigitInputStyle } from '@/src/components/auth/otpInputStyles';
 import { normalizeDigitInput } from '@/src/domain/shared/numerals';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius } from '@/src/theme/dairyTactile';
 
 const COLS = 3;
-const BOX_SIZE = 38;
-const BOX_GAP = 6;
-const FONT_SIZE = 18;
+/** ≥44px touch target; a row is 3×48 + 2×10 = 164px, which fits the 272px content column of a 320px phone. */
+const BOX_SIZE = 48;
+const BOX_GAP = 10;
+const FONT_SIZE = 22;
 
 type Props = {
   digits: string[];
@@ -20,6 +22,7 @@ type Props = {
 
 /** 3 digits per row — line 1: indices 0–2, line 2: indices 3–5 */
 export function OtpInputGrid({ digits, onChangeDigit, onBackspace, inputRefs, hasError }: Props) {
+  const t = useStrings('auth');
   const rows = [digits.slice(0, COLS), digits.slice(COLS, 6)];
   const digitStyle = otpDigitInputStyle(BOX_SIZE, FONT_SIZE);
   const maxWidth = BOX_SIZE * COLS + BOX_GAP * (COLS - 1);
@@ -58,7 +61,7 @@ export function OtpInputGrid({ digits, onChangeDigit, onBackspace, inputRefs, ha
                   onKeyPress={({ nativeEvent }) => {
                     if (nativeEvent.key === 'Backspace') onBackspace(index);
                   }}
-                  accessibilityLabel={`OTP digit ${index + 1}`}
+                  accessibilityLabel={t.otp.otpDigit(index + 1)}
                 />
               </View>
             );

@@ -1,6 +1,7 @@
 import { enumerateDatesInclusive } from '@/src/domain/deliveryBoys/coverageCredits';
 import type { DeliveryBoy } from '@/src/domain/deliveryBoys/entities';
 import { daysInMonth, roundMoney2, totalAdvanceSalaryForMonthRecord } from '@/src/domain/deliveryBoys/salary';
+import { strings } from '@/src/i18n/strings';
 
 function dOnly(iso: string): string {
   return String(iso).slice(0, 10);
@@ -159,8 +160,8 @@ function monthBounds(yyyyMm: string): { start: string; end: string } {
 function shortMonthLabel(yyyyMm: string): string {
   const m = yyyyMm.match(/^(\d{4})-(\d{2})$/);
   if (!m) return yyyyMm;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, 1);
-  return d.toLocaleString('en-US', { month: 'short' });
+  // Month names follow the app language ("Sep" / "सप्टें"), not the device locale.
+  return strings('common').dates.monthsShort[Number(m[2]) - 1] ?? yyyyMm;
 }
 
 /** Last 6 months including current — for dashboard charts. */

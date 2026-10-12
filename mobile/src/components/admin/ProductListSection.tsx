@@ -7,55 +7,139 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
+  type ViewStyle,
 } from 'react-native';
 import { router } from 'expo-router';
-import { Menu } from 'react-native-paper';
 
+import { ADMIN_LIST_GAP, useAdminListGrid } from '@/src/components/admin/AdminListScreenLayout';
+import {
+  AdminListControls,
+  AdminListEmptyState,
+  AdminListErrorState,
+  type AdminListSortOption,
+} from '@/src/components/shared/adminListUi';
 import { DeleteProductConfirmDialog } from '@/src/components/admin/DeleteProductConfirmDialog';
+import { productSpecsLabel, productStatus, productStatusColors, productTypeName } from '@/src/components/admin/productDisplay';
 import type { ProductResponse } from '@/src/domain/products/dtos';
+import { effectiveUnitPrice } from '@/src/domain/products/pricing';
 import { useDeleteProduct, useProducts } from '@/src/hooks/products';
+import { strings } from '@/src/i18n/strings';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
 type SortBy = 'name_asc' | 'name_desc' | 'price_asc' | 'price_desc';
 
-function statusForProduct(p: ProductResponse): { label: string; tone: 'blue' | 'gray' | 'red' } {
-  if (p.availableStock <= 0 || p.availability === 'Out of Stock') {
-    return { label: 'OUT OF STOCK', tone: 'red' };
-  }
-  if (p.isActive) return { label: 'ACTIVE', tone: 'blue' };
-  return { label: 'INACTIVE', tone: 'gray' };
+const ALL_TYPES = 'all';
+/** Filter key for products with neither a type nor a category. */
+const OTHER_TYPE = 'Other';
+
+/** Sort menu entries, worded in the current language (read at render). */
+function sortOptions(): AdminListSortOption<SortBy>[] {
+  const s = strings('products').list.sort;
+  return [
+    { key: 'name_asc', label: s.nameAsc, short: s.nameAscShort, icon: 'sort-alphabetical-ascending' },
+    { key: 'name_desc', label: s.nameDesc, short: s.nameDescShort, icon: 'sort-alphabetical-descending' },
+    { key: 'price_asc', label: s.priceAsc, short: s.priceAscShort, icon: 'sort-numeric-ascending' },
+    { key: 'price_desc', label: s.priceDesc, short: s.priceDescShort, icon: 'sort-numeric-descending' },
+  ];
 }
 
-function specsLabelForProduct(p: ProductResponse): string {
-  const volume = (p.customVariantLabel ?? '').trim() || p.variants?.[0] || `1 ${p.unit}`;
-  const type = p.productType || p.category;
-  return `${volume} • ${type}`;
+function productTypeOf(p: ProductResponse): string {
+  return (p.productType || p.category || OTHER_TYPE).trim();
 }
 
-function badgeColors(tone: 'red' | 'blue' | 'gray') {
-  switch (tone) {
-    case 'red':
-      return { bg: 'rgba(225, 29, 72, 0.1)', fg: amraleColors.error };
-    case 'blue':
-      return { bg: 'rgba(53, 81, 161, 0.12)', fg: amraleColors.blue };
-    default:
-      return { bg: 'rgba(100, 116, 139, 0.14)', fg: amraleColors.textMuted };
+function ProductTileImage({ uri }: { uri: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <View style={styles.imagePlaceholder}>
+        <MaterialCommunityIcons name="image-broken-variant" size={28} color={amraleColors.textSubtle} />
+      </View>
+    );
   }
+  return <Image source={{ uri }} style={styles.productImage} resizeMode="cover" onError={() => setFailed(true)} />;
 }
 
-function sortLabel(sortBy: SortBy): string {
-  switch (sortBy) {
-    case 'name_desc':
-      return 'Z to A';
-    case 'price_asc':
-      return 'Price ↑';
-    case 'price_desc':
-      return 'Price ↓';
-    default:
-      return 'A to Z';
-  }
+function ProductCard({
+  product: p,
+  cellStyle,
+  onDelete,
+}: {
+  product: ProductResponse;
+  cellStyle: ViewStyle | undefined;
+  onDelete: (p: ProductResponse) => void;
+}) {
+  const t = useStrings('products');
+  const status = productStatus(p);
+  const badge = productStatusColors(status.tone);
+  const isDimmed = status.tone === 'gray';
+  const price = effectiveUnitPrice(p);
+  const hasDiscount = price < p.price;
+
+  return (
+    // The whole card opens the product details; the edit/delete buttons inside handle their own taps.
+    <Pressable
+      onPress={() => router.push({ pathname: '/(admin)/products-detail', params: { id: p.id } })}
+      style={({ pressed }) => [styles.card, cellStyle, isDimmed && styles.cardDimmed, pressed && styles.cardPressed]}
+      // No `button` role: on web that renders a <button>, and the edit/delete buttons inside would be invalid nested buttons.
+      accessibilityLabel={t.list.viewDetails(p.name)}
+    >
+      <View style={styles.imageWrap}>
+        {p.imageUri ? (
+          <ProductTileImage key={p.imageUri} uri={p.imageUri} />
+        ) : (
+          <View style={styles.imagePlaceholder}>
+            <MaterialCommunityIcons name="image-outline" size={28} color={amraleColors.textSubtle} />
+          </View>
+        )}
+      </View>
+
+      <View style={styles.cardBody}>
+        <View style={styles.metaCol}>
+            <Text style={[styles.productName, isDimmed && styles.textDimmed]} numberOfLines={2}>
+              {p.name}
+            </Text>
+            <Text style={[styles.specs, isDimmed && styles.textDimmed]} numberOfLines={2}>
+              {productSpecsLabel(p)}
+            </Text>
+            <View style={[styles.badge, { backgroundColor: badge.bg }]}>
+              <Text style={[styles.badgeText, { color: badge.fg }]}>{status.label}</Text>
+            </View>
+        </View>
+
+        <View style={styles.bottomRow}>
+          <View style={styles.iconRow}>
+            <Pressable
+              onPress={() => router.push({ pathname: '/(admin)/products-edit', params: { id: p.id } })}
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t.list.editItem(p.name)}
+            >
+              <View style={[styles.iconCircle, styles.iconCircleEdit]}>
+                <MaterialCommunityIcons name="pencil-outline" size={18} color={amraleColors.blue} />
+              </View>
+            </Pressable>
+            <Pressable
+              onPress={() => onDelete(p)}
+              style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={t.list.deleteItem(p.name)}
+            >
+              <View style={[styles.iconCircle, styles.iconCircleDelete]}>
+                <MaterialCommunityIcons name="trash-can-outline" size={18} color={amraleColors.error} />
+              </View>
+            </Pressable>
+          </View>
+
+          <View style={styles.priceRow}>
+            {hasDiscount ? <Text style={styles.priceOriginal}>₹{p.price}</Text> : null}
+            <Text style={[styles.price, isDimmed && styles.priceDimmed]}>₹{price}</Text>
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
 }
 
 type ProductListSectionProps = {
@@ -63,54 +147,83 @@ type ProductListSectionProps = {
 };
 
 export function ProductListSection({ bottomInset = 0 }: ProductListSectionProps) {
+  const t = useStrings('products');
+  const tc = useStrings('common');
   const products = useProducts();
   const del = useDeleteProduct();
+  const grid = useAdminListGrid();
 
   const [query, setQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<string>(ALL_TYPES);
   const [sortBy, setSortBy] = useState<SortBy>('name_asc');
-  const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const all = products.data?.items ?? [];
+
+  /** [type, count] for the filter chips, alphabetical. */
+  const typeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of all) counts.set(productTypeOf(p), (counts.get(productTypeOf(p)) ?? 0) + 1);
+    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [all]);
+
+  const activeCount = useMemo(() => all.filter((p) => p.isActive).length, [all]);
+
+  // A type that no longer exists (e.g. its last product was deleted) falls back to "All".
+  const effectiveType = typeFilter === ALL_TYPES || typeCounts.some(([t]) => t === typeFilter) ? typeFilter : ALL_TYPES;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let items = all;
 
+    if (effectiveType !== ALL_TYPES) {
+      items = items.filter((p) => productTypeOf(p) === effectiveType);
+    }
     if (q) {
       items = items.filter((p) => `${p.name} ${p.category} ${p.productType}`.toLowerCase().includes(q));
     }
 
-    const priceValue = (p: ProductResponse) =>
-      p.discountPrice && p.discountPrice > 0 ? p.discountPrice : p.price;
-
     switch (sortBy) {
       case 'name_desc':
-        items = [...items].sort((a, b) => b.name.localeCompare(a.name));
-        break;
+        return [...items].sort((a, b) => b.name.localeCompare(a.name));
       case 'price_asc':
-        items = [...items].sort((a, b) => priceValue(a) - priceValue(b));
-        break;
+        return [...items].sort((a, b) => effectiveUnitPrice(a) - effectiveUnitPrice(b));
       case 'price_desc':
-        items = [...items].sort((a, b) => priceValue(b) - priceValue(a));
-        break;
+        return [...items].sort((a, b) => effectiveUnitPrice(b) - effectiveUnitPrice(a));
       case 'name_asc':
       default:
-        items = [...items].sort((a, b) => a.name.localeCompare(b.name));
+        return [...items].sort((a, b) => a.name.localeCompare(b.name));
     }
+  }, [all, query, sortBy, effectiveType]);
 
-    return items;
-  }, [all, query, sortBy]);
+  const isFiltering = query.trim() !== '' || effectiveType !== ALL_TYPES;
+  const summaryText = isFiltering
+    ? t.list.showing(filtered.length, all.length)
+    : t.list.summary(all.length, activeCount);
+
+  function clearFilters() {
+    setQuery('');
+    setTypeFilter(ALL_TYPES);
+  }
+
+  function requestDelete(p: ProductResponse) {
+    setDeleteError(null);
+    setDeleteTarget({ id: p.id, name: p.name });
+    setConfirmOpen(true);
+  }
 
   async function onConfirmDelete() {
     if (!deleteTarget) return;
+    setDeleteError(null);
     try {
       await del.mutateAsync({ id: deleteTarget.id });
       setConfirmOpen(false);
       setDeleteTarget(null);
-    } catch {
-      // keep dialog open
+    } catch (err) {
+      // keep dialog open and explain why (e.g. product still used by customer subscriptions)
+      setDeleteError(err instanceof Error && err.message ? err.message : t.list.deleteFailed);
     }
   }
 
@@ -122,137 +235,71 @@ export function ProductListSection({ bottomInset = 0 }: ProductListSectionProps)
     );
   }
 
+  if (products.isError && !all.length) {
+    return <AdminListErrorState title={t.list.loadFailed} onRetry={() => void products.refetch()} />;
+  }
+
+  const chipItems = [
+    { key: ALL_TYPES, label: tc.states.all, count: all.length },
+    ...typeCounts.map(([type, count]) => ({
+      key: type,
+      label: type === OTHER_TYPE ? t.list.otherType : productTypeName(type),
+      count,
+    })),
+  ];
+
   return (
     <View style={styles.wrap}>
-      <View style={styles.controls}>
-        <View style={styles.searchBox}>
-          <MaterialCommunityIcons name="magnify" size={20} color={amraleColors.textSubtle} />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search dairy products..."
-            placeholderTextColor={amraleColors.textSubtle}
-            style={styles.searchInput}
-            autoCorrect={false}
-            autoCapitalize="none"
-          />
-        </View>
-
-        <View style={styles.actionRow}>
-          <Menu
-            visible={sortMenuOpen}
-            onDismiss={() => setSortMenuOpen(false)}
-            anchor={
-              <Pressable
-                onPress={() => setSortMenuOpen(true)}
-                style={({ pressed }) => [styles.pillBtn, pressed && styles.pressed]}
-              >
-                <MaterialCommunityIcons name="sort-alphabetical-ascending" size={18} color={amraleColors.blue} />
-                <Text style={styles.pillBtnText}>{sortLabel(sortBy)}</Text>
-              </Pressable>
-            }
-          >
-            <Menu.Item title="A to Z" onPress={() => { setSortBy('name_asc'); setSortMenuOpen(false); }} />
-            <Menu.Item title="Z to A" onPress={() => { setSortBy('name_desc'); setSortMenuOpen(false); }} />
-            <Menu.Item title="Price (low to high)" onPress={() => { setSortBy('price_asc'); setSortMenuOpen(false); }} />
-            <Menu.Item title="Price (high to low)" onPress={() => { setSortBy('price_desc'); setSortMenuOpen(false); }} />
-          </Menu>
-
-          <Pressable
-            onPress={() => router.push('/(admin)/products-add')}
-            style={({ pressed }) => [styles.addBtn, pressed && styles.pressed]}
-          >
-            <MaterialCommunityIcons name="plus" size={18} color={amraleColors.white} />
-            <Text style={styles.addBtnText}>Add Product</Text>
-          </Pressable>
-        </View>
-      </View>
+      <AdminListControls
+        searchValue={query}
+        onSearchChange={setQuery}
+        searchPlaceholder={t.list.searchPlaceholder}
+        searchFieldName="product-search"
+        sortOptions={sortOptions()}
+        sortBy={sortBy}
+        onSortChange={setSortBy}
+        chips={chipItems}
+        activeChip={effectiveType}
+        onChipChange={setTypeFilter}
+        summaryText={summaryText}
+        addLabel={t.list.add}
+        onAdd={() => router.push('/(admin)/products-add')}
+        isMobile={grid.isMobile}
+        containerStyle={grid.containerStyle}
+      />
 
       <FlatList
         data={filtered}
+        key={grid.columns}
+        numColumns={grid.columns}
+        columnWrapperStyle={grid.columns > 1 ? styles.gridRow : undefined}
         keyExtractor={(p) => p.id}
-        contentContainerStyle={[styles.listContent, { paddingBottom: amraleSpacing.xl + bottomInset }]}
+        contentContainerStyle={[styles.listContent, grid.containerStyle, { paddingBottom: amraleSpacing.xl + bottomInset }]}
         style={styles.list}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyText}>No products match your search.</Text>
-          </View>
+          <AdminListEmptyState
+            icon={all.length ? 'filter-off-outline' : 'package-variant'}
+            title={all.length ? t.list.noMatchTitle : t.list.emptyTitle}
+            text={all.length ? t.list.noMatchText : t.list.emptyText}
+            actionLabel={all.length ? t.list.clearFilters : t.list.add}
+            onAction={all.length ? clearFilters : () => router.push('/(admin)/products-add')}
+          />
         }
-        renderItem={({ item: p }) => {
-          const status = statusForProduct(p);
-          const badge = badgeColors(status.tone);
-          const showPrice = p.discountPrice && p.discountPrice > 0 && p.discountPrice < p.price;
-          const isDimmed = status.label === 'INACTIVE';
-
-          return (
-            <View style={[styles.card, isDimmed && styles.cardDimmed]}>
-              <View style={styles.imageWrap}>
-                {p.imageUri ? (
-                  <Image source={{ uri: p.imageUri }} style={styles.productImage} resizeMode="cover" />
-                ) : (
-                  <View style={styles.imagePlaceholder}>
-                    <MaterialCommunityIcons name="image-outline" size={28} color={amraleColors.textSubtle} />
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.cardBody}>
-                <View style={styles.cardTop}>
-                  <View style={styles.metaCol}>
-                    <Text style={[styles.productName, isDimmed && styles.textDimmed]} numberOfLines={1}>
-                      {p.name}
-                    </Text>
-                    <Text style={[styles.specs, isDimmed && styles.textDimmed]} numberOfLines={1}>
-                      {specsLabelForProduct(p)}
-                    </Text>
-                    <View style={[styles.badge, { backgroundColor: badge.bg }]}>
-                      <Text style={[styles.badgeText, { color: badge.fg }]}>{status.label}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.sideCol}>
-                    <View style={styles.iconRow}>
-                      <Pressable
-                        onPress={() => router.push({ pathname: '/(admin)/products-edit', params: { id: p.id } })}
-                        style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-                        hitSlop={8}
-                        accessibilityLabel={`Edit ${p.name}`}
-                      >
-                        <MaterialCommunityIcons name="pencil-outline" size={20} color={amraleColors.textMuted} />
-                      </Pressable>
-                      <Pressable
-                        onPress={() => {
-                          setDeleteTarget({ id: p.id, name: p.name });
-                          setConfirmOpen(true);
-                        }}
-                        style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
-                        hitSlop={8}
-                        accessibilityLabel={`Delete ${p.name}`}
-                      >
-                        <MaterialCommunityIcons name="trash-can-outline" size={20} color={amraleColors.textMuted} />
-                      </Pressable>
-                    </View>
-                    <Text style={[styles.price, isDimmed && styles.priceDimmed]}>
-                      ₹{showPrice ? p.discountPrice : p.price}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-          );
-        }}
+        renderItem={({ item }) => <ProductCard product={item} cellStyle={grid.cellStyle} onDelete={requestDelete} />}
       />
 
       <DeleteProductConfirmDialog
         visible={confirmOpen && !!deleteTarget}
         productName={deleteTarget?.name ?? ''}
         loading={del.isPending}
+        errorMessage={deleteError}
         onDismiss={() => {
           if (del.isPending) return;
           setConfirmOpen(false);
           setDeleteTarget(null);
+          setDeleteError(null);
         }}
         onConfirm={onConfirmDelete}
       />
@@ -262,80 +309,17 @@ export function ProductListSection({ bottomInset = 0 }: ProductListSectionProps)
 
 const styles = StyleSheet.create({
   wrap: { flex: 1 },
-  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  controls: {
-    paddingHorizontal: amraleSpacing.md,
-    paddingBottom: amraleSpacing.sm,
-    gap: amraleSpacing.sm,
-  },
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: amraleColors.white,
-    borderRadius: amraleRadius.lg,
-    borderWidth: 1,
-    borderColor: amraleColors.inputBorderLight,
-    paddingHorizontal: 14,
-    minHeight: 48,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily: amraleTypography.fontFamily.regular,
-    fontSize: 15,
-    color: amraleColors.text,
-    paddingVertical: 10,
-  },
-  actionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  pillBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    minHeight: 44,
-    paddingHorizontal: 10,
-    borderRadius: amraleRadius.pill,
-    backgroundColor: amraleColors.white,
-    borderWidth: 1,
-    borderColor: amraleColors.inputBorderLight,
-  },
-  pillBtnText: {
-    fontFamily: amraleTypography.fontFamily.semiBold,
-    fontSize: 13,
-    color: amraleColors.text,
-  },
-  addBtn: {
-    flex: 1.35,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    minHeight: 44,
-    paddingHorizontal: 12,
-    borderRadius: amraleRadius.pill,
-    backgroundColor: amraleColors.blue,
-    shadowColor: amraleColors.blue,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.22,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  addBtnText: {
-    fontFamily: amraleTypography.fontFamily.bold,
-    fontSize: 13,
-    color: amraleColors.white,
-  },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, padding: amraleSpacing.lg },
+
+  // Breathing room below the header (the search bar used to sit right on its border).
+
   list: { flex: 1 },
   listContent: {
     paddingHorizontal: amraleSpacing.md,
     paddingBottom: amraleSpacing.xl,
-    gap: 12,
+    gap: ADMIN_LIST_GAP,
   },
+  gridRow: { gap: ADMIN_LIST_GAP },
   card: {
     flexDirection: 'row',
     backgroundColor: amraleColors.white,
@@ -351,6 +335,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardDimmed: { opacity: 0.72 },
+  cardPressed: { opacity: 0.92, transform: [{ scale: 0.995 }] },
   imageWrap: {
     width: 72,
     height: 72,
@@ -365,8 +350,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  cardBody: { flex: 1, minWidth: 0 },
-  cardTop: { flex: 1, flexDirection: 'row', gap: 8 },
+  cardBody: { flex: 1, minWidth: 0, justifyContent: 'space-between', gap: 6 },
+  bottomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   metaCol: { flex: 1, minWidth: 0, gap: 4 },
   productName: {
     fontFamily: amraleTypography.fontFamily.bold,
@@ -380,7 +365,7 @@ const styles = StyleSheet.create({
   },
   badge: {
     alignSelf: 'flex-start',
-    marginTop: 4,
+    marginTop: 2,
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: amraleRadius.pill,
@@ -390,31 +375,26 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 0.5,
   },
-  sideCol: {
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    minHeight: 72,
-    paddingTop: 2,
-  },
-  iconRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  iconBtn: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  // 44px tap targets around 34px tinted circles; the negative margin keeps the visible circles flush with the card padding.
+  iconRow: { flexDirection: 'row', marginLeft: -5, marginBottom: -5 },
+  iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  iconCircle: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  iconCircleEdit: { backgroundColor: 'rgba(53, 81, 161, 0.08)' },
+  iconCircleDelete: { backgroundColor: 'rgba(225, 29, 72, 0.08)' },
+  priceRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'flex-end', gap: 6 },
   price: {
     fontFamily: amraleTypography.fontFamily.bold,
     fontSize: 20,
     color: amraleColors.blue,
   },
+  priceOriginal: {
+    fontFamily: amraleTypography.fontFamily.medium,
+    fontSize: 13,
+    color: amraleColors.textSubtle,
+    textDecorationLine: 'line-through',
+  },
   priceDimmed: { color: amraleColors.textMuted },
   textDimmed: { color: amraleColors.textSubtle },
   pressed: { opacity: 0.88 },
-  empty: { paddingVertical: 40, alignItems: 'center' },
-  emptyText: {
-    fontFamily: amraleTypography.fontFamily.medium,
-    fontSize: 14,
-    color: amraleColors.textMuted,
-  },
+
 });

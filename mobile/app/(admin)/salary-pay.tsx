@@ -4,7 +4,9 @@ import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, useColorScheme, View } from 'react-native';
 import { Button, Card, Text } from 'react-native-paper';
 
+import { ResponsiveContainer } from '@/src/components/shared/ResponsiveContainer';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
+import { useStrings } from '@/src/i18n/useStrings';
 
 const COLORS = {
   primary: '#2563EB',
@@ -23,6 +25,8 @@ function buildGatewayUrl(base: string, params: Record<string, string>) {
 }
 
 export default function AdminSalaryPay() {
+  const t = useStrings('billing').salary;
+  const tCommon = useStrings('common');
   const scheme = useColorScheme();
   const { headerPaddingTop } = useScreenSafeInsets();
   const params = useLocalSearchParams<{ deliveryBoyId?: string; amount?: string; month?: string }>();
@@ -61,21 +65,30 @@ export default function AdminSalaryPay() {
   return (
     <View style={[styles.bg, scheme === 'dark' ? styles.bgDark : styles.bgLight]}>
       <View style={[styles.appBar, { paddingTop: headerPaddingTop }]}>
-        <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}>
-          <Text style={[styles.backText, textMain]}>Back</Text>
-        </Pressable>
-        <Text variant="titleMedium" style={[styles.title, textMain]} numberOfLines={1}>
-          Salary Payment
-        </Text>
+        {/* Same 560px column as the card so Back + title line up with it on tablets/desktops. */}
+        <ResponsiveContainer variant="sheet" style={styles.appBarRow}>
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={tCommon.actions.back}
+          >
+            <Text style={[styles.backText, textMain]}>{tCommon.actions.back}</Text>
+          </Pressable>
+          <Text variant="titleMedium" style={[styles.title, textMain]} numberOfLines={1}>
+            {t.title}
+          </Text>
+        </ResponsiveContainer>
       </View>
 
       <View style={styles.container}>
+        <ResponsiveContainer variant="sheet">
         <Card style={[styles.sectionCard, card]} mode="elevated">
           <Card.Content style={{ gap: 10 }}>
             <View style={styles.row}>
               <View style={[styles.kv, styles.kvLeft]}>
                 <Text variant="bodySmall" style={textSub}>
-                  Salary Month
+                  {t.month}
                 </Text>
                 <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
                   {month || '—'}
@@ -83,7 +96,7 @@ export default function AdminSalaryPay() {
               </View>
               <View style={[styles.kv, styles.kvRight]}>
                 <Text variant="bodySmall" style={textSub}>
-                  Amount
+                  {tCommon.fields.amount}
                 </Text>
                 <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
                   ₹{Math.round(amount)}
@@ -94,20 +107,20 @@ export default function AdminSalaryPay() {
             {!gatewayBaseUrl ? (
               <View style={[styles.helperBox, styles.helperBoxRed]}>
                 <Text variant="bodySmall" style={[styles.helperText, { color: 'white' }]}>
-                  Payment gateway is not configured. Set `EXPO_PUBLIC_PAYMENT_GATEWAY_URL` in your `.env`.
+                  {t.notConfigured}
                 </Text>
               </View>
             ) : (
               <View style={[styles.helperBox, styles.helperBoxBlue]}>
                 <Text variant="bodySmall" style={[styles.helperText, { color: 'white' }]}>
-                  You’ll be redirected to the payment gateway to complete the salary payment.
+                  {t.redirect}
                 </Text>
               </View>
             )}
 
             <View style={styles.actions}>
               <Button mode="outlined" onPress={() => router.back()} disabled={opening}>
-                Cancel
+                {tCommon.actions.cancel}
               </Button>
               <Button
                 mode="contained"
@@ -116,11 +129,12 @@ export default function AdminSalaryPay() {
                 disabled={!gatewayUrl || opening}
                 loading={opening}
               >
-                Pay Now
+                {t.payNow}
               </Button>
             </View>
           </Card.Content>
         </Card>
+        </ResponsiveContainer>
       </View>
     </View>
   );
@@ -135,11 +149,13 @@ const styles = StyleSheet.create({
   appBar: {
     paddingHorizontal: 16,
     paddingBottom: 12,
+  },
+  appBarRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  iconBtn: { height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  iconBtn: { minHeight: 44, minWidth: 44, paddingHorizontal: 8, marginLeft: -8, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
   backText: { fontWeight: '900' },
   title: { flex: 1, minWidth: 0, fontWeight: '900', textAlign: 'left' },
   pressed: { opacity: 0.78, transform: [{ scale: 0.99 }] },
@@ -164,6 +180,6 @@ const styles = StyleSheet.create({
   helperBoxRed: { backgroundColor: 'rgba(220,38,38,0.88)' },
   helperText: { fontWeight: '800' },
 
-  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 4 },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 10, marginTop: 4 },
 });
 

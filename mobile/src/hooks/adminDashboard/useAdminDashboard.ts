@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { UpdateDashboardCoverRequest } from '@/src/domain/adminDashboard/dtos';
+import type { UpdateDashboardCoverRequest, UpdatePaymentSettingsRequest } from '@/src/domain/adminDashboard/dtos';
 import { services } from '@/src/infrastructure/service-registry';
 
 export function useDashboardSettings() {
@@ -15,6 +15,16 @@ export function useUpdateDashboardCover() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: UpdateDashboardCoverRequest) => services.adminDashboard.updateCover(data),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['adminDashboard', 'settings'] });
+    },
+  });
+}
+
+export function useUpdatePaymentSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: UpdatePaymentSettingsRequest) => services.adminDashboard.updatePaymentSettings(data),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ['adminDashboard', 'settings'] });
     },

@@ -1,15 +1,16 @@
 import { z } from 'zod';
 
 import { normalizeIndicDigitsToAscii } from '@/src/domain/shared/numerals';
+import { strings } from '@/src/i18n/strings';
 
 const mobileSchema = z
   .string()
   .transform((v) => normalizeIndicDigitsToAscii(v).replace(/\D/g, '').slice(-10))
-  .refine((v) => v.length === 10, 'Enter a valid 10-digit mobile number');
+  .refine((v) => v.length === 10, { error: () => strings('profile').errors.invalidMobile });
 
 export const UpdateProfileRequestSchema = z.object({
-  displayName: z.string().trim().min(2, 'Name is required'),
-  email: z.string().trim().email('Invalid email').optional().or(z.literal('')),
+  displayName: z.string().trim().min(2, { error: () => strings('profile').errors.nameRequired }),
+  email: z.string().trim().email({ error: () => strings('profile').errors.invalidEmail }).optional().or(z.literal('')),
   address: z.string().trim().optional(),
   societyName: z.string().trim().optional(),
   houseFlatNumber: z.string().trim().optional(),
@@ -22,7 +23,7 @@ export const VerifyProfileOtpRequestSchema = z.object({
   otp: z
     .string()
     .transform((v) => normalizeIndicDigitsToAscii(v).replace(/\D/g, ''))
-    .refine((v) => v.length === 6, 'Enter the 6-digit OTP'),
+    .refine((v) => v.length === 6, { error: () => strings('profile').errors.enterOtp }),
 });
 
 export const UpdateProfileWithOtpRequestSchema = UpdateProfileRequestSchema.and(VerifyProfileOtpRequestSchema);
@@ -36,9 +37,13 @@ export const VerifyNewMobileRequestSchema = z.object({
   otp: z
     .string()
     .transform((v) => normalizeIndicDigitsToAscii(v).replace(/\D/g, ''))
-    .refine((v) => v.length === 6, 'Enter the 6-digit OTP'),
+    .refine((v) => v.length === 6, { error: () => strings('profile').errors.enterOtp }),
 });
 
 export const UpdateProfileAvatarRequestSchema = z.object({
-  avatarUri: z.string().trim().min(1, 'Select a photo').max(4_000_000, 'Image is too large'),
+  avatarUri: z
+    .string()
+    .trim()
+    .min(1, { error: () => strings('profile').errors.selectPhoto })
+    .max(4_000_000, { error: () => strings('profile').errors.imageTooLarge }),
 });

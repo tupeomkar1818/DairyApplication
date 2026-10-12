@@ -21,6 +21,14 @@ async function sessionSetItem(key: string, value: string): Promise<void> {
   await SecureStore.setItemAsync(key, value);
 }
 
+async function sessionDeleteItem(key: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    await AsyncStorage.removeItem(`${SESSION_STORE_PREFIX}${key}`);
+    return;
+  }
+  await SecureStore.deleteItemAsync(key);
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -58,4 +66,30 @@ export async function updateAuthSessionMobile(newMobileNumber: string): Promise<
     updatedAt: nowIso(),
   };
   await sessionSetItem(sessionId, JSON.stringify(updated));
+}
+
+/** The token the phone signed in with (the session's id), or null when nobody is signed in. */
+export async function readStoredSessionToken(): Promise<string | null> {
+  return sessionGetItem(SESSION_ID_STORAGE_KEY);
+}
+
+/** Keeps a session the server started, in the same place the on-phone sign-in keeps its own. */
+export async function saveAuthSession(session: AuthSessionResponse): Promise<void> {
+  const stored: AuthSession = {
+    id: session.sessionId,
+    userId: session.userId,
+    mobileNumber: session.mobileNumber,
+    role: session.role,
+    createdAt: session.createdAt,
+    updatedAt: nowIso(),
+  };
+  await sessionSetItem(session.sessionId, JSON.stringify(stored));
+  await sessionSetItem(SESSION_ID_STORAGE_KEY, session.sessionId);
+}
+
+/** Forgets the session on this phone: signing out, or a server that no longer accepts it. */
+export async function clearStoredSession(): Promise<void> {
+  const sessionId = await sessionGetItem(SESSION_ID_STORAGE_KEY);
+  if (sessionId) await sessionDeleteItem(sessionId);
+  await sessionDeleteItem(SESSION_ID_STORAGE_KEY);
 }

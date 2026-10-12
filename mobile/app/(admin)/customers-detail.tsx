@@ -1,37 +1,55 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useNavigation } from '@react-navigation/native';
-import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, startTransition } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Button, Card, Dialog, Portal, Text, TextInput } from 'react-native-paper';
 
 import { CustomerDetailOverview } from '@/src/components/admin/CustomerDetailOverview';
-import { CustomerDetailProfileCard } from '@/src/components/admin/CustomerDetailProfileCard';
+import type { CustomerFormTab } from '@/src/components/admin/customerFormShared';
+import { AdminListEmptyState } from '@/src/components/shared/adminListUi';
+import { DetailProfileCard } from '@/src/components/shared/DetailProfileCard';
+import { DetailStatusPill } from '@/src/components/shared/detailUi';
+import { PeriodStepper } from '@/src/components/shared/PeriodStepper';
 import { CustomerSubscriptionTab } from '@/src/components/admin/CustomerSubscriptionTab';
 import { AppSnackbar } from '@/src/components/shared/AppSnackbar';
+import { DeferredTextInput, type DeferredTextInputHandle } from '@/src/components/DeferredTextInput';
 import { DairyTactileScreenBackground } from '@/src/components/shared/DairyTactileScreenBackground';
+import { useResponsiveContainerMaxWidth } from '@/src/components/shared/ResponsiveContainer';
 import {
   buildCalendarCells,
   type DeliveryDayTone,
   type DeliveryToneSurfaces,
-  SubscriptionMonthCalendarGrid,
+  MemoizedSubscriptionMonthCalendarGrid as SubscriptionMonthCalendarGrid,
 } from '@/src/components/admin/SubscriptionMonthCalendarGrid';
 import {
+  addDaysYmd,
+  BILL_DUE_GRACE_DAYS,
+  billDateYmdForMonth,
+  buildBillingTimeline,
+  summarizeBilling,
+} from '@/src/components/admin/billingTimeline';
+import {
   buildSubscriptionMonthOptions,
-  computeSubscriptionBillingTotalForMonth,
   monthLabel,
   planLineTotal,
   shiftMonth,
   subscriptionPlanActiveOnDateYmd,
   subscriptionPlanWinsDeliveryAttributionAtYmd,
 } from '@/src/components/admin/customerSubscriptionMonthUtils';
+import { CustomerDayChangesCard } from '@/src/components/admin/CustomerDayChangesCard';
+import { buildDayStatusDeliveries, NothingPlannedError } from '@/src/components/delivery/markDayStatus';
 import { useCustomer } from '@/src/hooks/customers';
-import { useCustomerDailyProductOrders } from '@/src/hooks/customers/useCustomerDailyProductOrders';
+import { buildTodayEntries } from '@/src/components/admin/dashboardMetrics';
+import { addOnItemCount, addOnLabel, addOnLineTotal, addOnsForDate, deliveredAddOnsForMonth } from '@/src/domain/customers/addOns';
+import { plannedLinesOn, usualQuantity } from '@/src/domain/customers/daySchedule';
+import { notifyDeliveryMarked, notifyPaymentRecorded } from '@/src/domain/notifications/events';
+import { PaymentRequestReview } from '@/src/components/admin/PaymentRequestReview';
 import { useUpdateCustomer } from '@/src/hooks/customers/useCustomers';
 import { useDeliveryBoys } from '@/src/hooks/deliveryBoys';
-import { useProducts } from '@/src/hooks/products/useProducts';
 import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
+import { strings } from '@/src/i18n/strings';
+import { useLanguage, useStrings } from '@/src/i18n/useStrings';
 import {
   amraleRadius,
   amraleSpacing,
@@ -41,6 +59,11 @@ import {
   primaryButtonElevation,
 } from '@/src/theme/dairyTactile';
 import { formFieldAttrs, platformShadow } from '@/src/theme/platformStyles';
+import { formatDateTime, formatDay } from '@/src/utils/format';
+import { useResponsiveDialogStyle } from '@/src/utils/responsiveLayout';
+import { storedText } from '@/src/i18n/storedText';
+import { useOffers } from '@/src/hooks/offers/useOffers';
+import { offerDiscountsForMonth, offerText, orderSavings } from '@/src/domain/offers/offers';
 
 const COLORS = {
   primary: '#2563EB',
@@ -50,33 +73,52 @@ const COLORS = {
   text: '#1E293B',
 };
 
-/** Delivery tab — calendar colors + rgba/hex reference for admins (see legend under the grid). */
+/**
+ * Customer screens use the light-only DairyTactile surfaces (cards, tables, dialogs). Pin the scheme so text colors
+ * never switch to dark-mode values on those light surfaces (unreadable in system dark mode).
+ */
+const CUSTOMER_SCREEN_SCHEME = 'light' as 'light' | 'dark';
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error && e.message ? e.message : strings('customers').detail.tryAgain;
+}
+
+/** Local calendar day (a `toISOString()` slice is the UTC day — wrong for part of every IST day). */
+function todayYmdLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** YYYY-MM-DD as a local date; `new Date('YYYY-MM-DD')` is UTC midnight (previous day west of UTC). */
+function parseYmdLocal(ymd: string): Date | null {
+  const m = String(ymd ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const ADMIN_PAYMENT_MODES = ['Cash', 'UPI', 'Bank', 'Other'] as const;
+type AdminPaymentMode = typeof ADMIN_PAYMENT_MODES[number];
+
+/** Delivery tab — calendar colors + rgba/hex reference (the legend wording is in the `customers` dictionary). */
 const ADMIN_DELIVERY_CALENDAR = {
   tones: {
     empty: {
-      title: 'Yellow — no product order',
-      meaning: 'No subscription line and no add-on on this date (day total ₹0).',
       codes: 'Fill rgba(234, 179, 8, 0.22) · Border rgba(202, 138, 4, 0.50) · Hue #EAB308',
       light: { backgroundColor: 'rgba(234, 179, 8, 0.22)', borderColor: 'rgba(202, 138, 4, 0.50)' },
       dark: { backgroundColor: 'rgba(234, 179, 8, 0.18)', borderColor: 'rgba(250, 204, 21, 0.45)' },
     },
     pending: {
-      title: 'Grey — not marked',
-      meaning: 'Orders exist; delivery not marked yet.',
       codes: 'Light fill #F8FAFC · Dark fill rgba(15, 23, 42, 0.55) · Border slate rgba(100, 116, 139, 0.42)',
       light: { backgroundColor: 'rgba(248, 250, 252, 0.95)', borderColor: 'rgba(100, 116, 139, 0.42)' },
       dark: { backgroundColor: 'rgba(15, 23, 42, 0.55)', borderColor: 'rgba(148, 163, 184, 0.38)' },
     },
     delivered: {
-      title: 'Green — delivered',
-      meaning: 'Marked Delivered for that day’s lines.',
       codes: 'Fill rgba(34, 197, 94, 0.22) · Border rgba(22, 163, 74, 0.55) · Hue #22C55E',
       light: { backgroundColor: 'rgba(34, 197, 94, 0.22)', borderColor: 'rgba(22, 163, 74, 0.55)' },
       dark: { backgroundColor: 'rgba(34, 197, 94, 0.24)', borderColor: 'rgba(74, 222, 128, 0.42)' },
     },
     missed: {
-      title: 'Red — not delivered',
-      meaning: 'Marked Not delivered for that day’s lines.',
       codes: 'Fill rgba(239, 68, 68, 0.18) · Border rgba(220, 38, 38, 0.50) · Hue #EF4444',
       light: { backgroundColor: 'rgba(239, 68, 68, 0.18)', borderColor: 'rgba(220, 38, 38, 0.50)' },
       dark: { backgroundColor: 'rgba(239, 68, 68, 0.22)', borderColor: 'rgba(252, 165, 165, 0.40)' },
@@ -107,18 +149,24 @@ type TabKey =
   | 'complaints'
   ;
 
+/** Day-month-year, e.g. "21 Aug 2026", in the app language. Used everywhere on this screen so dates never switch format. */
+function formatDayMonthYear(d: Date): string {
+  const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return formatDay(ymd, { year: true });
+}
+
 function fmtDate(iso: string | undefined): string {
   if (!iso) return '—';
-  const d = new Date(iso);
+  // Date-only strings are calendar dates: read them locally so they never shift a day west of UTC.
+  const ymd = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const d = ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString();
+  return formatDayMonthYear(d);
 }
 
 function fmtDateTime(iso: string | undefined): string {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString();
+  return formatDateTime(iso) || '—';
 }
 
 function formatIso(iso: string | undefined): string {
@@ -129,10 +177,6 @@ function money(v: number | undefined): string {
   const n = Number(v);
   if (!Number.isFinite(n)) return '—';
   return `₹${Math.round(n)}`;
-}
-
-function newDeliveryId(): string {
-  return `del_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
 
 function newPaymentId(): string {
@@ -163,21 +207,37 @@ function lastDayYmdForMonth(yyyyMm: string): string {
   return `${yyyyMm}-${String(dim).padStart(2, '0')}`;
 }
 
-function addDaysYmd(ymd: string, days: number): string {
-  const d = new Date(ymd);
-  if (Number.isNaN(d.getTime())) return ymd;
-  d.setDate(d.getDate() + days);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
 
 function fmtYmd(ymd: string): string {
-  const d = new Date(ymd);
-  if (Number.isNaN(d.getTime())) return ymd;
-  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+  const d = parseYmdLocal(ymd);
+  if (!d) return ymd;
+  return formatDayMonthYear(d);
 }
+
+/** A stored status/mode shown in the app language; values the dictionary does not know are shown as stored. */
+function labelOf(labels: Record<string, string>, key: string): string {
+  return labels[key] ?? key;
+}
+
+/** Payment status → pill colour. */
+function paymentTone(status: string): 'green' | 'amber' | 'red' | 'gray' {
+  const t = status.trim().toLowerCase();
+  if (t === 'paid') return 'green';
+  if (t === 'partial' || t === 'pending') return 'amber';
+  if (t === 'unpaid' || t === 'failed') return 'red';
+  return 'gray';
+}
+
+/** Complaint status → pill colour: open work is amber, resolved is green, anything else neutral. */
+function complaintTone(status: string): 'green' | 'amber' | 'gray' {
+  const s = status.trim().toLowerCase();
+  if (s === 'resolved' || s === 'closed') return 'green';
+  if (s === 'open' || s === 'in progress' || s === 'pending') return 'amber';
+  return 'gray';
+}
+
+/** Tabs whose content is scoped to one month; they share the stepper under the tab strip. */
+const MONTH_SCOPED_TABS: TabKey[] = ['subscription', 'billing', 'paymentHistory', 'deliveryHistory'];
 
 function formatCustomerDisplayId(id: string): string {
   const compact = id.replace(/^cust_/, '').replace(/_/g, '').toUpperCase();
@@ -193,12 +253,13 @@ function customerInitials(name: string): string {
 }
 
 function memberBadgeLabel(c: { subscriptionStatus?: string; billingType?: string; status?: string } | null | undefined): string {
+  const t = strings('customers');
   const billing = String(c?.billingType ?? '').trim();
-  if (billing === 'Prepaid') return 'Premium Member';
+  if (billing === 'Prepaid') return t.detail.member.premium;
   const sub = String(c?.subscriptionStatus ?? '').trim();
-  if (sub === 'Active') return 'Active Member';
-  if (sub) return sub;
-  return String(c?.status ?? 'Member');
+  if (sub === 'Active') return t.detail.member.active;
+  if (sub) return labelOf(t.subscriptionStatus, sub);
+  return c?.status ? labelOf(t.customerStatus, c.status) : t.detail.member.member;
 }
 
 function formatMobileDisplay(mobile: string): string {
@@ -212,18 +273,20 @@ function overviewAddressTags(c: {
   specialDeliveryInstructions?: string;
 } | null | undefined): string[] {
   if (!c) return [];
+  const labels = strings('customers').detail.tags;
   const tags: string[] = [];
-  if (c.societyName?.trim()) tags.push('RESIDENTIAL');
-  if (c.specialDeliveryInstructions?.trim()) tags.push('GATE ACCESS REQUIRED');
+  if (c.societyName?.trim()) tags.push(labels.residential);
+  if (c.specialDeliveryInstructions?.trim()) tags.push(labels.gateAccess);
   return tags;
 }
 
 function billingTypeDisplay(c: { billingType?: string; paymentType?: string } | null | undefined): string {
+  const t = strings('customers');
   const billing = String(c?.billingType ?? '').trim();
-  if (billing === 'Prepaid') return 'Prepaid Wallet';
-  if (billing) return billing;
+  if (billing === 'Prepaid') return t.detail.prepaidWallet;
+  if (billing) return labelOf(t.billingTypes, billing);
   const pay = String(c?.paymentType ?? '').trim();
-  return pay || '—';
+  return pay ? labelOf(t.paymentModes, pay) : '—';
 }
 
 function badgeTone(status: string): { bg: string; fg: string; border: string } {
@@ -248,7 +311,7 @@ function badgeTone(status: string): { bg: string; fg: string; border: string } {
   }
 }
 
-function TabPill({
+const TabPill = memo(function TabPill({
   label,
   active,
   onPress,
@@ -284,30 +347,45 @@ function TabPill({
       </Text>
     </Pressable>
   );
-}
+});
 
-function TableScroll({ children }: { children: React.ReactNode }) {
+/** True inside a `TableScroll fit`: rows use fluid columns that share the card width instead of fixed widths. */
+const TableFitContext = createContext(false);
+
+/**
+ * Phones/tablets: horizontal scroller (indicator visible so the extra columns are discoverable).
+ * Laptops/desktops (`fit`): no scroller — columns shrink/grow to the card width.
+ */
+function TableScroll({ children, fit }: { children: React.ReactNode; fit?: boolean }) {
+  if (fit) {
+    return (
+      <TableFitContext.Provider value>
+        <View style={styles.tableFitWrap}>{children}</View>
+      </TableFitContext.Provider>
+    );
+  }
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tableScroll}>
+    <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.tableScroll}>
       {children}
     </ScrollView>
   );
 }
 
-function TableRow({
+const TableRow = memo(function TableRow({
   cells,
   header,
 }: {
   cells: Array<{ text: string; grow?: boolean; lines?: number; tone?: { bg: string; fg: string; border: string } }>;
   header?: boolean;
 }) {
+  const fit = useContext(TableFitContext);
   return (
-    <View style={[styles.tableRow, header ? styles.tableHeader : null]}>
+    <View style={[styles.tableRow, fit && styles.tableRowFit, header ? styles.tableHeader : null]}>
       {cells.map((c, idx) => (
-        <View key={idx} style={[styles.cell, c.grow && styles.cellGrow]}>
+        <View key={idx} style={fit ? [styles.cellFit, c.grow && styles.cellGrowFit] : [styles.cell, c.grow && styles.cellGrow]}>
           {c.tone ? (
             <View style={[styles.chip, { backgroundColor: c.tone.bg, borderColor: c.tone.border }]}>
-              <Text variant="labelSmall" style={{ color: c.tone.fg, fontWeight: '800' }}>
+              <Text variant="labelSmall" style={{ color: c.tone.fg, fontWeight: '800' }} numberOfLines={1}>
                 {c.text}
               </Text>
             </View>
@@ -315,7 +393,7 @@ function TableRow({
             <Text
               variant={header ? 'labelSmall' : 'bodySmall'}
               style={header ? styles.tableHeaderText : styles.tableBodyText}
-              numberOfLines={c.lines ?? (header ? 2 : 1)}
+              numberOfLines={header && fit ? Math.max(3, c.lines ?? 2) : c.lines ?? (header ? 2 : 1)}
             >
               {c.text}
             </Text>
@@ -324,9 +402,9 @@ function TableRow({
       ))}
     </View>
   );
-}
+});
 
-function DeferredTabPlaceholder({
+const DeferredTabPlaceholder = memo(function DeferredTabPlaceholder({
   label,
   sectionCard,
   textMain,
@@ -337,6 +415,7 @@ function DeferredTabPlaceholder({
   textMain: object;
   textSub: object;
 }) {
+  const t = useStrings('customers').detail;
   return (
     <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
       <Card.Content style={styles.sectionContent}>
@@ -344,34 +423,35 @@ function DeferredTabPlaceholder({
           {label}
         </Text>
         <Text variant="bodySmall" style={textSub}>
-          Loading…
+          {t.loading}
         </Text>
       </Card.Content>
     </Card>
   );
-}
+});
 
 export default function AdminCustomerDetailDashboard() {
-  const scheme = useColorScheme();
+  const scheme = CUSTOMER_SCREEN_SCHEME;
   const navigation = useNavigation();
   const { headerPaddingTop, scrollPaddingBottom } = useScreenSafeInsets();
   const { width, height } = useWindowDimensions();
   const params = useLocalSearchParams<{ id?: string }>();
   const id = params.id ?? '';
+  const text = useStrings('customers');
+  const t = text.detail;
+  const lang = useLanguage();
+  const offers = useOffers();
+  const offerWords = useStrings('offers');
   const customer = useCustomer(id);
   const updateCustomer = useUpdateCustomer();
-  const products = useProducts();
   const deliveryBoys = useDeliveryBoys();
   const [tab, setTab] = useState<TabKey>('overview');
-  const deferredTab = useDeferredValue(tab);
-  const [readyTab, setReadyTab] = useState<TabKey>('overview');
-  const dailyOrders = useCustomerDailyProductOrders(id);
 
   const c = customer.data;
 
-  const sectionCard = scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight;
-  const textMain = scheme === 'dark' ? styles.textOnDark : styles.textOnLight;
-  const textSub = scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight;
+  const sectionCard = useMemo(() => scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight, [scheme]);
+  const textMain = useMemo(() => scheme === 'dark' ? styles.textOnDark : styles.textOnLight, [scheme]);
+  const textSub = useMemo(() => scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight, [scheme]);
 
   const summary = useMemo(() => {
     const deliveryBoyId = (c as any)?.assignedDeliveryBoyId as string | undefined;
@@ -386,13 +466,13 @@ export default function AdminCustomerDetailDashboard() {
       pending: money(c?.pendingAmount ?? 0),
       nextDueDate: fmtDate(c?.nextDueDate),
       lastPayment: fmtDate(c?.lastPaymentDate),
-      assignedDeliveryBoy: deliveryBoy?.fullName ?? c?.assignedDeliveryBoyName ?? '—',
+      assignedDeliveryBoy: deliveryBoy?.fullName ?? (c?.assignedDeliveryBoyName ? storedText(c.assignedDeliveryBoyName) : '—'),
       routeName: deliveryBoy?.primaryRouteName ?? c?.routeName ?? '—',
       paymentType: (c as any)?.paymentType ?? '—',
       startDate: c?.subscriptionStartDate ? formatIso(c.subscriptionStartDate) : '—',
       endDate: c?.subscriptionEndDate ? formatIso(c.subscriptionEndDate) : '—',
     };
-  }, [c, deliveryBoys.data?.items]);
+  }, [c, deliveryBoys.data?.items, lang]);
 
   const monthKey = useMemo(() => {
     const d = new Date();
@@ -403,7 +483,13 @@ export default function AdminCustomerDetailDashboard() {
     () => buildSubscriptionMonthOptions(c?.subscriptionStartDate, monthKey),
     [c?.subscriptionStartDate, monthKey],
   );
-  const [deliveryMonth, setDeliveryMonth] = useState<string>(monthKey);
+  /**
+   * A single month drives every month-scoped tab, so switching it on one tab carries over to the others. The old
+   * per-tab states are kept as aliases below so the rest of this screen reads the same.
+   */
+  const [selectedMonth, setSelectedMonth] = useState<string>(monthKey);
+  const deliveryMonth = selectedMonth;
+  const setDeliveryMonth = setSelectedMonth;
   const isDeliveryNextDisabled = useMemo(() => deliveryMonth >= monthKey, [deliveryMonth, monthKey]);
   const isDeliveryPrevDisabled = useMemo(
     () => deliveryMonthOptions.length > 0 && deliveryMonth <= deliveryMonthOptions[deliveryMonthOptions.length - 1]!,
@@ -412,7 +498,8 @@ export default function AdminCustomerDetailDashboard() {
   const [deliverySelectedDayYmd, setDeliverySelectedDayYmd] = useState<string | null>(null);
 
   const billingMonthOptions = useMemo(() => buildSubscriptionMonthOptions(c?.subscriptionStartDate, monthKey), [c?.subscriptionStartDate, monthKey]);
-  const [billingMonth, setBillingMonth] = useState<string>(monthKey);
+  const billingMonth = selectedMonth;
+  const setBillingMonth = setSelectedMonth;
   const isBillingNextDisabled = useMemo(() => billingMonth >= monthKey, [billingMonth, monthKey]);
   const isBillingPrevDisabled = useMemo(
     () => billingMonthOptions.length > 0 && billingMonth <= billingMonthOptions[billingMonthOptions.length - 1]!,
@@ -420,21 +507,21 @@ export default function AdminCustomerDetailDashboard() {
   );
 
   const paymentMonthOptions = billingMonthOptions;
-  const [paymentMonth, setPaymentMonth] = useState<string>(monthKey);
+  const paymentMonth = selectedMonth;
+  const setPaymentMonth = setSelectedMonth;
   const isPaymentNextDisabled = useMemo(() => paymentMonth >= monthKey, [paymentMonth, monthKey]);
   const isPaymentPrevDisabled = useMemo(
     () => paymentMonthOptions.length > 0 && paymentMonth <= paymentMonthOptions[paymentMonthOptions.length - 1]!,
     [paymentMonth, paymentMonthOptions],
   );
 
-  const adminPaymentModeOptions = useMemo(() => ['Cash', 'UPI', 'Bank', 'Other'] as const, []);
   const customerDefaultPaymentMode = useMemo(() => {
     const pref = String((c as any)?.preferredPaymentMode ?? '').trim();
-    if (adminPaymentModeOptions.includes(pref as any)) return pref as (typeof adminPaymentModeOptions)[number];
+    if ((ADMIN_PAYMENT_MODES as readonly string[]).includes(pref)) return pref as AdminPaymentMode;
     // Customer side should not use Cash; default to UPI when unknown.
-    return 'UPI' as (typeof adminPaymentModeOptions)[number];
-  }, [adminPaymentModeOptions, c]);
-  const [selectedPaymentMode, setSelectedPaymentMode] = useState<(typeof adminPaymentModeOptions)[number]>('UPI');
+    return 'UPI' as AdminPaymentMode;
+  }, [c]);
+  const [selectedPaymentMode, setSelectedPaymentMode] = useState<AdminPaymentMode>('UPI');
   const [paymentModeDialogOpen, setPaymentModeDialogOpen] = useState(false);
   const [paymentModeDialogContext, setPaymentModeDialogContext] = useState<null | { month: string; pendingAmount: number }>(null);
   const [paymentDialogPayKind, setPaymentDialogPayKind] = useState<'full' | 'partial'>('full');
@@ -444,136 +531,66 @@ export default function AdminCustomerDetailDashboard() {
   const showToast = useCallback((message: string) => {
     setToast({ visible: true, message });
   }, []);
+  // Stable so AppSnackbar's auto-dismiss timer is not restarted by every render of this screen.
+  const dismissToast = useCallback(() => {
+    setToast((t) => ({ ...t, visible: false }));
+  }, []);
 
   const [complaintActionDialogOpen, setComplaintActionDialogOpen] = useState(false);
   const [complaintActionTargetId, setComplaintActionTargetId] = useState<string | null>(null);
   const [complaintActionStatus, setComplaintActionStatus] = useState<'Open' | 'In Progress' | 'Resolved' | 'Closed'>('Open');
   const [complaintActionNote, setComplaintActionNote] = useState('');
+  // Debounced dialog inputs: save handlers flush these (a button tap does not blur the input on native).
+  const complaintNoteInputRef = useRef<DeferredTextInputHandle>(null);
+  const partialAmountInputRef = useRef<DeferredTextInputHandle>(null);
 
   const setActiveTab = useCallback((nextTab: TabKey) => {
-    startTransition(() => {
-      setTab((currentTab) => (currentTab === nextTab ? currentTab : nextTab));
-    });
+    setTab((currentTab) => (currentTab === nextTab ? currentTab : nextTab));
+    // Leaving the delivery tab clears its day selection (done here, not during render — R8).
+    if (nextTab !== 'deliveryHistory') setDeliverySelectedDayYmd(null);
   }, []);
+
+  // Stable per-tab callbacks so TabPill memo() is effective
+  const onPressOverview = useCallback(() => setActiveTab('overview'), [setActiveTab]);
+  const onPressSubscription = useCallback(() => setActiveTab('subscription'), [setActiveTab]);
+  const onPressBilling = useCallback(() => setActiveTab('billing'), [setActiveTab]);
+  const onPressPayments = useCallback(() => setActiveTab('paymentHistory'), [setActiveTab]);
+  const onPressDelivery = useCallback(() => setActiveTab('deliveryHistory'), [setActiveTab]);
+  const onPressComplaints = useCallback(() => setActiveTab('complaints'), [setActiveTab]);
 
   useEffect(() => {
     setSelectedPaymentMode(customerDefaultPaymentMode);
   }, [customerDefaultPaymentMode, paymentMonth]);
 
-  useEffect(() => {
-    if (tab !== 'deliveryHistory' && deliverySelectedDayYmd) {
-      setDeliverySelectedDayYmd(null);
-    }
-  }, [tab, deliverySelectedDayYmd]);
-
-  useEffect(() => {
-    if (tab === deferredTab) {
-      setReadyTab(tab);
-      return;
-    }
-    const fallback = setTimeout(() => setReadyTab(tab), 120);
-    return () => clearTimeout(fallback);
-  }, [tab, deferredTab]);
-
-  const isTabReady = tab === readyTab;
-
-  // Heavy month/billing loops only for the visible tab after the switch settles.
-  const shouldComputeBillingUi = tab === 'billing' && isTabReady;
-  const shouldComputePaymentUi = tab === 'paymentHistory' && isTabReady;
+  // Heavy month/billing loops only for the visible tab.
+  const shouldComputeBillingUi = tab === 'billing';
+  const shouldComputePaymentUi = tab === 'paymentHistory';
   const shouldComputeBillingTimeline = shouldComputeBillingUi || shouldComputePaymentUi;
-  const shouldComputeDeliveryUi = tab === 'deliveryHistory' && isTabReady;
+  const shouldComputeDeliveryUi = tab === 'deliveryHistory';
 
   const billingDiscount = useMemo(() => Math.max(0, Number(c?.discountAmount ?? 0)), [c?.discountAmount]);
 
+  /**
+   * Every bill from the first billable month, with unpaid amounts carried forward and payments settling the oldest
+   * bill first — the same timeline the customer sees in My bills.
+   */
   const billingTimeline = useMemo(() => {
-    if (!c) return [];
-    if (!shouldComputeBillingTimeline) return [];
-
-    const monthsDesc = billingMonthOptions.length ? billingMonthOptions : [monthKey];
-    const monthsAsc = monthsDesc.slice().reverse();
-
-    // Payments are applied FIFO to the oldest outstanding bill to keep Billing + Payments consistent.
-    const payments = [...(c.payments ?? [])]
-      .map((p) => ({
-        date: String((p as any).paymentDate ?? ''),
-        amount: Math.max(0, Number((p as any).amountPaid ?? 0)),
-      }))
-      .filter((p) => p.amount > 0 && p.date)
-      .sort((a, b) => String(a.date).localeCompare(String(b.date)));
-
-    let payIdx = 0;
-    let payRemaining = payments[0]?.amount ?? 0;
-
-    const out: Array<{
-      month: string;
-      billCalcDateYmd: string;
-      dueDateYmd: string;
-      baseAmount: number;
-      carryForwardIn: number;
-      invoiceTotal: number;
-      paidApplied: number;
-      pending: number;
-      status: 'Paid' | 'Partial' | 'Pending';
-    }> = [];
-
-    let carry = 0;
-    for (const m of monthsAsc) {
-      const base = Math.max(
-        0,
-        Math.round(
-          computeSubscriptionBillingTotalForMonth(
-            m,
-            (c.subscriptionPlans ?? []) as any[],
-            (dailyOrders.lines ?? []) as any[],
-            (c.deliveries ?? []) as any[],
-          ) - billingDiscount,
-        ),
-      );
-      const billCalcDateYmd = lastDayYmdForMonth(m);
-      const dueDateYmd = addDaysYmd(billCalcDateYmd, 45);
-      const invoiceTotal = Math.max(0, Math.round(base + carry));
-
-      let paidApplied = 0;
-      let pending = invoiceTotal;
-      while (pending > 0 && payIdx < payments.length) {
-        if (payRemaining <= 0) {
-          payIdx += 1;
-          payRemaining = payments[payIdx]?.amount ?? 0;
-          continue;
-        }
-        const used = Math.min(pending, payRemaining);
-        paidApplied += used;
-        pending -= used;
-        payRemaining -= used;
-      }
-
-      const status: 'Paid' | 'Partial' | 'Pending' = pending <= 0 && paidApplied > 0 ? 'Paid' : paidApplied > 0 ? 'Partial' : 'Pending';
-      out.push({
-        month: m,
-        billCalcDateYmd,
-        dueDateYmd,
-        baseAmount: base,
-        carryForwardIn: Math.round(carry),
-        invoiceTotal,
-        paidApplied: Math.round(paidApplied),
-        pending: Math.round(Math.max(0, pending)),
-        status,
-      });
-
-      carry = Math.round(Math.max(0, pending));
-    }
-
-    return out.reverse(); // keep newest-first for UI (matches month options)
-  }, [billingDiscount, billingMonthOptions, c, dailyOrders.lines, monthKey, shouldComputeBillingTimeline]);
+    if (!c || !shouldComputeBillingTimeline) return [];
+    return buildBillingTimeline(c, monthKey, { offers: offers.all }).map((row) => ({
+      ...row,
+      billCalcDateYmd: row.billDateYmd,
+    }));
+  }, [c, monthKey, shouldComputeBillingTimeline, offers.all]);
 
   const billingSummaryForSelectedMonth = useMemo(() => {
     const row = billingTimeline.find((x) => x.month === billingMonth);
     if (!row) {
-      const billCalcDateYmd = lastDayYmdForMonth(billingMonth);
+      const billCalcDateYmd = billDateYmdForMonth(billingMonth, c?.billingCycleDate);
       return {
         billCalcDateYmd,
-        dueDateYmd: addDaysYmd(billCalcDateYmd, 45),
+        dueDateYmd: addDaysYmd(billCalcDateYmd, BILL_DUE_GRACE_DAYS),
         baseAmount: 0,
+        offerDiscount: 0,
         carryForwardIn: 0,
         invoiceTotal: 0,
         paidApplied: 0,
@@ -584,14 +601,20 @@ export default function AdminCustomerDetailDashboard() {
     return row;
   }, [billingMonth, billingTimeline]);
 
+  /** One line per offer that came off the selected month's bill ("Offer: Festival offer −₹50"). */
+  const billingOfferLinesForMonth = useMemo(() => {
+    if (!c || !shouldComputeBillingUi || !offers.all.length) return [];
+    return offerDiscountsForMonth(c, billingMonth, offers.all);
+  }, [billingMonth, c, offers.all, shouldComputeBillingUi]);
+
   const paymentSummaryForSelectedMonth = useMemo(() => {
     const row = billingTimeline.find((x) => x.month === paymentMonth);
     if (!row) {
-      const billCalcDateYmd = lastDayYmdForMonth(paymentMonth);
+      const billCalcDateYmd = billDateYmdForMonth(paymentMonth, c?.billingCycleDate);
       return {
         month: paymentMonth,
         billCalcDateYmd,
-        dueDateYmd: addDaysYmd(billCalcDateYmd, 45),
+        dueDateYmd: addDaysYmd(billCalcDateYmd, BILL_DUE_GRACE_DAYS),
         baseAmount: 0,
         carryForwardIn: 0,
         invoiceTotal: 0,
@@ -650,16 +673,16 @@ export default function AdminCustomerDetailDashboard() {
         createdAtIso: String(p.createdAt ?? p.paymentDate ?? ''),
         paymentDate: fmtDate(p.paymentDate),
         paymentAmount: money(p.amountPaid),
-        paymentMode: p.paymentMode ?? '—',
+        paymentMode: p.paymentMode ? labelOf(text.paymentModes, p.paymentMode) : '—',
         transactionId: p.transactionId ?? '—',
         collectedBy: p.collectedBy ?? '—',
         billingPeriod: `${monthLabel(mm)} (${mm})`,
-        paymentStatus: status === 'Pending' ? 'Unpaid' : status,
+        paymentStatus: (status === 'Pending' ? 'Unpaid' : status) as 'Paid' | 'Partial' | 'Unpaid',
         previousDueAmount: money(prevDue),
         amountAdjusted: money(adjusted),
         remainingDueAmount: money(remaining),
         advanceAmountAdded: money(advanceAdded),
-        paymentNotes: p.notes ?? '—',
+        paymentNotes: p.notes ? storedText(p.notes) : '—',
         receiptNumber: '—',
         createdBy: p.collectedBy ?? '—',
         createdAt: fmtDateTime(String(p.createdAt ?? p.paymentDate ?? '')),
@@ -675,166 +698,166 @@ export default function AdminCustomerDetailDashboard() {
       transactionId: '—',
       collectedBy: '—',
       billingPeriod: `${monthLabel(mm)} (${mm})`,
-      paymentStatus: 'Unpaid',
+      paymentStatus: 'Unpaid' as const,
       previousDueAmount: money(startingDue),
       amountAdjusted: money(0),
       remainingDueAmount: money(startingDue),
       advanceAmountAdded: money(0),
-      paymentNotes: `Payment marked unpaid for ${mm}`,
+      paymentNotes: t.payments.markedUnpaidNote(mm),
       receiptNumber: '—',
-      createdBy: 'Admin',
+      createdBy: t.admin,
       createdAt: fmtDateTime(a.createdAt),
     }));
 
     return [...paymentRows, ...unpaidRows].sort((a, b) => String(b.createdAtIso).localeCompare(String(a.createdAtIso)));
-  }, [billingTimeline, c, paymentMonth, paymentsForSelectedMonth, shouldComputePaymentUi]);
+  }, [billingTimeline, c, paymentMonth, paymentsForSelectedMonth, shouldComputePaymentUi, t, text]);
 
-  const productPriceByName = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const p of products.data?.items ?? []) {
-      const base = Number((p as any)?.price ?? 0);
-      const disc = Number((p as any)?.discountPrice ?? 0);
-      const unit = disc > 0 && disc < base ? disc : base;
-      if (p?.name) map.set(String(p.name).trim(), Math.max(0, unit));
-    }
-    return map;
-  }, [products.data?.items]);
-
+  /**
+   * What the month's bill is made of, row by row — the same figures the bill adds up: subscription packs delivered
+   * at the pack price, and delivered add-ons at the price saved with the order.
+   */
   const billingDeliveredProductRowsForMonth = useMemo(() => {
     if (!c) return [];
     if (!shouldComputeBillingUi) return [];
     const month = billingMonth;
-    const deliveries = (c.deliveries ?? []).filter(
-      (d) => d?.status === 'Delivered' && String(d.deliveryDate ?? '').slice(0, 7) === month,
-    );
-
     const plans = c.subscriptionPlans ?? [];
-    const addonLines = dailyOrders.lines ?? [];
-
     const norm = (s: unknown) => String(s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 
-    const rows = deliveries.map((d) => {
-      const ymd = String(d.deliveryDate ?? '').slice(0, 10);
-      const productName = String(d.productName ?? '').trim();
-      const qtyLabel = String(d.quantityLabel ?? '').trim();
-
-      const planIndex = plans.findIndex((p, idx) => {
-        if (!p) return false;
-        if (String(p.productName ?? '').trim() !== productName) return false;
-        if (norm(p.quantityLabel) !== norm(qtyLabel)) return false;
-        if (!subscriptionPlanActiveOnDateYmd(p as any, ymd)) return false;
-        return subscriptionPlanWinsDeliveryAttributionAtYmd(idx, ymd, plans as any);
+    const subscriptionRows = (c.deliveries ?? [])
+      .filter((d) => d?.status === 'Delivered' && String(d.deliveryDate ?? '').slice(0, 7) === month)
+      .flatMap((d) => {
+        const ymd = String(d.deliveryDate ?? '').slice(0, 10);
+        const productName = String(d.productName ?? '').trim();
+        const qtyLabel = String(d.quantityLabel ?? '').trim();
+        const planIndex = plans.findIndex(
+          (p, idx) =>
+            norm(p.productName) === norm(productName) &&
+            norm(p.quantityLabel) === norm(qtyLabel) &&
+            subscriptionPlanActiveOnDateYmd(p as any, ymd) &&
+            subscriptionPlanWinsDeliveryAttributionAtYmd(idx, ymd, plans as any),
+        );
+        if (planIndex < 0) return [];
+        const plan = plans[planIndex]!;
+        const usual = usualQuantity(plan);
+        // Rows written before per-day quantities existed bill at the usual quantity; 0 means only an add-on went.
+        const packs = d.subscriptionItems ?? usual;
+        if (packs <= 0) return [];
+        const unit = planLineTotal(plan as any) / usual;
+        return [
+          {
+            key: `sub_${d.id}_${planIndex}`,
+            dateYmd: ymd,
+            type: t.lineTypes.subscription,
+            productName,
+            packSizeLabel: qtyLabel,
+            qty: packs,
+            pricePerDelivery: money(Math.round(unit)),
+            deliveredLast: fmtYmd(ymd),
+            qtyDelivered: packs,
+            amount: money(Math.round(unit * packs)),
+          },
+        ];
       });
 
-      if (planIndex >= 0) {
-        const plan = plans[planIndex]!;
-        const qtyOrdered = Math.max(1, Math.floor(Number((plan as any).numberOfItems ?? 1)));
-        const pricePerDelivery = Math.round(planLineTotal(plan as any));
-        return {
-          key: `sub_${ymd}_${productName}_${qtyLabel}_${planIndex}`,
-          dateYmd: ymd,
-          type: 'Subscription',
-          productName,
-          packSizeLabel: qtyLabel,
-          qty: qtyOrdered,
-          pricePerDelivery: money(pricePerDelivery),
-          deliveredLast: fmtYmd(ymd),
-          qtyDelivered: qtyOrdered,
-          amount: money(pricePerDelivery),
-        };
-      }
-
-      const line = addonLines.find(
-        (l) =>
-          String(l.dateYmd ?? '') === ymd &&
-          String(l.productName ?? '').trim() === productName &&
-          norm(l.quantityLabel) === norm(qtyLabel),
-      );
-      const qtyOrdered = Math.max(1, Math.floor(Number(line?.quantity ?? 1)));
-      const unit = Math.max(0, Number(productPriceByName.get(productName) ?? 0));
-      const amount = Math.round(unit * qtyOrdered);
+    const addOnRows = deliveredAddOnsForMonth(c, month).map((o) => {
+      const ymd = String(o.deliveryDate ?? o.orderDate ?? '').slice(0, 10);
+      const packs = addOnItemCount(o);
+      const isCombo = !!o.comboItems?.length;
+      const saved = orderSavings(o);
       return {
-        key: `add_${ymd}_${productName}_${qtyLabel}`,
+        key: `add_${o.id}`,
         dateYmd: ymd,
-        type: 'Add-on',
-        productName,
-        packSizeLabel: qtyLabel,
-        qty: qtyOrdered,
-        pricePerDelivery: money(unit),
+        // Orders under an offer carry a tag; they are already priced at the offer price.
+        type: o.offer ? `${t.lineTypes.addOn} · ${t.billing.offerTag}` : t.lineTypes.addOn,
+        // A combo reads with what is in it.
+        productName: isCombo ? addOnLabel({ ...o, numberOfItems: 1 }, lang) : String(o.productName ?? '').trim(),
+        packSizeLabel: isCombo ? offerWords.kinds.combo : String(o.quantityLabel ?? '').trim(),
+        qty: packs,
+        pricePerDelivery: money(Math.round(Number(o.price ?? 0))),
         deliveredLast: fmtYmd(ymd),
-        qtyDelivered: qtyOrdered,
-        amount: money(amount),
+        qtyDelivered: packs,
+        amount: saved > 0 ? `${money(addOnLineTotal(o))} (${t.billing.saved(money(saved))})` : money(addOnLineTotal(o)),
       };
     });
 
-    return rows.sort((a, b) =>
+    return [...subscriptionRows, ...addOnRows].sort((a, b) =>
       a.dateYmd === b.dateYmd ? a.productName.localeCompare(b.productName) : a.dateYmd.localeCompare(b.dateYmd),
     );
-  }, [billingMonth, c, dailyOrders.lines, productPriceByName, shouldComputeBillingUi]);
+  }, [billingMonth, c, shouldComputeBillingUi, t, lang, offerWords]);
 
   function billCalcDateForMonth(yyyyMm: string): string {
     return fmtYmd(lastDayYmdForMonth(yyyyMm));
   }
 
+  /** Same rule as the billing timeline: the customer's bill date plus the grace period. */
   function dueDateForMonth(yyyyMm: string): string {
-    const last = lastDayYmdForMonth(yyyyMm);
-    return fmtYmd(addDaysYmd(last, 45));
+    return fmtYmd(addDaysYmd(billDateYmdForMonth(yyyyMm, c?.billingCycleDate), BILL_DUE_GRACE_DAYS));
   }
 
   // Responsive breakpoints (admin dashboard)
   const isMobile = width < 640;
   const isTablet = width >= 640 && width < 1024;
   const isDesktop = width >= 1024;
+  /** Laptops/desktops: tables fit the card width (no sideways scroll); phones/tablets keep the horizontal scroller. */
+  const fitTables = isDesktop;
 
   const pagePadding = isMobile ? 12 : isTablet ? 14 : 16;
   const contentGap = isMobile ? 10 : 12;
 
-  const deliveryDialogMaxW = useMemo(() => Math.max(240, Math.min(420, width - 20)), [width]);
+  // Header, profile card, tab row and tab content share one centered list-width column (full width on phones).
+  const pageMaxWidth = useResponsiveContainerMaxWidth('list');
+  const pageWidthStyle = useMemo(
+    () => ({ width: '100%' as const, maxWidth: pageMaxWidth, alignSelf: 'center' as const }),
+    [pageMaxWidth],
+  );
+
+  const complaintDialogStyle = useResponsiveDialogStyle(520);
+  const paymentDialogStyle = useResponsiveDialogStyle(440);
+  const deliveryDialogStyle = useResponsiveDialogStyle(420);
+  /** Scrollable body inside a dialog; the dialog title + actions take the rest of its viewport-capped height. */
+  const dialogScrollMaxH = useMemo(() => Math.max(180, Math.min(Math.round(height * 0.6), height - 220)), [height]);
   const deliveryDialogScrollMaxH = useMemo(() => Math.max(220, Math.min(Math.round(height * 0.52), height - 220)), [height]);
 
   const deliveryMonthDays = useMemo(() => ymdsForMonth(deliveryMonth), [deliveryMonth]);
-  const deliveryAddonLinesForMonth = useMemo(
-    () => (dailyOrders.lines ?? []).filter((l) => String(l.dateYmd).slice(0, 7) === deliveryMonth),
-    [dailyOrders.lines, deliveryMonth],
-  );
-
+  /**
+   * Each day's planned value — after the customer's skips and quantity changes, add-ons included — the figure the
+   * admin's Today list and the delivery boy's run sheet show for the same day.
+   */
   const deliveryDayTotals = useMemo(() => {
     if (!shouldComputeDeliveryUi) return new Map<string, number>();
     if (!c) return new Map<string, number>();
-    const plans = c.subscriptionPlans ?? [];
     const map = new Map<string, number>();
     for (const ymd of deliveryMonthDays) {
-      const subTotal = plans
-        .filter((p) => subscriptionPlanActiveOnDateYmd(p as any, ymd))
-        .reduce((s, p) => s + Math.round(planLineTotal(p as any)), 0);
-      const addonTotal = deliveryAddonLinesForMonth
-        .filter((l) => l.dateYmd === ymd)
-        .reduce((s, l) => {
-          const unit = productPriceByName.get(String(l.productName ?? '').trim()) ?? 0;
-          const qty = Math.max(1, Math.floor(Number(l.quantity ?? 1)));
-          return s + Math.round(unit * qty);
-        }, 0);
-      map.set(ymd, Math.round(subTotal + addonTotal));
+      map.set(ymd, Math.round(buildTodayEntries([c], ymd)[0]?.amount ?? 0));
     }
     return map;
-  }, [c, deliveryAddonLinesForMonth, deliveryMonthDays, productPriceByName, shouldComputeDeliveryUi]);
+  }, [c, deliveryMonthDays, shouldComputeDeliveryUi]);
+
+  // Pre-index delivery statuses by YMD for O(1) lookups instead of O(D) per cell
+  const deliveryStatusByYmd = useMemo(() => {
+    const map = new Map<string, { delivered: boolean; missed: boolean }>();
+    for (const d of c?.deliveries ?? []) {
+      const ymd = String(d.deliveryDate ?? '').slice(0, 10);
+      let e = map.get(ymd);
+      if (!e) { e = { delivered: false, missed: false }; map.set(ymd, e); }
+      if (d.status === 'Delivered') e.delivered = true;
+      if (d.status === 'Missed') e.missed = true;
+    }
+    return map;
+  }, [c?.deliveries]);
 
   const deliveryStatusForDayYmd = useCallback((ymd: string): 'Delivered' | 'Not delivered' | 'Mixed' | '—' => {
-    if (!c) return '—';
-    const existing = (c.deliveries ?? []).filter((d) => String(d.deliveryDate ?? '').slice(0, 10) === ymd);
-    const delivered = existing.some((d) => d.status === 'Delivered');
-    const missed = existing.some((d) => d.status === 'Missed');
-    if (delivered && !missed) return 'Delivered';
-    if (missed && !delivered) return 'Not delivered';
-    if (delivered && missed) return 'Mixed';
+    const e = deliveryStatusByYmd.get(ymd);
+    if (!e) return '—';
+    if (e.delivered && !e.missed) return 'Delivered';
+    if (e.missed && !e.delivered) return 'Not delivered';
+    if (e.delivered && e.missed) return 'Mixed';
     return '—';
-  }, [c]);
+  }, [deliveryStatusByYmd]);
 
   const deliveryCalendarCells = useMemo(() => {
     if (!shouldComputeDeliveryUi) return [];
-    const todayYmd = new Date().toISOString().slice(0, 10);
-    const plans = c?.subscriptionPlans ?? [];
-    const addonLines = dailyOrders.lines ?? [];
+    const todayYmd = todayYmdLocal();
     const getTone = (ymd: string): DeliveryDayTone => {
       const total = deliveryDayTotals.get(ymd) ?? 0;
       if (total <= 0) return 'empty';
@@ -846,37 +869,32 @@ export default function AdminCustomerDetailDashboard() {
     return buildCalendarCells(
       deliveryMonth,
       todayYmd,
-      (ymd) => plans.some((p) => subscriptionPlanActiveOnDateYmd(p as any, ymd)),
-      (ymd) => addonLines.some((l) => l.dateYmd === ymd),
+      (ymd) => (c ? plannedLinesOn(c, ymd).length > 0 : false),
+      (ymd) => (c ? addOnsForDate(c, ymd).length > 0 : false),
       getTone,
     );
-  }, [c?.subscriptionPlans, dailyOrders.lines, deliveryMonth, deliveryDayTotals, deliveryStatusForDayYmd, shouldComputeDeliveryUi]);
+  }, [c, deliveryMonth, deliveryDayTotals, deliveryStatusForDayYmd, shouldComputeDeliveryUi]);
 
   const deliveryCalendarLegendFooter = useMemo(
     () => (
       <View style={styles.deliveryCalLegendWrap}>
         <Text variant="labelSmall" style={[styles.bold, textMain]}>
-          Delivery calendar — color key
+          {t.delivery.colourKey}
         </Text>
         {ADMIN_DELIVERY_LEGEND_ORDER.map((tone) => {
           const row = ADMIN_DELIVERY_CALENDAR.tones[tone];
+          const words = t.delivery.legend[tone];
           const sw = scheme === 'dark' ? row.dark : row.light;
+          // Swatch + meaning only — the raw rgba/hex values were developer notes, not something admins need.
           return (
             <View key={tone} style={styles.deliveryCalLegendRow}>
               <View style={[styles.deliveryCalSwatch, { backgroundColor: sw.backgroundColor, borderColor: sw.borderColor }]} />
               <View style={styles.deliveryCalLegendTextCol}>
                 <Text variant="bodySmall" style={[styles.bold, textMain]} numberOfLines={2}>
-                  {row.title}
+                  {words.title}
                 </Text>
                 <Text variant="bodySmall" style={textSub} numberOfLines={4}>
-                  {row.meaning}
-                </Text>
-                <Text
-                  variant="labelSmall"
-                  style={[textSub, styles.deliveryCalCodeLine, { fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }) }]}
-                  selectable
-                >
-                  {row.codes}
+                  {words.meaning}
                 </Text>
               </View>
             </View>
@@ -884,67 +902,80 @@ export default function AdminCustomerDetailDashboard() {
         })}
       </View>
     ),
-    [scheme, textMain, textSub],
+    [scheme, t, textMain, textSub],
   );
 
   const deliverySelectedDayModel = useMemo(() => {
     if (!shouldComputeDeliveryUi || !c || !deliverySelectedDayYmd) return null;
     const ymd = deliverySelectedDayYmd;
-    const plans = (c.subscriptionPlans ?? []).filter((p) => subscriptionPlanActiveOnDateYmd(p as any, ymd));
-    const addons = (dailyOrders.lines ?? []).filter((l) => l.dateYmd === ymd);
+    // What is actually going that day: skipped lines are left out, changed quantities used.
+    const plans = plannedLinesOn(c, ymd);
+    const addons = addOnsForDate(c, ymd);
     const status = deliveryStatusForDayYmd(ymd);
     const total = Math.round(deliveryDayTotals.get(ymd) ?? 0);
     return { ymd, plans, addons, status, total };
-  }, [c, dailyOrders.lines, deliveryDayTotals, deliverySelectedDayYmd, deliveryStatusForDayYmd, shouldComputeDeliveryUi]);
+  }, [c, deliveryDayTotals, deliverySelectedDayYmd, deliveryStatusForDayYmd, shouldComputeDeliveryUi]);
 
   async function setDeliveryStatusForDay(ymd: string, next: 'Delivered' | 'Missed') {
     if (!c) return;
     const now = new Date().toISOString();
-    const plans = (c.subscriptionPlans ?? []).filter((p) => subscriptionPlanActiveOnDateYmd(p as any, ymd));
-    const addons = (dailyOrders.lines ?? []).filter((l) => l.dateYmd === ymd);
-    const wanted = [
-      ...plans.map((p) => ({ productName: p.productName, quantityLabel: p.quantityLabel })),
-      ...addons.map((a) => ({ productName: a.productName, quantityLabel: a.quantityLabel })),
-    ];
-    const prev = c.deliveries ?? [];
-    const nextList = [...prev];
-    for (const w of wanted) {
-      const existingIdx = nextList.findIndex(
-        (d) =>
-          String(d.deliveryDate ?? '').slice(0, 10) === ymd &&
-          String(d.productName ?? '').trim() === String(w.productName ?? '').trim() &&
-          String(d.quantityLabel ?? '').trim() === String(w.quantityLabel ?? '').trim(),
-      );
-      const base = existingIdx >= 0 ? nextList[existingIdx]! : null;
-      const row = {
-        id: base?.id ?? newDeliveryId(),
-        deliveryDate: ymd,
-        productName: String(w.productName ?? '').trim(),
-        quantityLabel: String(w.quantityLabel ?? '').trim(),
-        deliveryBoyName: base?.deliveryBoyName,
-        status: next,
-        missedReason: next === 'Missed' ? base?.missedReason ?? 'Marked not delivered' : undefined,
-        rescheduledDate: base?.rescheduledDate,
-        notes: base?.notes,
-        createdAt: base?.createdAt ?? now,
-        updatedAt: now,
-      };
-      if (existingIdx >= 0) nextList[existingIdx] = row as any;
-      else nextList.push(row as any);
+
+    // The same writer as the delivery app: it leaves out what the customer skipped, uses their quantity for the day,
+    // records how many packs went, and settles the day's one-off orders.
+    let nextList = [...(c.deliveries ?? [])];
+    let extraOrders = c.extraOrders ?? [];
+    let wroteAny = false;
+    try {
+      const res = buildDayStatusDeliveries({ customer: c, ymd, next, now });
+      nextList = [...res.deliveries];
+      extraOrders = res.extraOrders;
+      wroteAny = true;
+    } catch (err) {
+      if (!(err instanceof NothingPlannedError)) throw err;
     }
-    await updateCustomer.mutateAsync({ id: c.id, data: { deliveries: nextList } });
+
+    if (!wroteAny) {
+      showToast(t.delivery.nothingPlanned);
+      return;
+    }
+    try {
+      await updateCustomer.mutateAsync({ id: c.id, data: { deliveries: nextList, extraOrders } });
+      notifyDeliveryMarked({
+        customerId: c.id,
+        customerName: c.name,
+        dateYmd: ymd,
+        delivered: next === 'Delivered',
+        itemsLabel: nextList
+          .filter((d) => String(d.deliveryDate ?? '').slice(0, 10) === ymd)
+          .map((d) => [d.productName, d.quantityLabel].filter(Boolean).join(' · '))
+          .join(', '),
+        deliveryBoyName: 'Admin',
+      });
+    } catch (e) {
+      showToast(t.delivery.couldNotUpdate(errorMessage(e)));
+    }
   }
 
-  const tabPillSizeStyle = isDesktop ? styles.tabPillH44 : isTablet ? styles.tabPillH40 : styles.tabPillH36;
-  const tabTextSizeStyle = isDesktop ? styles.tabText14 : isTablet ? styles.tabText13 : styles.tabText12;
+  const tabPillSizeStyle = useMemo(() => isDesktop ? styles.tabPillDesktop : isTablet ? styles.tabPillTablet : styles.tabPillMobile, [isDesktop, isTablet]);
+  const tabTextSizeStyle = useMemo(() => isDesktop ? styles.tabText14 : styles.tabText13, [isDesktop]);
 
   const displayId = useMemo(() => (id ? formatCustomerDisplayId(id) : '—'), [id]);
   const profileInitials = useMemo(() => customerInitials(summary.name === '—' ? '' : summary.name), [summary.name]);
-  const overviewFooterPad = tab === 'overview' ? 88 : 24;
+  // The Overview CTA is its own bar below the scroll area (not an overlay), so no extra bottom gap is needed for it.
+  const tabScrollFooterPad = tab === 'subscription' ? 160 : 24;
 
   const openEdit = useCallback(() => {
-    router.push({ pathname: '/(admin)/customers-edit', params: { id } });
+    // `from: 'detail'` lets the edit screen go back here on save instead of stacking a second detail screen.
+    router.push({ pathname: '/(admin)/customers-edit', params: { id, from: 'detail' } });
   }, [id]);
+
+  /** Overview section Edit links open the form scrolled to the same section. */
+  const openEditSection = useCallback(
+    (section: CustomerFormTab) => {
+      router.push({ pathname: '/(admin)/customers-edit', params: { id, from: 'detail', section } });
+    },
+    [id],
+  );
 
   const handleBack = useCallback(() => {
     if (navigation.canGoBack()) {
@@ -954,136 +985,147 @@ export default function AdminCustomerDetailDashboard() {
     router.replace('/(admin)/customers');
   }, [navigation]);
 
+  const detailHeader = (
+    <View style={[styles.detailHeader, pageWidthStyle, { paddingTop: headerPaddingTop }]}>
+      <Pressable onPress={handleBack} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={t.goBack}>
+        <MaterialCommunityIcons name="arrow-left" size={22} color={dairyTactileColors.primaryContainer} />
+      </Pressable>
+      <Text style={styles.detailHeaderTitle} numberOfLines={1}>
+        {t.title}
+      </Text>
+      <View style={styles.headerSpacer} />
+    </View>
+  );
+
+  // No customer yet: explicit loading / not-found / error states instead of an empty dashboard with live actions.
+  if (!c) {
+    const loadFailed = customer.isError;
+    const notFound = !id || customer.data === null;
+    return (
+      <DairyTactileScreenBackground>
+        <View style={styles.screenRoot}>
+          {detailHeader}
+          <View style={styles.statusWrap}>
+            <Text style={styles.statusTitle}>
+              {loadFailed ? t.couldNotLoad : notFound ? t.notFound : t.loadingCustomer}
+            </Text>
+            {loadFailed || notFound ? (
+              <>
+                <Text style={styles.statusBody}>
+                  {loadFailed ? t.loadErrorBody : t.deletedBody}
+                </Text>
+                <View style={styles.statusActions}>
+                  {loadFailed ? (
+                    <Button mode="contained" onPress={() => void customer.refetch()}>
+                      {t.retry}
+                    </Button>
+                  ) : null}
+                  <Button mode="outlined" onPress={handleBack}>
+                    {t.back}
+                  </Button>
+                </View>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </DairyTactileScreenBackground>
+    );
+  }
+
   return (
     <DairyTactileScreenBackground>
     <View style={styles.screenRoot}>
-      <View style={[styles.detailHeader, { paddingTop: headerPaddingTop }]}>
-        <Pressable onPress={handleBack} style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Go back">
-          <MaterialCommunityIcons name="arrow-left" size={22} color={dairyTactileColors.primaryContainer} />
-        </Pressable>
-        <Text style={styles.detailHeaderTitle} numberOfLines={1}>
-          Customer Details
-        </Text>
-        <View style={styles.headerSpacer} />
+      {detailHeader}
+
+      <View style={pageWidthStyle}>
+        <DetailProfileCard
+          name={summary.name}
+          memberBadge={memberBadgeLabel(c)}
+          initials={profileInitials}
+          editLabel={t.editCustomer}
+          subtitle={[displayId, c.mobile ? formatMobileDisplay(c.mobile) : ''].filter(Boolean).join(' · ')}
+          onEdit={openEdit}
+        />
       </View>
 
-      <CustomerDetailProfileCard
-        name={summary.name}
-        memberBadge={memberBadgeLabel(c)}
-        initials={profileInitials}
-        onEdit={openEdit}
-      />
-
-      <View style={styles.tabsBar}>
-        {isTablet ? (
-          <View style={[styles.tabsRowWrap, { gap: isMobile ? 6 : 8 }]}>
-            <TabPill label="Overview" active={tab === 'overview'} onPress={() => setActiveTab('overview')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Subscription" active={tab === 'subscription'} onPress={() => setActiveTab('subscription')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Billing" active={tab === 'billing'} onPress={() => setActiveTab('billing')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Payments" active={tab === 'paymentHistory'} onPress={() => setActiveTab('paymentHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Customer Delivery" active={tab === 'deliveryHistory'} onPress={() => setActiveTab('deliveryHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Complaints" active={tab === 'complaints'} onPress={() => setActiveTab('complaints')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-          </View>
-        ) : (
-          <ScrollView
-            horizontal
-            scrollEnabled={isMobile}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={[styles.tabsRowScroll, isMobile ? styles.tabsRowScrollMobile : null]}
-          >
-            <TabPill label="Overview" active={tab === 'overview'} onPress={() => setActiveTab('overview')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Subscription" active={tab === 'subscription'} onPress={() => setActiveTab('subscription')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Billing" active={tab === 'billing'} onPress={() => setActiveTab('billing')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Payments" active={tab === 'paymentHistory'} onPress={() => setActiveTab('paymentHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Customer Delivery" active={tab === 'deliveryHistory'} onPress={() => setActiveTab('deliveryHistory')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-            <TabPill label="Complaints" active={tab === 'complaints'} onPress={() => setActiveTab('complaints')} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
-          </ScrollView>
-        )}
+      <View style={[styles.tabsBar, pageWidthStyle]}>
+        <View style={[styles.tabsRowWrap, { gap: isMobile ? 6 : 8 }]}>
+          <TabPill label={t.tabs.overview} active={tab === 'overview'} onPress={onPressOverview} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+          <TabPill label={t.tabs.subscription} active={tab === 'subscription'} onPress={onPressSubscription} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+          <TabPill label={t.tabs.billing} active={tab === 'billing'} onPress={onPressBilling} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+          <TabPill label={t.tabs.payments} active={tab === 'paymentHistory'} onPress={onPressPayments} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+          <TabPill label={isMobile ? t.tabs.delivery : t.tabs.customerDelivery} active={tab === 'deliveryHistory'} onPress={onPressDelivery} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+          <TabPill label={t.tabs.complaints} active={tab === 'complaints'} onPress={onPressComplaints} pillSizeStyle={tabPillSizeStyle} textSizeStyle={tabTextSizeStyle} />
+        </View>
       </View>
+
+      {MONTH_SCOPED_TABS.includes(tab) ? (
+        <View style={[styles.monthBar, pageWidthStyle]}>
+          <PeriodStepper
+            label={monthLabel(selectedMonth)}
+            hint={selectedMonth === monthKey ? t.month.thisMonth : t.month.tapForThisMonth}
+            onPrev={() => setSelectedMonth(shiftMonth(selectedMonth, -1))}
+            onNext={() => setSelectedMonth(shiftMonth(selectedMonth, 1))}
+            nextDisabled={selectedMonth >= monthKey}
+            onPressLabel={selectedMonth === monthKey ? undefined : () => setSelectedMonth(monthKey)}
+            prevLabel={t.month.previous}
+            nextLabel={t.month.next}
+          />
+        </View>
+      ) : null}
 
       <View style={styles.tabBody}>
+          <ScrollView
+            style={styles.tabScroll}
+            contentContainerStyle={[styles.container, pageWidthStyle, { padding: pagePadding, gap: contentGap, paddingBottom: scrollPaddingBottom(tabScrollFooterPad) }]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
         {tab === 'subscription' ? (
-          <ScrollView
-            style={styles.tabScroll}
-            contentContainerStyle={[styles.container, { padding: pagePadding, gap: contentGap, paddingBottom: scrollPaddingBottom(overviewFooterPad) }]}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
-            {c ? (
-              <CustomerSubscriptionTab
-                customer={c}
-                customerId={id}
-                isMobile={isMobile}
-                isTablet={isTablet}
-                isDesktop={isDesktop}
-                scheme={scheme}
-              />
+            c ? (
+              <>
+                <CustomerSubscriptionTab
+                  customer={c}
+                  customerId={id}
+                  month={selectedMonth}
+                  onMonthChange={setSelectedMonth}
+                  isMobile={isMobile}
+                  isTablet={isTablet}
+                  isDesktop={isDesktop}
+                  scheme={scheme}
+                  onViewDetailedBill={onPressBilling}
+                />
+                <CustomerDayChangesCard customer={c} month={selectedMonth} />
+              </>
             ) : (
-              <DeferredTabPlaceholder label="Subscription" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
-            )}
-          </ScrollView>
-        ) : (
-          <ScrollView
-            style={styles.tabScroll}
-            contentContainerStyle={[styles.container, { padding: pagePadding, gap: contentGap, paddingBottom: scrollPaddingBottom(overviewFooterPad) }]}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
+              <DeferredTabPlaceholder label={t.tabs.subscription} sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
+            )
+        ) : null}
         {tab === 'overview' && c ? (
           <CustomerDetailOverview
-            displayId={displayId}
-            fullName={c.name ?? '—'}
-            mobile={formatMobileDisplay(c.mobile ?? '')}
-            appAccess={(c as any)?.appAccessEnabled !== false ? 'Allowed' : 'Blocked'}
-            status={summary.status}
-            address={summary.address}
-            addressTags={overviewAddressTags(c)}
+            customer={c}
             assignedDeliveryBoy={summary.assignedDeliveryBoy}
             deliveryRoute={summary.routeName}
             billingType={billingTypeDisplay(c)}
+            addressTags={overviewAddressTags(c)}
+            onEditSection={openEditSection}
+            wide={!isMobile}
           />
         ) : null}
 
         {tab === 'billing' ? (
-          !isTabReady ? (
-            <DeferredTabPlaceholder label="Billing" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
-          ) : (
           <View style={styles.sectionStack}>
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Billing summary
+                  {t.billing.summaryTitle}
                 </Text>
-                <View style={[styles.monthNavRow, { marginTop: 8, marginBottom: 10 }]}>
-                  <Pressable
-                    disabled={isBillingPrevDisabled}
-                    onPress={() => setBillingMonth(shiftMonth(billingMonth, -1))}
-                    style={({ pressed }) => [styles.monthNavBtn, isBillingPrevDisabled ? styles.monthNavBtnDisabled : null, pressed && styles.pressed]}
-                  >
-                    <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                  <View style={styles.monthNavCenter}>
-                    <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                      {monthLabel(billingMonth)}
-                    </Text>
-                    <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                      {billingMonth}
-                    </Text>
-                  </View>
-                  <Pressable
-                    disabled={isBillingNextDisabled}
-                    onPress={() => setBillingMonth(shiftMonth(billingMonth, 1))}
-                    style={({ pressed }) => [styles.monthNavBtn, isBillingNextDisabled ? styles.monthNavBtnDisabled : null, pressed && styles.pressed]}
-                  >
-                    <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                </View>
                 <Text variant="bodySmall" style={[textSub, { marginBottom: 8 }]}>
-                  Month-wise billing is calculated using the same delivery attribution rules as the Subscription tab.
+                  {t.billing.summaryHint}
                 </Text>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Subscription amount (calculated)
+                    {t.billing.subscriptionAmount}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(billingSummaryForSelectedMonth.baseAmount)}
@@ -1091,7 +1133,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Carry-forward (from previous bill)
+                    {t.billing.carryForward}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(billingSummaryForSelectedMonth.carryForwardIn)}
@@ -1099,15 +1141,40 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Discount amount
+                    {t.billing.discount}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(billingDiscount)}
                   </Text>
                 </View>
+                {billingOfferLinesForMonth.map((line) => (
+                  <View key={`offer_${line.offerId}`} style={styles.kvRow}>
+                    <Text variant="bodySmall" style={[textSub, styles.kvLabelWrap]}>
+                      {offerWords.billLine(offerText(line.title, lang))}
+                    </Text>
+                    <Text variant="bodyMedium" style={[textMain, styles.offerAmount]}>
+                      {`−${money(line.amount)}`}
+                    </Text>
+                  </View>
+                ))}
+                {billingSummaryForSelectedMonth.offerDiscount > 0 ? (
+                  <>
+                    <View style={styles.kvRow}>
+                      <Text variant="bodySmall" style={[textSub, styles.bold]}>
+                        {offerWords.offerDiscounts}
+                      </Text>
+                      <Text variant="bodyMedium" style={[textMain, styles.bold, styles.offerAmount]}>
+                        {`−${money(billingSummaryForSelectedMonth.offerDiscount)}`}
+                      </Text>
+                    </View>
+                    <Text variant="bodySmall" style={textSub}>
+                      {t.billing.offerHint}
+                    </Text>
+                  </>
+                ) : null}
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Advance amount
+                    {t.billing.advance}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(c?.advanceBalance)}
@@ -1115,7 +1182,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Final payable amount
+                    {t.billing.finalPayable}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(billingSummaryForSelectedMonth.invoiceTotal)}
@@ -1123,7 +1190,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Paid amount (applied to this bill)
+                    {t.billing.paidApplied}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(billingSummaryForSelectedMonth.paidApplied)}
@@ -1131,7 +1198,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Pending amount (carry-forward)
+                    {t.billing.pendingCarry}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(billingSummaryForSelectedMonth.pending)}
@@ -1139,7 +1206,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Bill calculation date (month end)
+                    {t.billing.billDate}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {billCalcDateForMonth(billingMonth)}
@@ -1147,7 +1214,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Billing due date (this month)
+                    {t.billing.dueDate}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {dueDateForMonth(billingMonth)}
@@ -1155,7 +1222,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Last payment date
+                    {t.billing.lastPaymentDate}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {c?.lastPaymentDate ? formatIso(c.lastPaymentDate) : '—'}
@@ -1163,45 +1230,45 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Billing status (this month)
+                    {t.billing.status}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
-                    {billingSummaryForSelectedMonth.status}
+                    {labelOf(t.billStatus, billingSummaryForSelectedMonth.status)}
                   </Text>
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Billing cycle date
+                    {t.billing.cycleDate}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
-                    Month-end
+                    {t.billing.monthEnd}
                   </Text>
                 </View>
 
                 <View style={[styles.deliveryDayRule, scheme === 'dark' ? styles.deliveryDayRuleDark : styles.deliveryDayRuleLight]} />
 
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Delivered products (day-wise)
+                  {t.billing.deliveredTitle}
                 </Text>
                 <Text variant="bodySmall" style={textSub}>
-                  Only products marked Delivered in {monthLabel(billingMonth)}. This list is part of the month-wise billing summary and updates automatically.
+                  {t.billing.deliveredHint(monthLabel(billingMonth))}
                 </Text>
 
                 <View style={styles.tableWrap}>
-                  <TableScroll>
-                    <View style={[styles.tableMin, { minWidth: 860 }]}>
+                  <TableScroll fit={fitTables}>
+                    <View style={[styles.tableMin, fitTables ? styles.tableFit : { minWidth: 860 }]}>
                       <TableRow
                         header
                         cells={[
-                          { text: 'Date', grow: true },
-                          { text: 'Type' },
-                          { text: 'Product', grow: true },
-                          { text: 'Pack / size', grow: true },
-                          { text: 'Qty' },
-                          { text: 'Price / delivery' },
-                          { text: 'Delivered (last)' },
-                          { text: 'Qty delivered' },
-                          { text: 'Amount' },
+                          { text: t.billing.columns.date, grow: true },
+                          { text: t.billing.columns.type },
+                          { text: t.billing.columns.product, grow: true },
+                          { text: t.billing.columns.pack, grow: true },
+                          { text: t.billing.columns.qty },
+                          { text: t.billing.columns.pricePerDelivery },
+                          { text: t.billing.columns.deliveredLast },
+                          { text: t.billing.columns.qtyDelivered },
+                          { text: t.billing.columns.amount },
                         ]}
                       />
 
@@ -1211,21 +1278,22 @@ export default function AdminCustomerDetailDashboard() {
                             key={r.key}
                             cells={[
                               { text: fmtYmd(r.dateYmd), grow: true },
-                              { text: r.type },
-                              { text: r.productName, grow: true },
+                              { text: r.type, lines: 2 },
+                              // Combos read with their contents, so let long names wrap.
+                              { text: r.productName, grow: true, lines: 3 },
                               { text: r.packSizeLabel, grow: true },
                               { text: String(r.qty) },
                               { text: r.pricePerDelivery },
                               { text: r.deliveredLast },
                               { text: String(r.qtyDelivered) },
-                              { text: r.amount },
+                              { text: r.amount, lines: 2 },
                             ]}
                           />
                         ))
                       ) : (
                         <TableRow
                           cells={[
-                            { text: 'No delivered products yet for this month.', grow: true },
+                            { text: t.billing.noDelivered, grow: true },
                             { text: '—' },
                             { text: '—', grow: true },
                             { text: '—', grow: true },
@@ -1246,23 +1314,24 @@ export default function AdminCustomerDetailDashboard() {
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Billing History
+                  {t.billing.historyTitle}
                 </Text>
                 <View style={styles.tableWrap}>
-                  <TableScroll>
-                    <View style={styles.tableMin}>
+                  <TableScroll fit={fitTables}>
+                    <View style={[styles.tableMin, fitTables && styles.tableFit]}>
                       <TableRow
                         header
                         cells={[
-                          { text: 'Month', grow: true },
-                          { text: 'Base' },
-                          { text: 'Carry fwd' },
-                          { text: 'Total' },
-                          { text: 'Paid' },
-                          { text: 'Pending' },
-                          { text: 'Bill date' },
-                          { text: 'Due Date' },
-                          { text: 'Status' },
+                          { text: t.billing.historyColumns.month, grow: true },
+                          { text: t.billing.historyColumns.base },
+                          ...(offers.all.length ? [{ text: t.billing.historyColumns.offers }] : []),
+                          { text: t.billing.historyColumns.carryForward },
+                          { text: t.billing.historyColumns.total },
+                          { text: t.billing.historyColumns.paid },
+                          { text: t.billing.historyColumns.pending },
+                          { text: t.billing.historyColumns.billDate },
+                          { text: t.billing.historyColumns.dueDate },
+                          { text: t.billing.historyColumns.status },
                         ]}
                       />
                       {billingTimeline.map((r) => (
@@ -1271,13 +1340,14 @@ export default function AdminCustomerDetailDashboard() {
                           cells={[
                             { text: monthLabel(r.month), grow: true },
                             { text: money(r.baseAmount) },
+                            ...(offers.all.length ? [{ text: r.offerDiscount > 0 ? `−${money(r.offerDiscount)}` : money(0) }] : []),
                             { text: money(r.carryForwardIn) },
                             { text: money(r.invoiceTotal) },
                             { text: money(r.paidApplied) },
                             { text: money(r.pending) },
                             { text: fmtYmd(r.billCalcDateYmd) },
                             { text: fmtYmd(r.dueDateYmd) },
-                            { text: r.status, tone: badgeTone(r.status) },
+                            { text: labelOf(t.billStatus, r.status), tone: badgeTone(r.status) },
                           ]}
                         />
                       ))}
@@ -1287,64 +1357,49 @@ export default function AdminCustomerDetailDashboard() {
               </Card.Content>
             </Card>
           </View>
-          )
         ) : null}
 
         {tab === 'paymentHistory' ? (
-          !isTabReady ? (
-            <DeferredTabPlaceholder label="Payments" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
-          ) : (
           <View style={styles.sectionStack}>
+            {c && (c.paymentRequests ?? []).some((r) => r.status === 'Pending') ? (
+              <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
+                <Card.Content style={styles.sectionContent}>
+                  <Text variant="titleSmall" style={[styles.bold, textMain]}>
+                    {t.payments.toConfirmTitle}
+                  </Text>
+                  <Text variant="bodySmall" style={textSub}>
+                    {t.payments.toConfirmHint}
+                  </Text>
+                  <PaymentRequestReview customers={[c]} showCustomer={false} onResult={showToast} />
+                </Card.Content>
+              </Card>
+            ) : null}
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Payment summary
+                  {t.payments.summaryTitle}
                 </Text>
 
-                <View style={[styles.monthNavRow, { marginTop: 8, marginBottom: 6 }]}>
-                  <Pressable
-                    disabled={isPaymentPrevDisabled}
-                    onPress={() => setPaymentMonth(shiftMonth(paymentMonth, -1))}
-                    style={({ pressed }) => [styles.monthNavBtn, isPaymentPrevDisabled ? styles.monthNavBtnDisabled : null, pressed && styles.pressed]}
-                  >
-                    <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                  <View style={styles.monthNavCenter}>
-                    <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                      {monthLabel(paymentMonth)}
-                    </Text>
-                    <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                      {paymentMonth}
-                    </Text>
-                  </View>
-                  <Pressable
-                    disabled={isPaymentNextDisabled}
-                    onPress={() => setPaymentMonth(shiftMonth(paymentMonth, 1))}
-                    style={({ pressed }) => [styles.monthNavBtn, isPaymentNextDisabled ? styles.monthNavBtnDisabled : null, pressed && styles.pressed]}
-                  >
-                    <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                </View>
 
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Billing Period
+                    {t.payments.billingPeriod}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
-                    {monthLabel(paymentMonth)} ({paymentMonth})
+                    {monthLabel(paymentMonth)}
                   </Text>
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Payment Status
+                    {t.payments.paymentStatus}
                   </Text>
                   {(() => {
                     const st = paymentSummaryForSelectedMonth.status;
-                    const display = st === 'Pending' ? 'Unpaid' : st;
-                    const t = badgeTone(st);
+                    const display = labelOf(t.billStatus, st === 'Pending' ? 'Unpaid' : st);
+                    const tone = badgeTone(st);
                     return (
-                      <View style={[styles.chip, { backgroundColor: t.bg, borderColor: t.border }]}>
-                        <Text variant="labelSmall" style={{ color: t.fg, fontWeight: '800' }}>
+                      <View style={[styles.chip, { backgroundColor: tone.bg, borderColor: tone.border }]}>
+                        <Text variant="labelSmall" style={{ color: tone.fg, fontWeight: '800' }}>
                           {display}
                         </Text>
                       </View>
@@ -1353,7 +1408,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Total Bill Amount
+                    {t.payments.totalBill}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(paymentSummaryForSelectedMonth.invoiceTotal)}
@@ -1361,7 +1416,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Paid Amount
+                    {t.payments.paidAmount}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(paymentSummaryForSelectedMonth.paidApplied)}
@@ -1369,7 +1424,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Pending Amount
+                    {t.payments.pendingAmount}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {money(paymentSummaryForSelectedMonth.pending)}
@@ -1377,7 +1432,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Bill Date
+                    {t.billing.billDate}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {fmtYmd(paymentSummaryForSelectedMonth.billCalcDateYmd)}
@@ -1385,7 +1440,7 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Due Date
+                    {t.payments.dueDate}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
                     {fmtYmd(paymentSummaryForSelectedMonth.dueDateYmd)}
@@ -1393,10 +1448,10 @@ export default function AdminCustomerDetailDashboard() {
                 </View>
                 <View style={styles.kvRow}>
                   <Text variant="bodySmall" style={textSub}>
-                    Payment Mode
+                    {t.payments.paymentMode}
                   </Text>
                   <Text variant="bodyMedium" style={textMain}>
-                    {paymentsForSelectedMonth[0]?.paymentMode ?? '—'}
+                    {paymentsForSelectedMonth[0]?.paymentMode ? labelOf(text.paymentModes, paymentsForSelectedMonth[0].paymentMode) : '—'}
                   </Text>
                 </View>
 
@@ -1415,7 +1470,7 @@ export default function AdminCustomerDetailDashboard() {
                       setPaymentModeDialogOpen(true);
                     }}
                   >
-                    Mark Paid (full)
+                    {t.payments.markPaidFull}
                   </Button>
                   <Button
                     mode="outlined"
@@ -1432,21 +1487,26 @@ export default function AdminCustomerDetailDashboard() {
                           createdAt: nowIso,
                           updatedAt: nowIso,
                           date: nowIso,
+                          // Keep the month key: `paymentsUnpaidMonths` matches this exact string to find reopened months.
                           action: `Payment marked unpaid for ${paymentMonth}`,
                           updatedBy: 'Admin',
                         },
                       ];
-                      await updateCustomer.mutateAsync({
-                        id: c.id,
-                        data: {
-                          payments: next as any,
-                          audit: nextAudit as any,
-                        },
-                      });
-                      showToast(`Marked unpaid for ${monthLabel(paymentMonth)}. Pending will carry forward automatically.`);
+                      try {
+                        await updateCustomer.mutateAsync({
+                          id: c.id,
+                          data: {
+                            payments: next as any,
+                            audit: nextAudit as any,
+                          },
+                        });
+                        showToast(t.payments.markedUnpaid(monthLabel(paymentMonth)));
+                      } catch (e) {
+                        showToast(t.payments.couldNotReopen(errorMessage(e)));
+                      }
                     }}
                   >
-                    Mark Unpaid (reopen)
+                    {t.payments.markUnpaid}
                   </Button>
                 </View>
               </Card.Content>
@@ -1455,29 +1515,83 @@ export default function AdminCustomerDetailDashboard() {
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Payment History
+                  {t.payments.historyTitle}
                 </Text>
-                <View style={styles.tableWrap}>
-                  <TableScroll>
-                    <View style={[styles.tableMin, { minWidth: 1400 }]}>
+                {!paymentHistoryRowsForSelectedMonth.length ? (
+                  <AdminListEmptyState
+                    icon="cash-remove"
+                    title={t.payments.emptyTitle}
+                    text={t.payments.emptyText}
+                  />
+                ) : isMobile ? (
+                  // Phones read payments as cards; the fifteen-column table needs ~1400px.
+                  <View style={{ gap: 10, marginTop: 4 }}>
+                    {paymentHistoryRowsForSelectedMonth.map((r) => (
+                      <View key={r.id} style={[styles.complaintCard, sectionCard]}>
+                        <View style={styles.complaintTop}>
+                          <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
+                            {r.paymentAmount}
+                          </Text>
+                          <DetailStatusPill tone={paymentTone(r.paymentStatus)} label={t.billStatus[r.paymentStatus]} />
+                        </View>
+                        <Text variant="bodySmall" style={textSub} numberOfLines={2}>
+                          {[r.paymentDate, r.paymentMode, r.collectedBy !== '—' ? t.payments.by(r.collectedBy) : '']
+                            .filter((x) => x && x !== '—')
+                            .join(' · ')}
+                        </Text>
+                        <View style={styles.paymentCardGrid}>
+                          <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                            {t.payments.previousDue(r.previousDueAmount)}
+                          </Text>
+                          <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                            {t.payments.adjusted(r.amountAdjusted)}
+                          </Text>
+                          <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                            {t.payments.remaining(r.remainingDueAmount)}
+                          </Text>
+                          {r.advanceAmountAdded !== '—' ? (
+                            <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                              {t.payments.advance(r.advanceAmountAdded)}
+                            </Text>
+                          ) : null}
+                        </View>
+                        {r.paymentNotes !== '—' ? (
+                          <Text variant="bodySmall" style={textMain} numberOfLines={3}>
+                            {r.paymentNotes}
+                          </Text>
+                        ) : null}
+                        {r.transactionId !== '—' || r.receiptNumber !== '—' ? (
+                          <Text variant="labelSmall" style={textSub} numberOfLines={2}>
+                            {[r.transactionId !== '—' ? t.payments.reference(r.transactionId) : '', r.receiptNumber !== '—' ? t.payments.receipt(r.receiptNumber) : '']
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.tableWrap}>
+                  <TableScroll fit={fitTables}>
+                    <View style={[styles.tableMin, fitTables ? styles.tableFit : { minWidth: 1400 }]}>
                       <TableRow
                         header
                         cells={[
-                          { text: 'Payment Date', grow: true, lines: 2 },
-                          { text: 'Payment Amount', lines: 2 },
-                          { text: 'Payment Mode', lines: 2 },
-                          { text: 'Transaction ID / Reference Number', grow: true, lines: 2 },
-                          { text: 'Collected By', grow: true, lines: 2 },
-                          { text: 'Bill Month / Billing Period', grow: true, lines: 2 },
-                          { text: 'Payment Status', lines: 2 },
-                          { text: 'Previous Due Amount', lines: 2 },
-                          { text: 'Amount Adjusted', lines: 2 },
-                          { text: 'Remaining Due Amount', lines: 2 },
-                          { text: 'Advance Amount Added', lines: 2 },
-                          { text: 'Payment Notes', grow: true, lines: 2 },
-                          { text: 'Receipt Number', lines: 2 },
-                          { text: 'Created By', grow: true, lines: 2 },
-                          { text: 'Created Date & Time', grow: true, lines: 2 },
+                          { text: t.payments.columns.paymentDate, grow: true, lines: 2 },
+                          { text: t.payments.columns.paymentAmount, lines: 2 },
+                          { text: t.payments.columns.paymentMode, lines: 2 },
+                          { text: t.payments.columns.reference, grow: true, lines: 2 },
+                          { text: t.payments.columns.collectedBy, grow: true, lines: 2 },
+                          { text: t.payments.columns.billMonth, grow: true, lines: 2 },
+                          { text: t.payments.columns.paymentStatus, lines: 2 },
+                          { text: t.payments.columns.previousDue, lines: 2 },
+                          { text: t.payments.columns.amountAdjusted, lines: 2 },
+                          { text: t.payments.columns.remainingDue, lines: 2 },
+                          { text: t.payments.columns.advanceAdded, lines: 2 },
+                          { text: t.payments.columns.notes, grow: true, lines: 2 },
+                          { text: t.payments.columns.receiptNumber, lines: 2 },
+                          { text: t.payments.columns.createdBy, grow: true, lines: 2 },
+                          { text: t.payments.columns.createdAt, grow: true, lines: 2 },
                         ]}
                       />
                       {paymentHistoryRowsForSelectedMonth.length ? (
@@ -1491,7 +1605,7 @@ export default function AdminCustomerDetailDashboard() {
                               { text: r.transactionId, grow: true, lines: 2 },
                               { text: r.collectedBy, grow: true, lines: 2 },
                               { text: r.billingPeriod, grow: true, lines: 2 },
-                              { text: r.paymentStatus },
+                              { text: t.billStatus[r.paymentStatus] },
                               { text: r.previousDueAmount },
                               { text: r.amountAdjusted },
                               { text: r.remainingDueAmount },
@@ -1503,81 +1617,26 @@ export default function AdminCustomerDetailDashboard() {
                             ]}
                           />
                         ))
-                      ) : (
-                        <TableRow
-                          cells={[
-                            { text: 'No payments recorded for this month.', grow: true, lines: 2 },
-                            { text: '—' },
-                            { text: '—' },
-                            { text: '—', grow: true, lines: 2 },
-                            { text: '—', grow: true, lines: 2 },
-                            { text: '—', grow: true, lines: 2 },
-                            { text: '—' },
-                            { text: '—' },
-                            { text: '—' },
-                            { text: '—' },
-                            { text: '—' },
-                            { text: '—', grow: true, lines: 2 },
-                            { text: '—' },
-                            { text: '—', grow: true, lines: 2 },
-                            { text: '—', grow: true, lines: 2 },
-                          ]}
-                        />
-                      )}
+                      ) : null}
                     </View>
                   </TableScroll>
                 </View>
+                )}
               </Card.Content>
             </Card>
           </View>
-          )
         ) : null}
 
         {tab === 'deliveryHistory' ? (
-          !isTabReady ? (
-            <DeferredTabPlaceholder label="Customer Delivery" sectionCard={sectionCard} textMain={textMain} textSub={textSub} />
-          ) : (
           <View style={styles.sectionStack}>
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Day orders (month-wise)
+                  {t.delivery.title}
                 </Text>
-                <View style={[styles.monthNavRow, { marginTop: 6 }]}>
-                  <Pressable
-                    disabled={isDeliveryPrevDisabled}
-                    onPress={() => setDeliveryMonth(shiftMonth(deliveryMonth, -1))}
-                    style={({ pressed }) => [
-                      styles.monthNavBtn,
-                      isDeliveryPrevDisabled ? styles.monthNavBtnDisabled : null,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="chevron-left" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                  <View style={styles.monthNavCenter}>
-                    <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={1}>
-                      {monthLabel(deliveryMonth)}
-                    </Text>
-                    <Text variant="bodySmall" style={textSub} numberOfLines={1}>
-                      {deliveryMonth}
-                    </Text>
-                  </View>
-                  <Pressable
-                    disabled={isDeliveryNextDisabled}
-                    onPress={() => setDeliveryMonth(shiftMonth(deliveryMonth, 1))}
-                    style={({ pressed }) => [
-                      styles.monthNavBtn,
-                      isDeliveryNextDisabled ? styles.monthNavBtnDisabled : null,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="chevron-right" size={22} color={scheme === 'dark' ? 'white' : COLORS.text} />
-                  </Pressable>
-                </View>
 
                 <Text variant="bodySmall" style={textSub}>
-                  Tap a day in the calendar to view orders and mark Delivered/Not delivered.
+                  {t.delivery.hint}
                 </Text>
 
                 <SubscriptionMonthCalendarGrid
@@ -1589,12 +1648,13 @@ export default function AdminCustomerDetailDashboard() {
                   mode="delivery"
                   deliveryToneSurfaces={ADMIN_DELIVERY_SURFACES}
                   legendFooter={deliveryCalendarLegendFooter}
-                  onPressDay={(ymd) => setDeliverySelectedDayYmd(ymd)}
+                  onPressDay={(ymd) => {
+                    startTransition(() => setDeliverySelectedDayYmd(ymd));
+                  }}
                 />
               </Card.Content>
             </Card>
           </View>
-          )
         ) : null}
 
         {tab === 'complaints' ? (
@@ -1602,63 +1662,101 @@ export default function AdminCustomerDetailDashboard() {
             <Card style={[styles.sectionCard, sectionCard]} mode="elevated">
               <Card.Content style={styles.sectionContent}>
                 <Text variant="titleSmall" style={[styles.bold, textMain]}>
-                  Complaints
+                  {t.complaints.title}
                 </Text>
                 <Text variant="bodySmall" style={textSub}>
-                  Shows complaints raised by the customer.
+                  {t.complaints.hint}
                 </Text>
-                <View style={styles.tableWrap}>
-                  <TableScroll>
-                    <View style={[styles.tableMin, { minWidth: 980 }]}>
-                      <TableRow
-                        header
-                        cells={[
-                          { text: 'Complaint Date', grow: true },
-                          { text: 'Type', grow: true },
-                          { text: 'Status' },
-                          { text: 'Resolution Date' },
-                          { text: 'Description / Notes', grow: true, lines: 2 },
-                          { text: 'Resolved By', grow: true, lines: 2 },
-                        ]}
+                {(() => {
+                  const list = [...(c?.complaints ?? [])].sort((a, b) =>
+                    String(b.complaintDate ?? '').localeCompare(String(a.complaintDate ?? '')),
+                  );
+
+                  if (!list.length) {
+                    return (
+                      <AdminListEmptyState
+                        icon="emoticon-happy-outline"
+                        title={t.complaints.emptyTitle}
+                        text={t.complaints.emptyText}
                       />
-                      {(() => {
-                        const list = [...(c?.complaints ?? [])].sort((a, b) =>
-                          String(b.complaintDate ?? '').localeCompare(String(a.complaintDate ?? '')),
-                        );
-                        if (!list.length) {
-                          return (
-                            <TableRow
-                              cells={[
-                                { text: 'No complaints raised yet.', grow: true, lines: 2 },
-                                { text: '—', grow: true },
-                                { text: '—' },
-                                { text: '—' },
-                                { text: '—', grow: true, lines: 2 },
-                                { text: '—', grow: true },
-                              ]}
-                            />
-                          );
-                        }
-                        return list.map((cmp) => {
+                    );
+                  }
+
+                  // Phones read the complaints as cards; the table needs ~980px and would scroll sideways.
+                  if (isMobile) {
+                    return (
+                      <View style={{ gap: 10, marginTop: 4 }}>
+                        {list.map((cmp) => {
                           const st = String((cmp as any).status ?? 'Pending');
                           return (
-                            <TableRow
-                              key={cmp.id}
-                              cells={[
-                                { text: fmtDate((cmp as any).complaintDate), grow: true },
-                                { text: String((cmp as any).type ?? '—'), grow: true, lines: 2 },
-                                { text: st, tone: badgeTone(st) },
-                                { text: fmtDate((cmp as any).resolutionDate) },
-                                { text: String((cmp as any).description ?? '—') || '—', grow: true, lines: 3 },
-                                { text: String((cmp as any).resolvedBy ?? '—'), grow: true, lines: 2 },
-                              ]}
-                            />
+                            <View key={cmp.id} style={[styles.complaintCard, sectionCard]}>
+                              <View style={styles.complaintTop}>
+                                <Text variant="titleSmall" style={[styles.bold, textMain]} numberOfLines={2}>
+                                  {String((cmp as any).type ?? t.complaints.complaint)}
+                                </Text>
+                                <DetailStatusPill tone={complaintTone(st)} label={labelOf(t.complaints.statuses, st)} />
+                              </View>
+                              <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                                {[
+                                  t.complaints.raised(fmtDate((cmp as any).complaintDate)),
+                                  (cmp as any).resolutionDate ? t.complaints.resolved(fmtDate((cmp as any).resolutionDate)) : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              </Text>
+                              {String((cmp as any).description ?? '').trim() ? (
+                                <Text variant="bodyMedium" style={textMain} numberOfLines={4}>
+                                  {String((cmp as any).description)}
+                                </Text>
+                              ) : null}
+                              {String((cmp as any).resolvedBy ?? '').trim() ? (
+                                <Text variant="bodySmall" style={textSub} numberOfLines={1}>
+                                  {t.complaints.resolvedBy(labelOf(t.complaints.authors, String((cmp as any).resolvedBy)))}
+                                </Text>
+                              ) : null}
+                            </View>
                           );
-                        });
-                      })()}
+                        })}
+                      </View>
+                    );
+                  }
+
+                  return (
+                    <View style={styles.tableWrap}>
+                      <TableScroll fit={fitTables}>
+                        <View style={[styles.tableMin, fitTables ? styles.tableFit : { minWidth: 980 }]}>
+                          <TableRow
+                            header
+                            cells={[
+                              { text: t.complaints.columns.date, grow: true },
+                              { text: t.complaints.columns.type, grow: true },
+                              { text: t.complaints.columns.status },
+                              { text: t.complaints.columns.resolutionDate },
+                              { text: t.complaints.columns.description, grow: true, lines: 2 },
+                              { text: t.complaints.columns.resolvedBy, grow: true, lines: 2 },
+                            ]}
+                          />
+                          {list.map((cmp) => {
+                            const st = String((cmp as any).status ?? 'Pending');
+                            return (
+                              <TableRow
+                                key={cmp.id}
+                                cells={[
+                                  { text: fmtDate((cmp as any).complaintDate), grow: true },
+                                  { text: String((cmp as any).type ?? '—'), grow: true, lines: 2 },
+                                  { text: labelOf(t.complaints.statuses, st), tone: badgeTone(st) },
+                                  { text: fmtDate((cmp as any).resolutionDate) },
+                                  { text: String((cmp as any).description ?? '—') || '—', grow: true, lines: 3 },
+                                  { text: labelOf(t.complaints.authors, String((cmp as any).resolvedBy ?? '—')), grow: true, lines: 2 },
+                                ]}
+                              />
+                            );
+                          })}
+                        </View>
+                      </TableScroll>
                     </View>
-                  </TableScroll>
-                </View>
+                  );
+                })()}
 
                 {(() => {
                   const list = [...(c?.complaints ?? [])].sort((a, b) =>
@@ -1676,7 +1774,7 @@ export default function AdminCustomerDetailDashboard() {
                   return (
                     <View style={{ marginTop: 12, gap: 10 }}>
                       <Text variant="labelLarge" style={[styles.bold, textMain]}>
-                        Admin actions (visible to customer)
+                        {t.complaints.adminActionsTitle}
                       </Text>
                       {list.map((cmp) => {
                         const acts = actionsFor(cmp.id);
@@ -1697,7 +1795,7 @@ export default function AdminCustomerDetailDashboard() {
                                   {cmp.type}
                                 </Text>
                                 <Text variant="bodySmall" style={textSub} numberOfLines={2}>
-                                  {fmtDate(cmp.complaintDate)} · {cmp.status}
+                                  {fmtDate(cmp.complaintDate)} · {labelOf(t.complaints.statuses, cmp.status)}
                                 </Text>
                               </View>
                               <Button
@@ -1709,7 +1807,7 @@ export default function AdminCustomerDetailDashboard() {
                                   setComplaintActionDialogOpen(true);
                                 }}
                               >
-                                Add action
+                                {t.complaints.addAction}
                               </Button>
                             </View>
 
@@ -1721,14 +1819,14 @@ export default function AdminCustomerDetailDashboard() {
                                       {String((a as any).message ?? '')}
                                     </Text>
                                     <Text variant="labelSmall" style={textSub} numberOfLines={2}>
-                                      {fmtDateTime(String((a as any).createdAt ?? ''))} · {String((a as any).createdBy ?? 'Admin')}
+                                      {fmtDateTime(String((a as any).createdAt ?? ''))} · {labelOf(t.complaints.authors, String((a as any).createdBy ?? 'Admin'))}
                                     </Text>
                                   </View>
                                 ))}
                               </View>
                             ) : (
                               <Text variant="bodySmall" style={textSub}>
-                                No admin actions yet.
+                                {t.complaints.noActions}
                               </Text>
                             )}
                           </View>
@@ -1744,15 +1842,14 @@ export default function AdminCustomerDetailDashboard() {
 
         {/* Orders, Audit, Memo History tabs removed */}
           </ScrollView>
-        )}
       </View>
 
       {tab === 'overview' ? (
         <View style={[styles.overviewFooter, { paddingBottom: scrollPaddingBottom(12) }]}>
           <Pressable
-            onPress={() => setActiveTab('subscription')}
+            onPress={onPressSubscription}
             accessibilityRole="button"
-            style={({ pressed }) => [pressed && styles.pressed]}
+            style={({ pressed }) => [styles.overviewFooterInner, pressed && styles.pressed]}
           >
             <LinearGradient
               colors={[...dairyGradient.colors]}
@@ -1760,7 +1857,7 @@ export default function AdminCustomerDetailDashboard() {
               end={dairyGradient.end}
               style={[styles.addSubscriptionBtn, primaryButtonElevation()]}
             >
-              <Text style={styles.addSubscriptionBtnText}>Add Order Subscription</Text>
+              <Text style={styles.addSubscriptionBtnText}>{t.addOrderSubscription}</Text>
               <MaterialCommunityIcons name="arrow-right" size={22} color={dairyTactileColors.onPrimary} />
             </LinearGradient>
           </Pressable>
@@ -1775,41 +1872,44 @@ export default function AdminCustomerDetailDashboard() {
             setComplaintActionTargetId(null);
             setComplaintActionNote('');
           }}
-          style={[scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight, { alignSelf: 'center', maxWidth: 520, width: '100%' }]}
+          style={[scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight, complaintDialogStyle]}
         >
-          <Dialog.Title>Complaint action</Dialog.Title>
-          <Dialog.Content>
-            <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
-              This action will be saved and visible to the customer.
-            </Text>
-
-            <View style={{ marginTop: 10, gap: 8 }}>
-              <Text variant="labelLarge" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-                Status
+          <Dialog.Title>{t.complaints.dialogTitle}</Dialog.Title>
+          <ScrollView style={{ maxHeight: dialogScrollMaxH }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
+            <Dialog.Content>
+              <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
+                {t.complaints.dialogHint}
               </Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-                {(['Open', 'In Progress', 'Resolved', 'Closed'] as const).map((st) => (
-                  <Button
-                    key={st}
-                    mode={complaintActionStatus === st ? 'contained' : 'outlined'}
-                    onPress={() => setComplaintActionStatus(st)}
-                  >
-                    {st}
-                  </Button>
-                ))}
-              </View>
 
-              <TextInput
-                {...formFieldAttrs('complaint-admin-note')}
-                mode="outlined"
-                label="Admin note"
-                value={complaintActionNote}
-                onChangeText={setComplaintActionNote}
-                placeholder="Write what action you took…"
-                multiline
-              />
-            </View>
-          </Dialog.Content>
+              <View style={{ marginTop: 10, gap: 8 }}>
+                <Text variant="labelLarge" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
+                  {t.complaints.status}
+                </Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                  {(['Open', 'In Progress', 'Resolved', 'Closed'] as const).map((st) => (
+                    <Button
+                      key={st}
+                      mode={complaintActionStatus === st ? 'contained' : 'outlined'}
+                      onPress={() => setComplaintActionStatus(st)}
+                    >
+                      {t.complaints.statuses[st]}
+                    </Button>
+                  ))}
+                </View>
+
+                <DeferredTextInput
+                  ref={complaintNoteInputRef}
+                  {...formFieldAttrs('complaint-admin-note')}
+                  mode="outlined"
+                  label={t.complaints.adminNote}
+                  value={complaintActionNote}
+                  onChangeText={setComplaintActionNote}
+                  placeholder={t.complaints.notePlaceholder}
+                  multiline
+                />
+              </View>
+            </Dialog.Content>
+          </ScrollView>
           <Dialog.Actions>
             <Button
               onPress={() => {
@@ -1818,7 +1918,7 @@ export default function AdminCustomerDetailDashboard() {
                 setComplaintActionNote('');
               }}
             >
-              Cancel
+              {t.cancel}
             </Button>
             <Button
               mode="contained"
@@ -1826,6 +1926,7 @@ export default function AdminCustomerDetailDashboard() {
               loading={updateCustomer.isPending}
               onPress={async () => {
                 if (!c || !complaintActionTargetId) return;
+                const note = (complaintNoteInputRef.current?.flush() ?? complaintActionNote).trim();
                 const nowIso = new Date().toISOString();
                 const complaintId = complaintActionTargetId;
 
@@ -1848,26 +1949,32 @@ export default function AdminCustomerDetailDashboard() {
                     complaintId,
                     kind: 'status_change',
                     nextStatus: complaintActionStatus,
-                    message: complaintActionNote.trim() ? complaintActionNote.trim() : `Status updated to ${complaintActionStatus}`,
+                    message: note ? note : `Status updated to ${complaintActionStatus}`,
                     createdBy: 'Admin',
                   },
                 ];
 
-                await updateCustomer.mutateAsync({
-                  id: c.id,
-                  data: {
-                    complaints: nextComplaints as any,
-                    complaintActions: nextActions as any,
-                  },
-                });
+                try {
+                  await updateCustomer.mutateAsync({
+                    id: c.id,
+                    data: {
+                      complaints: nextComplaints as any,
+                      complaintActions: nextActions as any,
+                    },
+                  });
+                } catch (e) {
+                  // Keep the dialog (and the typed note) open so the admin can retry.
+                  showToast(t.complaints.couldNotSave(errorMessage(e)));
+                  return;
+                }
 
-                showToast(`Complaint updated: ${complaintActionStatus}`);
+                showToast(t.complaints.updated(t.complaints.statuses[complaintActionStatus]));
                 setComplaintActionDialogOpen(false);
                 setComplaintActionTargetId(null);
                 setComplaintActionNote('');
               }}
             >
-              Save action
+              {t.complaints.saveAction}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -1878,112 +1985,115 @@ export default function AdminCustomerDetailDashboard() {
             setPaymentModeDialogOpen(false);
             setPaymentModeDialogContext(null);
           }}
-          style={[scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight, { alignSelf: 'center', maxWidth: 420, width: '100%' }]}
+          style={[scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight, paymentDialogStyle]}
         >
-          <Dialog.Title>Mark paid</Dialog.Title>
-          <Dialog.Content>
-            <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
-              Customer can pay online/bank. Cash is admin-only, but admins can record cash collections here.
-            </Text>
-            <Text variant="bodySmall" style={[scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight, { marginTop: 6 }]}>
-              {paymentModeDialogContext
-                ? `Bill: ${monthLabel(paymentModeDialogContext.month)} · Amount: ${money(paymentModeDialogContext.pendingAmount)}`
-                : ''}
-            </Text>
+          <Dialog.Title>{t.markPaid.title}</Dialog.Title>
+          <ScrollView style={{ maxHeight: dialogScrollMaxH }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
+            <Dialog.Content>
+              <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
+                {t.markPaid.hint}
+              </Text>
+              <Text variant="bodySmall" style={[scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight, { marginTop: 6 }]}>
+                {paymentModeDialogContext
+                  ? t.markPaid.context(monthLabel(paymentModeDialogContext.month), money(paymentModeDialogContext.pendingAmount))
+                  : ''}
+              </Text>
 
-            {paymentModeDialogContext ? (
-              <>
-                <View style={{ marginTop: 12, gap: 8 }}>
-                  <Text variant="labelLarge" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-                    Payment mode
-                  </Text>
-                  {adminPaymentModeOptions.map((m) => {
-                    const active = m === selectedPaymentMode;
-                    return (
-                      <Pressable
-                        key={m}
-                        onPress={() => setSelectedPaymentMode(m)}
-                        style={({ pressed }) => [
-                          styles.pickItem,
-                          active ? { borderColor: 'rgba(37,99,235,0.35)' } : null,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Text variant="bodyMedium">{m}</Text>
-                        {active ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
-                      </Pressable>
-                    );
-                  })}
-                </View>
-
-                <View style={{ marginTop: 14, gap: 8 }}>
-                  <Text variant="labelLarge" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-                    Payment type
-                  </Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-                    <Button
-                      mode={paymentDialogPayKind === 'full' ? 'contained' : 'outlined'}
-                      onPress={() => {
-                        setPaymentDialogPayKind('full');
-                        setPaymentDialogPartialAmount(String(paymentModeDialogContext.pendingAmount));
-                      }}
-                    >
-                      Full payment
-                    </Button>
-                    <Button
-                      mode={paymentDialogPayKind === 'partial' ? 'contained' : 'outlined'}
-                      onPress={() => {
-                        setPaymentDialogPayKind('partial');
-                        setPaymentDialogPartialAmount(String(Math.max(1, Math.min(paymentModeDialogContext.pendingAmount, Number(paymentDialogPartialAmount || 1)))));
-                      }}
-                    >
-                      Partial payment
-                    </Button>
+              {paymentModeDialogContext ? (
+                <>
+                  <View style={{ marginTop: 12, gap: 8 }}>
+                    <Text variant="labelLarge" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
+                      {t.payments.paymentMode}
+                    </Text>
+                    {ADMIN_PAYMENT_MODES.map((m) => {
+                      const active = m === selectedPaymentMode;
+                      return (
+                        <Pressable
+                          key={m}
+                          onPress={() => setSelectedPaymentMode(m)}
+                          style={({ pressed }) => [
+                            styles.pickItem,
+                            active ? { borderColor: 'rgba(37,99,235,0.35)' } : null,
+                            pressed && styles.pressed,
+                          ]}
+                        >
+                          <Text variant="bodyMedium">{text.paymentModes[m]}</Text>
+                          {active ? <MaterialCommunityIcons name="check" size={18} color={COLORS.accent} /> : null}
+                        </Pressable>
+                      );
+                    })}
                   </View>
 
-                  {paymentDialogPayKind === 'partial' ? (
-                    <TextInput
-                      {...formFieldAttrs('payment-partial-amount')}
-                      mode="outlined"
-                      keyboardType="numeric"
-                      label="Amount paid now"
-                      value={paymentDialogPartialAmount}
-                      onChangeText={setPaymentDialogPartialAmount}
-                      placeholder={String(paymentModeDialogContext.pendingAmount)}
-                    />
-                  ) : null}
+                  <View style={{ marginTop: 14, gap: 8 }}>
+                    <Text variant="labelLarge" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
+                      {t.markPaid.paymentType}
+                    </Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                      <Button
+                        mode={paymentDialogPayKind === 'full' ? 'contained' : 'outlined'}
+                        onPress={() => {
+                          setPaymentDialogPayKind('full');
+                          setPaymentDialogPartialAmount(String(paymentModeDialogContext.pendingAmount));
+                        }}
+                      >
+                        {t.markPaid.full}
+                      </Button>
+                      <Button
+                        mode={paymentDialogPayKind === 'partial' ? 'contained' : 'outlined'}
+                        onPress={() => {
+                          setPaymentDialogPayKind('partial');
+                          setPaymentDialogPartialAmount(String(Math.max(1, Math.min(paymentModeDialogContext.pendingAmount, Number(paymentDialogPartialAmount || 1)))));
+                        }}
+                      >
+                        {t.markPaid.partial}
+                      </Button>
+                    </View>
 
-                  {(() => {
-                    const pending = Math.round(Math.max(0, paymentModeDialogContext.pendingAmount));
-                    const raw = Number(String(paymentDialogPartialAmount ?? '').trim());
-                    const desired = paymentDialogPayKind === 'full' ? pending : Math.round(Number.isFinite(raw) ? raw : 0);
-                    const paidNow = Math.max(0, Math.min(pending, desired));
-                    const remaining = Math.max(0, Math.round(pending - paidNow));
-                    return (
-                      <View style={{ gap: 6 }}>
-                        <View style={styles.kvRow}>
-                          <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
-                            Paying now
-                          </Text>
-                          <Text variant="bodyMedium" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-                            {money(paidNow)}
-                          </Text>
+                    {paymentDialogPayKind === 'partial' ? (
+                      <DeferredTextInput
+                        ref={partialAmountInputRef}
+                        {...formFieldAttrs('payment-partial-amount')}
+                        mode="outlined"
+                        keyboardType="numeric"
+                        label={t.markPaid.amountPaidNow}
+                        value={paymentDialogPartialAmount}
+                        onChangeText={setPaymentDialogPartialAmount}
+                        placeholder={String(paymentModeDialogContext.pendingAmount)}
+                      />
+                    ) : null}
+
+                    {(() => {
+                      const pending = Math.round(Math.max(0, paymentModeDialogContext.pendingAmount));
+                      const raw = Number(String(paymentDialogPartialAmount ?? '').trim());
+                      const desired = paymentDialogPayKind === 'full' ? pending : Math.round(Number.isFinite(raw) ? raw : 0);
+                      const paidNow = Math.max(0, Math.min(pending, desired));
+                      const remaining = Math.max(0, Math.round(pending - paidNow));
+                      return (
+                        <View style={{ gap: 6 }}>
+                          <View style={styles.kvRow}>
+                            <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
+                              {t.markPaid.payingNow}
+                            </Text>
+                            <Text variant="bodyMedium" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
+                              {money(paidNow)}
+                            </Text>
+                          </View>
+                          <View style={styles.kvRow}>
+                            <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
+                              {t.markPaid.remainingCarry}
+                            </Text>
+                            <Text variant="bodyMedium" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
+                              {money(remaining)}
+                            </Text>
+                          </View>
                         </View>
-                        <View style={styles.kvRow}>
-                          <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
-                            Remaining (carry-forward)
-                          </Text>
-                          <Text variant="bodyMedium" style={scheme === 'dark' ? styles.textOnDark : styles.textOnLight}>
-                            {money(remaining)}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })()}
-                </View>
-              </>
-            ) : null}
-          </Dialog.Content>
+                      );
+                    })()}
+                  </View>
+                </>
+              ) : null}
+            </Dialog.Content>
+          </ScrollView>
           <Dialog.Actions>
             <Button
               onPress={() => {
@@ -1991,7 +2101,7 @@ export default function AdminCustomerDetailDashboard() {
                 setPaymentModeDialogContext(null);
               }}
             >
-              Cancel
+              {t.cancel}
             </Button>
             <Button
               mode="contained"
@@ -2000,7 +2110,12 @@ export default function AdminCustomerDetailDashboard() {
               onPress={async () => {
                 if (!c || !paymentModeDialogContext) return;
                 const pending = Math.round(Math.max(0, paymentModeDialogContext.pendingAmount));
-                const raw = Number(String(paymentDialogPartialAmount ?? '').trim());
+                // Flush the debounced amount: the last keystrokes may not have reached state yet.
+                const partialText =
+                  paymentDialogPayKind === 'partial'
+                    ? partialAmountInputRef.current?.flush() ?? paymentDialogPartialAmount
+                    : paymentDialogPartialAmount;
+                const raw = Number(String(partialText ?? '').trim());
                 const desired = paymentDialogPayKind === 'full' ? pending : Math.round(Number.isFinite(raw) ? raw : 0);
                 const payAmount = Math.max(0, Math.min(pending, desired));
                 if (payAmount <= 0) {
@@ -2040,25 +2155,42 @@ export default function AdminCustomerDetailDashboard() {
                     updatedBy: 'Admin',
                   },
                 ];
-                await updateCustomer.mutateAsync({
-                  id: c.id,
-                  data: {
-                    payments: nextPayments as any,
-                    lastPaymentDate: nowIso,
-                    audit: nextAudit as any,
-                  },
+                // What is owed after this payment, by the same timeline the customer sees in My bills.
+                const afterPayment = { ...c, payments: nextPayments as any };
+                const settled = summarizeBilling(afterPayment, buildBillingTimeline(afterPayment, monthKey, { offers: offers.all }), todayYmdLocal());
+                try {
+                  await updateCustomer.mutateAsync({
+                    id: c.id,
+                    data: {
+                      payments: nextPayments as any,
+                      lastPaymentDate: nowIso,
+                      pendingAmount: settled.outstanding,
+                      advanceBalance: settled.advance,
+                      audit: nextAudit as any,
+                    },
+                  });
+                } catch (e) {
+                  showToast(t.markPaid.couldNotRecord(errorMessage(e)));
+                  return;
+                }
+                notifyPaymentRecorded({
+                  customerId: c.id,
+                  amount: payAmount,
+                  paymentMode: selectedPaymentMode,
+                  dateYmd: todayYmdLocal(),
+                  outstandingAfter: settled.outstanding,
                 });
                 const remaining = Math.max(0, Math.round(pending - payAmount));
                 showToast(
                   paymentDialogPayKind === 'full'
-                    ? `Marked paid (full) for ${monthLabel(month)} · Paid ${money(payAmount)} · Remaining ${money(remaining)}`
-                    : `Marked paid (partial) for ${monthLabel(month)} · Paid ${money(payAmount)} · Remaining ${money(remaining)}`,
+                    ? t.markPaid.paidFull(monthLabel(month), money(payAmount), money(remaining))
+                    : t.markPaid.paidPartial(monthLabel(month), money(payAmount), money(remaining)),
                 );
                 setPaymentModeDialogOpen(false);
                 setPaymentModeDialogContext(null);
               }}
             >
-              Mark paid
+              {t.markPaid.confirm}
             </Button>
           </Dialog.Actions>
         </Dialog>
@@ -2069,11 +2201,11 @@ export default function AdminCustomerDetailDashboard() {
           style={[
             scheme === 'dark' ? styles.sectionCardDark : styles.sectionCardLight,
             styles.deliveryDialogSurface,
-            { maxWidth: deliveryDialogMaxW, width: deliveryDialogMaxW },
+            deliveryDialogStyle,
           ]}
         >
           <View style={styles.deliveryDialogClip}>
-            <Dialog.Title style={styles.deliveryDialogTitle}>Day orders</Dialog.Title>
+            <Dialog.Title style={styles.deliveryDialogTitle}>{t.delivery.dayTitle}</Dialog.Title>
             <Dialog.Content style={styles.deliveryDialogContent}>
             {deliverySelectedDayModel ? (
               <ScrollView
@@ -2085,7 +2217,7 @@ export default function AdminCustomerDetailDashboard() {
               >
                 <View style={styles.deliveryDaySection}>
                   <Text variant="labelSmall" style={[styles.deliveryDayLabel, scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight]}>
-                    Date
+                    {t.delivery.date}
                   </Text>
                   <Text variant="bodyMedium" style={[styles.deliveryDayValue, scheme === 'dark' ? styles.textOnDark : styles.textOnLight]}>
                     {fmtYmd(deliverySelectedDayModel.ymd)}
@@ -2099,34 +2231,40 @@ export default function AdminCustomerDetailDashboard() {
 
                 <View style={styles.deliveryDaySection}>
                   <Text variant="labelSmall" style={[styles.deliveryDayLabel, scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight]}>
-                    Products & amount
+                    {t.delivery.productsAmount}
                   </Text>
-                  {deliverySelectedDayModel.plans.map((p, idx) => (
+                  {deliverySelectedDayModel.plans.map(({ plan: p, quantity }, idx) => (
                     <Text
                       key={`dp_${idx}`}
                       variant="bodySmall"
                       style={[styles.deliveryProductLine, scheme === 'dark' ? styles.textOnDark : styles.textOnLight]}
                     >
-                      {p.productName} {p.quantityLabel} (subscription) — ₹{Math.round(planLineTotal(p as any))}
+                      {t.delivery.subscriptionLine(
+                        `${p.productName} ${p.quantityLabel}${quantity > 1 ? ` × ${quantity}` : ''}`,
+                        money(Math.round((planLineTotal(p as any) / usualQuantity(p)) * quantity)),
+                      )}
                     </Text>
                   ))}
-                  {deliverySelectedDayModel.addons.map((a, idx) => {
-                    const unit = productPriceByName.get(String(a.productName ?? '').trim()) ?? 0;
-                    const qty = Math.max(1, Math.floor(Number(a.quantity ?? 1)));
-                    const cost = Math.round(unit * qty);
-                    return (
-                      <Text
-                        key={`da_${idx}`}
-                        variant="bodySmall"
-                        style={[styles.deliveryProductLine, scheme === 'dark' ? styles.textOnDark : styles.textOnLight]}
-                      >
-                        {a.productName} {a.quantityLabel} · Qty {a.quantity} (add-on) — ₹{cost}
-                      </Text>
-                    );
-                  })}
+                  {deliverySelectedDayModel.addons.map((a) => (
+                    <Text
+                      key={`da_${a.id}`}
+                      variant="bodySmall"
+                      style={[styles.deliveryProductLine, scheme === 'dark' ? styles.textOnDark : styles.textOnLight]}
+                    >
+                      {t.delivery.addOnLine(addOnLabel(a, lang), money(addOnLineTotal(a)))}
+                      {a.offer
+                        ? `\n${[
+                            offerWords.billLine(offerText(a.offer.title, lang)),
+                            orderSavings(a) > 0 ? t.billing.saved(money(orderSavings(a))) : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}`
+                        : ''}
+                    </Text>
+                  ))}
                   {!deliverySelectedDayModel.plans.length && !deliverySelectedDayModel.addons.length ? (
                     <Text variant="bodySmall" style={scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight}>
-                      No orders on this day.
+                      {t.delivery.noOrders}
                     </Text>
                   ) : null}
                 </View>
@@ -2135,7 +2273,7 @@ export default function AdminCustomerDetailDashboard() {
 
                 <View style={styles.deliveryDaySection}>
                   <Text variant="labelSmall" style={[styles.deliveryDayLabel, scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight]}>
-                    Total amount
+                    {t.delivery.totalAmount}
                   </Text>
                   <Text variant="bodyLarge" style={[styles.deliveryDayValue, scheme === 'dark' ? styles.textOnDark : styles.textOnLight]}>
                     ₹{deliverySelectedDayModel.total}
@@ -2146,10 +2284,10 @@ export default function AdminCustomerDetailDashboard() {
 
                 <View style={styles.deliveryDaySection}>
                   <Text variant="labelSmall" style={[styles.deliveryDayLabel, scheme === 'dark' ? styles.subtleOnDark : styles.subtleOnLight]}>
-                    Status
+                    {t.complaints.status}
                   </Text>
                   <Text variant="bodyMedium" style={[styles.deliveryDayValue, scheme === 'dark' ? styles.textOnDark : styles.textOnLight]}>
-                    {deliverySelectedDayModel.status}
+                    {labelOf(t.delivery.states, deliverySelectedDayModel.status)}
                   </Text>
                 </View>
 
@@ -2164,7 +2302,7 @@ export default function AdminCustomerDetailDashboard() {
                     onPress={() => void setDeliveryStatusForDay(deliverySelectedDayModel.ymd, 'Delivered')}
                     style={styles.deliveryActionBtn}
                   >
-                    Delivered
+                    {t.delivery.markDelivered}
                   </Button>
                   <Button
                     compact
@@ -2174,19 +2312,19 @@ export default function AdminCustomerDetailDashboard() {
                     onPress={() => void setDeliveryStatusForDay(deliverySelectedDayModel.ymd, 'Missed')}
                     style={styles.deliveryActionBtn}
                   >
-                    Not delivered
+                    {t.delivery.markNotDelivered}
                   </Button>
                 </View>
               </ScrollView>
             ) : (
               <Text variant="bodySmall" style={textSub}>
-                Loading…
+                {t.loading}
               </Text>
             )}
             </Dialog.Content>
             <Dialog.Actions style={styles.deliveryDialogActions}>
               <Button compact onPress={() => setDeliverySelectedDayYmd(null)}>
-                Close
+                {t.close}
               </Button>
             </Dialog.Actions>
           </View>
@@ -2195,7 +2333,7 @@ export default function AdminCustomerDetailDashboard() {
         <AppSnackbar
           visible={toast.visible}
           message={toast.message}
-          onDismiss={() => setToast((t) => ({ ...t, visible: false }))}
+          onDismiss={dismissToast}
           duration={3500}
         />
       </Portal>
@@ -2209,6 +2347,8 @@ const styles = StyleSheet.create({
   screenRoot: { flex: 1 },
   bg: { flex: 1 },
   tabBody: { flex: 1, minHeight: 0 },
+  /** Shared month stepper under the tabs. */
+  monthBar: { paddingHorizontal: amraleSpacing.marginMobile, paddingBottom: amraleSpacing.sm },
   tabScroll: { flex: 1 },
   bgLight: { backgroundColor: COLORS.bg },
   bgDark: { backgroundColor: '#0B1220' },
@@ -2228,8 +2368,25 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     color: dairyTactileColors.onSurface,
   },
-  headerSpacer: { width: 40 },
-  iconBtn: { width: 40, height: 40, borderRadius: amraleRadius.md, alignItems: 'center', justifyContent: 'center' },
+  headerSpacer: { width: 44 },
+
+  statusWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: amraleSpacing.lg, gap: amraleSpacing.sm },
+  statusTitle: {
+    fontFamily: amraleTypography.fontFamily.bold,
+    fontSize: 18,
+    lineHeight: 24,
+    color: dairyTactileColors.onSurface,
+    textAlign: 'center',
+  },
+  statusBody: {
+    fontFamily: amraleTypography.fontFamily.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: dairyTactileColors.onSurfaceVariant,
+    textAlign: 'center',
+  },
+  statusActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: amraleSpacing.sm, marginTop: amraleSpacing.xs },
+  iconBtn: { width: 44, height: 44, borderRadius: amraleRadius.md, alignItems: 'center', justifyContent: 'center' },
 
   tabsBar: { paddingHorizontal: amraleSpacing.marginMobile, paddingBottom: amraleSpacing.sm, marginTop: amraleSpacing.sm },
 
@@ -2237,17 +2394,21 @@ const styles = StyleSheet.create({
 
   // Header CRM card removed; details live in Overview tab.
   kv: { flexGrow: 1, flexBasis: 160, minWidth: 0, gap: 4 },
-  kvRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  // Wraps the value under a long label on narrow phones instead of pushing it past the card edge.
+  kvRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: 12, rowGap: 2 },
   bold: { fontWeight: '900' },
+  kvLabelWrap: { flexShrink: 1 },
+  offerAmount: { color: '#15803D' },
 
   tabsRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   tabsRowScroll: { flexDirection: 'row', gap: 8 },
   tabsRowScrollMobile: { paddingHorizontal: 16, gap: 6 },
   tabPill: { borderRadius: 999, borderWidth: 1, alignItems: 'center', justifyContent: 'center', maxWidth: 160 },
   tabPillBase: { paddingHorizontal: 12 },
-  tabPillH44: { height: 44 },
-  tabPillH40: { height: 40, paddingHorizontal: 10 },
-  tabPillH36: { height: 36, paddingHorizontal: 10, maxWidth: 140 },
+  // Every breakpoint keeps a ≥44px touch target.
+  tabPillDesktop: { minHeight: 44 },
+  tabPillTablet: { minHeight: 44, paddingHorizontal: 10 },
+  tabPillMobile: { minHeight: 44, paddingHorizontal: 12 },
   tabPillActive: {
     backgroundColor: dairyTactileColors.primaryContainer,
     borderColor: dairyTactileColors.primaryContainer,
@@ -2260,13 +2421,17 @@ const styles = StyleSheet.create({
   tabTextInactive: { color: dairyTactileColors.onSurface, fontSize: 13, opacity: 0.85 },
   tabText14: { fontSize: 14 },
   tabText13: { fontSize: 13 },
-  tabText12: { fontSize: 12 },
 
+  // A solid bar (not a transparent strip) so the scroll area clearly ends above it instead of looking cut off.
   overviewFooter: {
     paddingHorizontal: amraleSpacing.marginMobile,
-    paddingTop: amraleSpacing.sm,
-    backgroundColor: 'transparent',
+    paddingTop: amraleSpacing.sm + 2,
+    backgroundColor: dairyTactileColors.surfaceContainerLowest,
+    borderTopWidth: 1,
+    borderTopColor: dairyTactileColors.outlineVariant,
   },
+  /** Sticky CTA stays a centered pill (not an edge-to-edge bar) on tablets/desktops. */
+  overviewFooterInner: { width: '100%', maxWidth: 480, alignSelf: 'center' },
   addSubscriptionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2318,18 +2483,35 @@ const styles = StyleSheet.create({
   memoDot: { width: 12, height: 12, borderRadius: 999, borderWidth: 1, marginTop: 4 },
   memoTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 4 },
 
+  /** Complaint card on phones, where the six-column table would scroll sideways. */
+  complaintCard: {
+    gap: 6,
+    padding: 12,
+    borderRadius: amraleRadius.lg,
+    borderWidth: 1,
+  },
+  complaintTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  /** Two-up amounts inside a payment card on phones. */
+  paymentCardGrid: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 12, rowGap: 2 },
   tableWrap: { borderRadius: 14, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', overflow: 'hidden' },
-  tableScroll: { paddingRight: 0 },
-  tableMin: { minWidth: 640 },
+  // flexGrow: a table narrower than its card (tablets) spans the card instead of hugging the left edge.
+  tableScroll: { flexGrow: 1 },
+  tableMin: { minWidth: 640, flexGrow: 1 },
+  tableFitWrap: { width: '100%' },
+  tableFit: { minWidth: 0, width: '100%' },
   tableRow: { flexDirection: 'row', gap: 8, paddingVertical: 8, paddingHorizontal: 10, alignItems: 'center' },
+  tableRowFit: { gap: 6, paddingHorizontal: 8 },
   tableHeader: { backgroundColor: 'rgba(148,163,184,0.10)', borderBottomWidth: 1, borderBottomColor: 'rgba(148,163,184,0.18)' },
   tableHeaderText: { color: 'rgba(30,41,59,0.70)', fontWeight: '900' },
   tableBodyText: { color: COLORS.text },
   cell: { width: 92, flexShrink: 0 },
   cellGrow: { flex: 1, width: 'auto', minWidth: 140 },
+  // Desktop fit mode: every column shares the row width (text wraps/ellipsizes); "grow" columns get a larger share.
+  cellFit: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 },
+  cellGrowFit: { flexGrow: 1.5 },
 
   monthNavRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  monthNavBtn: { width: 44, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(148,163,184,0.22)', backgroundColor: 'rgba(148,163,184,0.06)' },
+  monthNavBtn: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(148,163,184,0.22)', backgroundColor: 'rgba(148,163,184,0.06)' },
   monthNavBtnDisabled: { opacity: 0.45 },
   monthNavCenter: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'center' },
   dayRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', backgroundColor: 'rgba(148,163,184,0.06)' },
@@ -2354,6 +2536,7 @@ const styles = StyleSheet.create({
 
   subLine: { paddingVertical: 8, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(148,163,184,0.18)', backgroundColor: 'rgba(148,163,184,0.06)', paddingHorizontal: 10, gap: 2 },
   pickItem: {
+    minHeight: 44,
     paddingVertical: 10,
     paddingHorizontal: 10,
     borderRadius: 14,

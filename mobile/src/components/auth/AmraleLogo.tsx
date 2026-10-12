@@ -1,5 +1,6 @@
-import { Image, StyleSheet, View, ViewStyle } from 'react-native';
+import { Image, StyleSheet, useWindowDimensions, View, ViewStyle } from 'react-native';
 
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius } from '@/src/theme/dairyTactile';
 
 type Props = {
@@ -14,12 +15,25 @@ const SIZES = {
   login: { width: 112, height: 112 },
 } as const;
 
+/** Large logos may take at most this share of the window height (phone landscape is only ~375px tall). */
+const MAX_HEIGHT_SHARE = 0.4;
+
 export function AmraleLogo({ size = 'auth', rounded = false, style }: Props) {
-  const dimensions = SIZES[size];
+  const t = useStrings('auth');
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const base = SIZES[size];
+  // The big splash/auth artwork is sized from the window so it never overflows a short (landscape) or narrow
+  // screen; the small login mark stays fixed.
+  const scale =
+    size === 'login'
+      ? 1
+      : Math.min(1, (windowHeight * MAX_HEIGHT_SHARE) / base.height, Math.max(0, windowWidth - 48) / base.width);
+  const dimensions =
+    scale >= 1 ? base : { width: Math.round(base.width * scale), height: Math.round(base.height * scale) };
 
   if (rounded || size === 'login') {
     return (
-      <View style={[styles.roundedFrame, dimensions, style]} accessibilityRole="image" accessibilityLabel="Amrale Dairy logo">
+      <View style={[styles.roundedFrame, dimensions, style]} accessibilityRole="image" accessibilityLabel={t.brand.logoLabel}>
         <Image
           source={require('@/assets/images/amrale-logo.png')}
           style={styles.roundedImage}
@@ -35,7 +49,7 @@ export function AmraleLogo({ size = 'auth', rounded = false, style }: Props) {
         source={require('@/assets/images/amrale-logo.png')}
         style={[dimensions, styles.image]}
         resizeMode="contain"
-        accessibilityLabel="Amrale Dairy logo"
+        accessibilityLabel={t.brand.logoLabel}
       />
     </View>
   );

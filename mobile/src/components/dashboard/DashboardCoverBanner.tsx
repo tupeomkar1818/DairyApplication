@@ -2,9 +2,10 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, Image, Pressable, StyleSheet, View } from 'react-native';
 
 import type { DashboardCoverImage } from '@/src/domain/adminDashboard/entities';
-import { computeDashboardCoverHeight } from '@/src/components/dashboard/dashboardCoverLayout';
+import { computeDashboardCoverLayout } from '@/src/components/dashboard/dashboardCoverLayout';
 import { resolveDashboardCoverSource } from '@/src/components/dashboard/dashboardCover';
-import { amraleColors } from '@/src/theme/dairyTactile';
+import { useStrings } from '@/src/i18n/useStrings';
+import { amraleColors, amraleRadius, amraleSpacing } from '@/src/theme/dairyTactile';
 import { pointerEventsNone } from '@/src/theme/platformStyles';
 import { useResponsiveLayout } from '@/src/utils/responsiveLayout';
 
@@ -24,8 +25,9 @@ export function DashboardCoverBanner({
   isUpdating,
   fullBleed = true,
 }: Props) {
-  const { width: screenWidth } = useResponsiveLayout();
-  const bannerHeight = computeDashboardCoverHeight(screenWidth, cover.aspectRatio);
+  const t = useStrings('admin').cover;
+  const { width: screenWidth, height: screenHeight } = useResponsiveLayout();
+  const layout = computeDashboardCoverLayout(screenWidth, screenHeight, cover.aspectRatio);
 
   return (
     <Pressable
@@ -34,11 +36,15 @@ export function DashboardCoverBanner({
       style={({ pressed }) => [
         styles.shell,
         fullBleed ? styles.shellFullBleed : null,
-        { height: bannerHeight, width: fullBleed ? screenWidth : '100%' },
+        // Phones stay edge to edge ('100%' avoids overflowing by the width of a desktop web scrollbar); wider
+        // screens get the banner at its own aspect ratio, centered and rounded, so the artwork is never cropped.
+        layout.rounded
+          ? { width: layout.width, height: layout.height, borderRadius: amraleRadius.lg, marginTop: amraleSpacing.md }
+          : { width: '100%', height: layout.height },
         pressed && editable && styles.pressed,
       ]}
       accessibilityRole={editable ? 'button' : 'image'}
-      accessibilityLabel={editable ? 'Change dashboard cover image' : 'Dashboard cover image'}
+      accessibilityLabel={editable ? t.changeA11y : t.imageA11y}
     >
       <Image
         source={resolveDashboardCoverSource(cover)}
@@ -51,12 +57,8 @@ export function DashboardCoverBanner({
           {isUpdating ? (
             <ActivityIndicator color={amraleColors.white} size="small" />
           ) : (
-            <>
-              <MaterialCommunityIcons name="image-edit-outline" size={16} color={amraleColors.white} />
-              <View style={styles.editLabelWrap}>
-                <MaterialCommunityIcons name="camera-outline" size={12} color={amraleColors.white} />
-              </View>
-            </>
+            // One icon only: the second (camera) badge sat half outside the circle and read as a rendering glitch.
+            <MaterialCommunityIcons name="image-edit-outline" size={18} color={amraleColors.white} />
           )}
         </View>
       ) : null}
@@ -75,7 +77,7 @@ const styles = StyleSheet.create({
     borderRadius: 0,
   },
   image: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     width: '100%',
     height: '100%',
   },
@@ -93,10 +95,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 1,
-  },
-  editLabelWrap: {
-    position: 'absolute',
-    right: -2,
-    bottom: -2,
   },
 });

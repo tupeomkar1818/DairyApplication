@@ -15,21 +15,36 @@ function classifyLineKind(tag: CustomerSubscriptionPlanDto['productAdditionTag']
   return 'basic_subscription';
 }
 
+/** True when the plan's own date range touches the month at all. */
+function planOverlapsMonth(plan: CustomerSubscriptionPlanDto, monthYyyyMm: string): boolean {
+  const monthStart = `${monthYyyyMm}-01`;
+  const monthEnd = `${monthYyyyMm}-31`;
+  const start = String(plan.startDate ?? '').slice(0, 10);
+  const end = String(plan.endDate ?? '').slice(0, 10);
+  if (start && start > monthEnd) return false;
+  if (end && end < monthStart) return false;
+  return true;
+}
+
 /**
  * Builds subscription history rows: one per `subscriptionPlans` line.
+ *
  * Delivery stats use the same rules as billing: only **Delivered** `customer.deliveries` rows, aligned to the plan
- * (active day + duplicate-key attribution), with per-day quantity from matching calendar order lines or 1.
+ * (active day + duplicate-key attribution), with per-day quantity from matching calendar order lines or 1. Pass
+ * `monthYyyyMm` to scope the figures to one month, so they reconcile with that month's bill; lines that neither ran
+ * nor were delivered in the month are dropped.
  */
 export function buildCustomerSubscriptionHistoryRows(
   customer: CustomerResponse | null | undefined,
   dailyOrderLines: CustomerDailyProductOrderLineDto[],
+  monthYyyyMm?: string,
 ): CustomerSubscriptionHistoryRowDto[] {
   const plans = customer?.subscriptionPlans ?? [];
   const deliveries = customer?.deliveries ?? [];
 
-  return plans.map((plan, index) => {
+  const rows = plans.map((plan, index) => {
     const planId = plan.id?.trim() || `plan_${index}_${plan.productName}`;
-    const byDate = billableDeliveredDatesForPlan(index, plans, dailyOrderLines, deliveries, undefined);
+    const byDate = billableDeliveredDatesForPlan(index, plans, dailyOrderLines, deliveries, monthYyyyMm);
 
     let lastYmd: string | undefined;
     for (const y of byDate.keys()) {
@@ -62,4 +77,8 @@ export function buildCustomerSubscriptionHistoryRows(
       calculatedAmount,
     };
   });
+
+  if (!monthYyyyMm) return rows;
+  // A month view lists the lines that ran in that month, plus any that were delivered in it.
+  return rows.filter((row, index) => row.deliveryOccurrenceCount > 0 || planOverlapsMonth(plans[index]!, monthYyyyMm));
 }

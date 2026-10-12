@@ -3,20 +3,28 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateDeliveryBoyRequest, DeliveryBoyListResponse, DeliveryBoyResponse, UpdateDeliveryBoyRequest } from '@/src/domain/deliveryBoys/dtos';
 import { services } from '@/src/infrastructure/service-registry';
 
-export function useDeliveryBoys() {
+/** Optional live-sync for screens that must reflect edits from other actors (MEMORY.md R7: prefer refetchInterval). */
+export type DeliveryBoyQueryOptions = {
+  /** Poll interval in ms; `false`/omitted disables polling. TanStack pauses it while the app is backgrounded. */
+  refetchInterval?: number | false;
+};
+
+export function useDeliveryBoys(opts?: DeliveryBoyQueryOptions) {
   return useQuery<DeliveryBoyListResponse>({
     queryKey: ['deliveryBoys', 'list'],
     queryFn: () => services.deliveryBoys.list(),
     staleTime: 10_000,
+    refetchInterval: opts?.refetchInterval ?? false,
   });
 }
 
-export function useDeliveryBoy(id: string | undefined) {
+export function useDeliveryBoy(id: string | undefined, opts?: DeliveryBoyQueryOptions) {
   return useQuery<DeliveryBoyResponse | null>({
     queryKey: ['deliveryBoys', 'getById', id ?? ''],
     queryFn: () => (id ? services.deliveryBoys.getById(id) : Promise.resolve(null)),
     enabled: !!id,
     staleTime: 10_000,
+    refetchInterval: opts?.refetchInterval ?? false,
   });
 }
 

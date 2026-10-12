@@ -1,11 +1,13 @@
 import { z } from 'zod';
 
+import { strings } from '@/src/i18n/strings';
+
 // Depends on: zod
 export const CreateDeliveryBoyRequestSchema = z.object({
-  fullName: z.string().min(1, 'Full name is required').max(80),
-  mobileNumber: z.string().regex(/^\d{10}$/, 'Enter a valid 10-digit mobile number'),
-  joiningDate: z.string().min(1, 'Joining date is required'),
-  primaryRouteName: z.string().min(1, 'Primary route is required').max(60),
+  fullName: z.string().min(1, { error: () => strings('deliveryBoys').errors.fullNameRequired }).max(80),
+  mobileNumber: z.string().regex(/^\d{10}$/, { error: () => strings('deliveryBoys').errors.mobileInvalid }),
+  joiningDate: z.string().min(1, { error: () => strings('deliveryBoys').errors.joiningDateRequired }),
+  primaryRouteName: z.string().min(1, { error: () => strings('deliveryBoys').errors.primaryRouteRequired }).max(60),
   monthlySalary: z.number().nonnegative(),
 
   // Optional onboarding / managed later from dashboard
@@ -31,10 +33,10 @@ export const CreateDeliveryBoyRequestSchema = z.object({
   replacementEndDate: z.string().optional(),
 
   // Advanced fields (editable later)
-  alternateMobileNumber: z.string().regex(/^\d{10}$/, 'Enter a valid 10-digit alternate mobile number').optional(),
+  alternateMobileNumber: z.string().regex(/^\d{10}$/, { error: () => strings('deliveryBoys').errors.alternateMobileInvalid }).optional(),
   address: z.string().max(160).optional(),
-  aadhaarNumber: z.string().regex(/^\d{12}$/, 'Enter a valid 12-digit Aadhaar number').optional(),
-  panNumber: z.string().regex(/^[A-Z]{5}\d{4}[A-Z]{1}$/, 'Enter a valid PAN number').optional(),
+  aadhaarNumber: z.string().regex(/^\d{12}$/, { error: () => strings('deliveryBoys').errors.aadhaarInvalid }).optional(),
+  panNumber: z.string().regex(/^[A-Z]{5}\d{4}[A-Z]{1}$/, { error: () => strings('deliveryBoys').errors.panInvalid }).optional(),
   // incentiveAmount moved above (salary section)
   bankDetails: z
     .object({
@@ -59,7 +61,7 @@ export const CreateDeliveryBoyRequestSchema = z.object({
     ])
     .optional(),
   emergencyContactName: z.string().max(80).optional(),
-  emergencyContactNumber: z.string().regex(/^\d{10}$/, 'Enter a valid 10-digit emergency contact number').optional(),
+  emergencyContactNumber: z.string().regex(/^\d{10}$/, { error: () => strings('deliveryBoys').errors.emergencyNumberInvalid }).optional(),
 
   photoUri: z.string().max(500).optional(),
   extraRoutePaymentAmount: z.number().nonnegative().optional(),
@@ -74,9 +76,9 @@ export const UpdateDeliveryBoyRequestSchema = CreateDeliveryBoyRequestSchema.par
 
 /** Advance salary line item (month ledger) — ids/timestamps added by service/UI on save. */
 export const DeliveryBoyAdvanceSalaryEntrySchema = z.object({
-  date: z.string().min(1, 'Date is required'),
-  amount: z.number().positive('Advance amount must be greater than zero'),
-  paymentMode: z.enum(['Cash', 'UPI', 'Bank Transfer', 'Card'], { message: 'Select a payment mode' }),
+  date: z.string().min(1, { error: () => strings('deliveryBoys').errors.dateRequired }),
+  amount: z.number().positive({ error: () => strings('deliveryBoys').errors.advanceAmountPositive }),
+  paymentMode: z.enum(['Cash', 'UPI', 'Bank Transfer', 'Card'], { error: () => strings('deliveryBoys').errors.paymentModeRequired }),
   transactionId: z.string().max(80).optional(),
   purpose: z.string().max(200).optional(),
 });

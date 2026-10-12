@@ -38,6 +38,7 @@ import {
   ReportSubscriptionMismatchRequestSchema,
   UpdateDailyDeliveryExecutionRequestSchema,
 } from '@/src/domain/subscriptions/validations';
+import { strings } from '@/src/i18n/strings';
 import {
   addDaysYmd,
   billableLitresFromDeliveryRow,
@@ -74,8 +75,15 @@ function newId(prefix: string): string {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
 
+/** Local calendar day of an instant (a UTC `toISOString()` slice is the wrong day for part of every IST day). */
+function localYmdOfIso(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return toYmd(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function todayYmd(): string {
-  return toYmd(nowIso());
+  return localYmdOfIso(nowIso());
 }
 
 function maxYmd(a: string, b: string): string {
@@ -152,7 +160,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     const store = await readStore();
     const dupActive = store.bases.some((b) => b.customerId === parsed.customerId && b.status === 'Active');
     if (dupActive) {
-      throw new DomainError('SUBSCRIPTION_ACTIVE_BASE_EXISTS', 'This customer already has an active milk subscription.');
+      throw new DomainError('SUBSCRIPTION_ACTIVE_BASE_EXISTS', strings('customer').subscriptionService.errors.activeExists);
     }
 
     const ts = nowIso();
@@ -163,7 +171,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
       customerId: parsed.customerId,
       productId: parsed.productId,
       defaultQuantityLitres: parsed.defaultQuantityLitres,
-      issueDate: toYmd(ts),
+      issueDate: localYmdOfIso(ts),
       startDate: start,
       endDate: end,
       status: 'Active',
@@ -196,7 +204,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     await this.delay();
     const store = await readStore();
     const idx = store.bases.findIndex((b) => b.id === subscriptionId);
-    if (idx < 0) throw new DomainError('SUBSCRIPTION_NOT_FOUND', 'Subscription not found');
+    if (idx < 0) throw new DomainError('SUBSCRIPTION_NOT_FOUND', strings('customer').subscriptionService.errors.notFound);
     const ts = nowIso();
     store.bases[idx] = { ...store.bases[idx]!, status, updatedAt: ts };
     await writeStore(store);
@@ -208,7 +216,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     const parsed = CreateSubscriptionModificationRequestSchema.parse(data);
     const store = await readStore();
     const base = store.bases.find((b) => b.id === parsed.subscriptionId);
-    if (!base) throw new DomainError('SUBSCRIPTION_NOT_FOUND', 'Subscription not found');
+    if (!base) throw new DomainError('SUBSCRIPTION_NOT_FOUND', strings('customer').subscriptionService.errors.notFound);
 
     const ts = nowIso();
     const row: SubscriptionModification = {
@@ -231,8 +239,14 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
       customerId: base.customerId,
       audience: 'Customer',
       type: 'QuantityChanged',
-      title: 'Subscription quantity updated',
-      body: `Plan changed from ${parsed.oldQuantityLitres} to ${parsed.newQuantityLitres} (${parsed.changeType}) between ${row.effectiveFromDate} and ${row.effectiveToDate}.`,
+      title: strings('customer').subscriptionService.notifications.quantityUpdatedTitle,
+      body: strings('customer').subscriptionService.notifications.quantityUpdatedBody(
+        parsed.oldQuantityLitres,
+        parsed.newQuantityLitres,
+        parsed.changeType,
+        row.effectiveFromDate,
+        row.effectiveToDate,
+      ),
       relatedSubscriptionId: base.id,
       createdAt: ts,
       updatedAt: ts,
@@ -274,8 +288,14 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
       customerId: parsed.customerId,
       audience: 'Customer',
       type: 'AdditionalProductAdded',
-      title: 'Extra product on your subscription',
-      body: `Add-on order (${parsed.orderType}) for product ${parsed.productId}, qty ${parsed.quantityLitresOrUnits}, from ${row.startDate}${row.endDate ? ` to ${row.endDate}` : ''}.`,
+      title: strings('customer').subscriptionService.notifications.extraProductTitle,
+      body: strings('customer').subscriptionService.notifications.extraProductBody(
+        parsed.orderType,
+        parsed.productId,
+        parsed.quantityLitresOrUnits,
+        row.startDate,
+        row.endDate,
+      ),
       createdAt: ts,
       updatedAt: ts,
     });
@@ -293,7 +313,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     await this.delay();
     const store = await readStore();
     const b = store.bases.find((x) => x.id === subscriptionId);
-    if (!b) throw new DomainError('SUBSCRIPTION_NOT_FOUND', 'Subscription not found');
+    if (!b) throw new DomainError('SUBSCRIPTION_NOT_FOUND', strings('customer').subscriptionService.errors.notFound);
     const mods = store.modifications;
     return buildMonthDayYmds(monthYyyyMm).map((d) => plannedQuantityForDate(b, mods, d));
   }
@@ -303,7 +323,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     const parsed = EnsureDailyDeliveriesRequestSchema.parse(data);
     const store = await readStore();
     const base = store.bases.find((b) => b.id === parsed.subscriptionId);
-    if (!base) throw new DomainError('SUBSCRIPTION_NOT_FOUND', 'Subscription not found');
+    if (!base) throw new DomainError('SUBSCRIPTION_NOT_FOUND', strings('customer').subscriptionService.errors.notFound);
 
     const byKey = indexDeliveries(store.deliveries);
     const ts = nowIso();
@@ -356,11 +376,11 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     const parsed = UpdateDailyDeliveryExecutionRequestSchema.parse(data);
     const store = await readStore();
     const idx = store.deliveries.findIndex((d) => d.id === deliveryId);
-    if (idx < 0) throw new DomainError('SUBSCRIPTION_DELIVERY_NOT_FOUND', 'Delivery row not found');
+    if (idx < 0) throw new DomainError('SUBSCRIPTION_DELIVERY_NOT_FOUND', strings('customer').subscriptionService.errors.deliveryNotFound);
     if (store.deliveries[idx]!.adminApprovalStatus === 'Pending') {
       throw new DomainError(
         'SUBSCRIPTION_MISMATCH_INVALID_STATE',
-        'A subscription mismatch is awaiting admin approval. Approve or reject it before recording a normal delivery.',
+        strings('customer').subscriptionService.errors.mismatchPending,
       );
     }
 
@@ -389,7 +409,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     const parsed = ReportSubscriptionMismatchRequestSchema.parse(data);
     const store = await readStore();
     const idx = store.deliveries.findIndex((d) => d.id === deliveryId);
-    if (idx < 0) throw new DomainError('SUBSCRIPTION_DELIVERY_NOT_FOUND', 'Delivery row not found');
+    if (idx < 0) throw new DomainError('SUBSCRIPTION_DELIVERY_NOT_FOUND', strings('customer').subscriptionService.errors.deliveryNotFound);
 
     const ts = nowIso();
     const row: SubscriptionDailyDelivery = {
@@ -408,7 +428,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
         n.audience === 'Admin' &&
         n.type === 'SubscriptionMismatchPendingAdmin' &&
         n.relatedDeliveryId === deliveryId &&
-        toYmd(n.createdAt) === todayYmd(),
+        localYmdOfIso(n.createdAt) === todayYmd(),
     );
     if (!dupAdmin) {
       store.notifications.push({
@@ -416,8 +436,12 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
         customerId: row.customerId,
         audience: 'Admin',
         type: 'SubscriptionMismatchPendingAdmin',
-        title: 'Subscription mismatch — approval needed',
-        body: `Delivery ${deliveryId}: planned ${row.plannedQuantityLitres} L vs customer request ${parsed.customerRequestedQuantityLitres} L. Review and approve.`,
+        title: strings('customer').subscriptionService.notifications.mismatchTitle,
+        body: strings('customer').subscriptionService.notifications.mismatchBody(
+          deliveryId,
+          row.plannedQuantityLitres,
+          parsed.customerRequestedQuantityLitres,
+        ),
         relatedSubscriptionId: row.subscriptionId,
         relatedDeliveryId: deliveryId,
         createdAt: ts,
@@ -437,10 +461,10 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     const parsed = ApproveSubscriptionMismatchRequestSchema.parse(data);
     const store = await readStore();
     const idx = store.deliveries.findIndex((d) => d.id === deliveryId);
-    if (idx < 0) throw new DomainError('SUBSCRIPTION_DELIVERY_NOT_FOUND', 'Delivery row not found');
+    if (idx < 0) throw new DomainError('SUBSCRIPTION_DELIVERY_NOT_FOUND', strings('customer').subscriptionService.errors.deliveryNotFound);
     const current = store.deliveries[idx]!;
     if (current.adminApprovalStatus !== 'Pending' || !current.subscriptionMismatchReported) {
-      throw new DomainError('SUBSCRIPTION_MISMATCH_INVALID_STATE', 'No pending mismatch to approve on this delivery row.');
+      throw new DomainError('SUBSCRIPTION_MISMATCH_INVALID_STATE', strings('customer').subscriptionService.errors.noPendingMismatch);
     }
 
     const requested = Number(current.customerRequestedQuantityLitres ?? 0);
@@ -486,8 +510,8 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
           customerId: updated.customerId,
           audience: 'Customer',
           type: 'QuantityChanged',
-          title: 'Subscription refreshed after delivery',
-          body: `Your regular quantity is updated from ${from} through ${toYmd(b.endDate)} following today's delivery (${requested} L delivered).`,
+          title: strings('customer').subscriptionService.notifications.refreshedTitle,
+          body: strings('customer').subscriptionService.notifications.refreshedBody(from, toYmd(b.endDate), requested),
           relatedSubscriptionId: b.id,
           relatedDeliveryId: deliveryId,
           createdAt: ts,
@@ -562,19 +586,26 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     await this.delay();
     const store = await readStore();
     const idx = store.bases.findIndex((b) => b.id === subscriptionId);
-    if (idx < 0) throw new DomainError('SUBSCRIPTION_NOT_FOUND', 'Subscription not found');
+    if (idx < 0) throw new DomainError('SUBSCRIPTION_NOT_FOUND', strings('customer').subscriptionService.errors.notFound);
     const cur = store.bases[idx]!;
-    if (!cur.autoRenewMonthly) return null;
+    // Only a currently Active base renews; renewing an Expired/Paused one would create a second Active base.
+    if (!cur.autoRenewMonthly || cur.status !== 'Active') return null;
+
+    const { start, end } = nextFullCalendarMonthRange(toYmd(cur.endDate));
+    // Idempotent: if an Active successor already covers the next cycle, return it instead of adding another.
+    const successor = store.bases.find(
+      (b) => b.id !== cur.id && b.customerId === cur.customerId && b.status === 'Active' && toYmd(b.startDate) >= start,
+    );
+    if (successor) return successor;
 
     const ts = nowIso();
-    const { start, end } = nextFullCalendarMonthRange(toYmd(cur.endDate));
     const next: BaseMilkSubscription = {
       ...cur,
       id: newId('milk_sub'),
       startDate: start,
       endDate: end,
       status: 'Active',
-      issueDate: toYmd(ts),
+      issueDate: localYmdOfIso(ts),
       createdAt: ts,
       updatedAt: ts,
     };
@@ -599,7 +630,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
           (n.audience ?? 'Customer') === 'Customer' &&
           n.type === type &&
           n.relatedSubscriptionId === subId &&
-          toYmd(n.createdAt) === day,
+          localYmdOfIso(n.createdAt) === day,
       );
     };
 
@@ -613,8 +644,8 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
           customerId: b.customerId,
           audience: 'Customer',
           type: 'SubscriptionStarted',
-          title: 'Subscription started',
-          body: `Your monthly milk subscription is active from ${start} through ${end}. Daily quantity can still be adjusted for specific dates in the app.`,
+          title: strings('customer').subscriptionService.notifications.startedTitle,
+          body: strings('customer').subscriptionService.notifications.startedBody(start, end),
           relatedSubscriptionId: b.id,
           createdAt: ts,
           updatedAt: ts,
@@ -628,8 +659,8 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
           customerId: b.customerId,
           audience: 'Customer',
           type: 'SubscriptionExpiringIn3Days',
-          title: 'Subscription ending soon',
-          body: `Your milk subscription ends on ${end}. Renew to avoid interruption.`,
+          title: strings('customer').subscriptionService.notifications.endingTitle,
+          body: strings('customer').subscriptionService.notifications.endingBody(end),
           relatedSubscriptionId: b.id,
           createdAt: ts,
           updatedAt: ts,
@@ -642,8 +673,8 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
           customerId: b.customerId,
           audience: 'Customer',
           type: 'SubscriptionExpired',
-          title: 'Subscription expired',
-          body: `Your milk subscription ended on ${end}.`,
+          title: strings('customer').subscriptionService.notifications.expiredTitle,
+          body: strings('customer').subscriptionService.notifications.expiredBody(end),
           relatedSubscriptionId: b.id,
           createdAt: ts,
           updatedAt: ts,
@@ -678,7 +709,7 @@ export class SubscriptionScheduleServiceMock implements ISubscriptionScheduleSer
     await this.delay();
     const store = await readStore();
     const idx = store.notifications.findIndex((n) => n.id === notificationId);
-    if (idx < 0) throw new DomainError('NOTIFICATION_NOT_FOUND', 'Notification not found');
+    if (idx < 0) throw new DomainError('NOTIFICATION_NOT_FOUND', strings('customer').subscriptionService.errors.notificationNotFound);
     const ts = nowIso();
     store.notifications[idx] = { ...store.notifications[idx]!, readAt: ts, updatedAt: ts };
     await writeStore(store);

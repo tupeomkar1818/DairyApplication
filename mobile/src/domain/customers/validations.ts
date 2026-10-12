@@ -1,6 +1,11 @@
 import { z } from 'zod';
+import { isMapLink, parseMapLocation } from '@/src/domain/customers/location';
 
-import { planStartEndMonthRuleIssues } from '@/src/domain/shared/planBoundaryDates';
+import { parsePlanBoundaryToDate, planStartEndMonthRuleIssues } from '@/src/domain/shared/planBoundaryDates';
+import { strings } from '@/src/i18n/strings';
+
+/** Validation wording in the current language, read when a message is shown. */
+const v = () => strings('customers').validation;
 
 const DeliveryFrequencySchema = z.union([
   z.literal('Daily'),
@@ -59,6 +64,18 @@ export const CustomerPaymentSchema = EntityBaseSchema.extend({
   notes: z.string().max(300).optional(),
 });
 
+export const CustomerPaymentRequestSchema = EntityBaseSchema.extend({
+  amount: z.coerce.number().positive(),
+  method: z.union([z.literal('UPI'), z.literal('Cash'), z.literal('Online')]),
+  reference: z.string().max(64).optional(),
+  paidOnYmd: z.string().regex(/^d{4}-d{2}-d{2}$/),
+  note: z.string().max(200).optional(),
+  status: z.union([z.literal('Pending'), z.literal('Confirmed'), z.literal('Rejected'), z.literal('Cancelled')]),
+  reviewedAt: z.string().optional(),
+  rejectReason: z.string().max(200).optional(),
+  paymentId: z.string().optional(),
+});
+
 export const CustomerComplaintSchema = EntityBaseSchema.extend({
   complaintDate: z.string().min(1),
   type: z.string().min(1).max(120),
@@ -87,9 +104,9 @@ export const CustomerAuditEventSchema = EntityBaseSchema.extend({
 });
 
 export const CustomerDeliveryRecordSchema = z.object({
-  deliveryDate: z.string().min(1, 'Delivery date is required'),
-  productName: z.string().min(1, 'Product is required').max(120),
-  quantityLabel: z.string().min(1, 'Quantity is required').max(80),
+  deliveryDate: z.string().min(1, { error: () => v().deliveryDateRequired }),
+  productName: z.string().min(1, { error: () => v().productRequired }).max(120),
+  quantityLabel: z.string().min(1, { error: () => v().quantityRequired }).max(80),
   deliveryBoyName: z.string().max(120).optional(),
   status: DeliveryStatusSchema,
   missedReason: z.string().max(200).optional(),
@@ -98,9 +115,9 @@ export const CustomerDeliveryRecordSchema = z.object({
 });
 
 export const CustomerSubscriptionItemSchema = z.object({
-  productName: z.string().min(1, 'Product is required').max(80),
+  productName: z.string().min(1, { error: () => v().productRequired }).max(80),
   /** Includes combined forms like "2 x 500 ml" from plan rows */
-  quantityLabel: z.string().min(1, 'Quantity is required').max(80),
+  quantityLabel: z.string().min(1, { error: () => v().quantityRequired }).max(80),
 });
 
 export const CustomerSubscriptionPauseDetailsSchema = z.object({
@@ -112,16 +129,25 @@ export const CustomerSubscriptionPauseDetailsSchema = z.object({
 });
 
 const CustomerSubscriptionPlanBaseSchema = z.object({
-  productName: z.string().min(1, 'Product is required').max(80),
+  /** Present on persisted plans; kept through edits so a plan line keeps its identity and issue date. */
+  id: z.string().min(1).optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  productName: z.string().min(1, { error: () => v().productRequired }).max(80),
   numberOfItems: z.number().int().min(1).max(99).optional(),
-  quantityLabel: z.string().min(1, 'Quantity is required').max(30),
+  quantityLabel: z.string().min(1, { error: () => v().quantityRequired }).max(30),
   unitType: z.string().max(20).optional(),
   subscriptionKind: z.union([z.literal('Monthly'), z.literal('Daily')]).optional(),
   deliveryDate: z.string().optional(),
   deliveryTime: z.union([z.literal('Morning'), z.literal('Evening'), z.literal('Both')]),
   frequency: DeliveryFrequencySchema,
-  startDate: z.string().min(1, 'Start date is required'),
-  endDate: z.string().min(1, 'End date is required'),
+  startDate: z.string().min(1, { error: () => v().startDateRequired }),
+  // Optional only for an open-ended line; every other line still needs one (checked below).
+  endDate: z.string().optional(),
+  /** A customer's "until I stop" subscription. Kept through admin saves so the line is not cut to month end. */
+  openEnded: z.boolean().optional(),
+  /** The catalog pack the line was subscribed as. Kept through admin saves. */
+  packId: z.string().optional(),
   pauseStartDate: z.string().optional(),
   pauseEndDate: z.string().optional(),
   resumeDate: z.string().optional(),
@@ -139,27 +165,73 @@ const CustomerSubscriptionPlanBaseSchema = z.object({
 });
 
 export const CustomerSubscriptionPlanSchema = CustomerSubscriptionPlanBaseSchema.superRefine((data, ctx) => {
-  for (const issue of planStartEndMonthRuleIssues(data.startDate, data.endDate)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue.message, path: [issue.path] });
+  const openWithoutEnd = data.openEnded === true && !String(data.endDate ?? '').trim();
+  if (openWithoutEnd) {
+    if (!parsePlanBoundaryToDate(data.startDate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: v().startDateFormat,
+        path: ['startDate'],
+      });
+    }
+  } else {
+    for (const issue of planStartEndMonthRuleIssues(data.startDate, data.endDate)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue.message, path: [issue.path] });
+    }
+  }
+
+  // Pause window rules (only compared when both sides are real dates).
+  const start = parsePlanBoundaryToDate(data.startDate);
+  const end = parsePlanBoundaryToDate(data.endDate);
+  const pauseStart = parsePlanBoundaryToDate(data.pauseStartDate);
+  const pauseEnd = parsePlanBoundaryToDate(data.pauseEndDate);
+  const resume = parsePlanBoundaryToDate(data.resumeDate);
+  if (pauseStart && pauseEnd && pauseEnd.getTime() < pauseStart.getTime()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: v().pauseEndAfterStart, path: ['pauseEndDate'] });
+  }
+  if (pauseStart && resume && resume.getTime() < pauseStart.getTime()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: v().resumeAfterPauseStart, path: ['resumeDate'] });
+  }
+  for (const [value, path] of [
+    [pauseStart, 'pauseStartDate'],
+    [pauseEnd, 'pauseEndDate'],
+  ] as const) {
+    if (!value) continue;
+    if ((start && value.getTime() < start.getTime()) || (end && value.getTime() > end.getTime())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: v().pauseWithinPlan, path: [path] });
+    }
   }
 });
 
 export const CreateCustomerRequestSchema = z.object({
-  name: z.string().min(1, 'Customer name is required').max(80),
-  mobile: z.string().regex(/^\d{10}$/, 'Enter a valid 10-digit mobile number'),
+  name: z.string().min(1, { error: () => v().nameRequired }).max(80),
+  mobile: z.string().regex(/^\d{10}$/, { error: () => v().mobileInvalid }),
   dateOfBirth: z
     .string()
-    .regex(/^\d{2}\/\d{2}\/\d{4}$/, 'DOB must be in DD/MM/YYYY format')
+    .regex(/^\d{2}\/\d{2}\/\d{4}$/, { error: () => v().dobFormat })
     .optional(),
-  alternateMobile: z.string().regex(/^\d{10}$/, 'Enter a valid 10-digit alternate mobile number').optional(),
+  alternateMobile: z.string().regex(/^\d{10}$/, { error: () => v().alternateMobileInvalid }).optional(),
   appAccessEnabled: z.boolean().optional(),
-  address: z.string().min(1, 'Address is required').max(160),
-  societyName: z.string().min(1, 'Society / Building name is required').max(80),
+  address: z.string().min(1, { error: () => v().addressRequired }).max(160),
+  societyName: z.string().min(1, { error: () => v().societyRequired }).max(80),
   houseFlatNumber: z.string().max(40).optional(),
   streetArea: z.string().max(80).optional(),
   city: z.string().max(50).optional(),
-  pincode: z.string().regex(/^\d{6}$/, 'Enter a valid 6-digit pincode').optional(),
+  pincode: z.string().regex(/^\d{6}$/, { error: () => v().pincodeInvalid }).optional(),
   landmark: z.string().max(80).optional(),
+  geoLocation: z
+    .object({
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      source: z.union([z.literal('admin'), z.literal('delivery')]),
+      updatedAt: z.string(),
+    })
+    .optional(),
+  mapLink: z
+    .string()
+    .max(500)
+    .refine((v) => !v.trim() || !!parseMapLocation(v) || isMapLink(v), { error: () => v().mapLinkInvalid })
+    .optional(),
   routeName: z.string().max(60).optional(),
   assignedDeliveryBoyId: z.string().max(120).optional(),
   assignedDeliveryBoyName: z.string().max(80).optional(),
@@ -187,10 +259,21 @@ export const CreateCustomerRequestSchema = z.object({
   internalAdminNotes: z.string().max(200).optional(),
   specialDeliveryInstructions: z.string().max(200).optional(),
   status: z.union([z.literal('Active'), z.literal('Inactive')]),
-  subscription: z.array(CustomerSubscriptionItemSchema).min(1, 'Add at least one subscription product'),
-  subscriptionPlans: z.array(CustomerSubscriptionPlanSchema).min(1, 'Add at least one subscription product').optional(),
+  // A new customer may start without a subscription: it is set up afterwards on their Subscription tab.
+  subscription: z.array(CustomerSubscriptionItemSchema).default([]),
+  subscriptionPlans: z.array(CustomerSubscriptionPlanSchema).optional(),
 });
 export type CreateCustomerRequestInput = z.infer<typeof CreateCustomerRequestSchema>;
+
+/**
+ * Admin "Update Customer" form payload: profile, address and billing fields only. Subscription lines are managed
+ * from the Subscription tab, so an edit neither requires nor touches `subscription` / `subscriptionPlans`.
+ */
+export const EditCustomerProfileRequestSchema = CreateCustomerRequestSchema.omit({
+  subscription: true,
+  subscriptionPlans: true,
+});
+export type EditCustomerProfileRequestInput = z.infer<typeof EditCustomerProfileRequestSchema>;
 
 /**
  * PATCH payload fragment for admin subscription tab (plans + delivery metadata only).
@@ -211,6 +294,7 @@ export type CustomerSubscriptionFieldsUpdateInput = z.infer<typeof CustomerSubsc
 export const UpdateCustomerRequestSchema = CreateCustomerRequestSchema.extend({
   deliveries: z.array(CustomerDeliveryRecordSchema).optional(),
   payments: z.array(CustomerPaymentSchema).optional(),
+  paymentRequests: z.array(CustomerPaymentRequestSchema).optional(),
   complaints: z.array(CustomerComplaintSchema).optional(),
   complaintActions: z.array(CustomerComplaintActionSchema).optional(),
   audit: z.array(CustomerAuditEventSchema).optional(),
@@ -225,16 +309,16 @@ export const SubscriptionCalendarEntryKindSchema = z.union([
 
 export const CustomerSubscriptionCalendarEntryDtoSchema = z.object({
   id: z.string().min(1),
-  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: () => v().ymdFormat }),
   kind: SubscriptionCalendarEntryKindSchema,
   title: z.string().min(1).max(120),
   subtitle: z.string().max(200).optional(),
 });
 
 export const AppendSubscriptionCalendarEntryRequestSchema = z.object({
-  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: () => v().ymdFormat }),
   kind: z.union([z.literal('subscription_line'), z.literal('add_on_product')]),
-  title: z.string().min(1, 'Title is required').max(120),
+  title: z.string().min(1, { error: () => v().titleRequired }).max(120),
   subtitle: z.string().max(200).optional(),
 });
 
@@ -243,7 +327,7 @@ export type AppendSubscriptionCalendarEntryRequestInput = z.infer<typeof AppendS
 export const CustomerDailyProductOrderLineDtoSchema = z.object({
   id: z.string().min(1),
   createdAtIso: z.string().optional(),
-  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: () => v().ymdFormat }),
   productName: z.string().min(1).max(120),
   quantityLabel: z.string().min(1).max(80),
   unitType: z.string().max(40).optional(),
@@ -252,7 +336,7 @@ export const CustomerDailyProductOrderLineDtoSchema = z.object({
 
 export const UpsertCustomerDailyProductOrderLineRequestSchema = z.object({
   id: z.string().min(1).optional(),
-  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: () => v().ymdFormat }),
   productName: z.string().min(1).max(120),
   quantityLabel: z.string().min(1).max(80),
   unitType: z.string().max(40).optional(),
@@ -265,13 +349,13 @@ export const CustomerBillingLedgerLineTypeSchema = z.union([z.literal('Subscript
 
 export const CustomerBillingLedgerRowDtoSchema = z.object({
   id: z.string().min(1),
-  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  dateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: () => v().ymdFormat }),
   type: CustomerBillingLedgerLineTypeSchema,
   productName: z.string().min(1).max(120),
   packSizeLabel: z.string().min(1).max(120),
   quantity: z.coerce.number().int().min(1).max(999),
   pricePerDelivery: z.coerce.number().nonnegative(),
-  deliveredLastDateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').optional(),
+  deliveredLastDateYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { error: () => v().ymdFormat }).optional(),
   quantityDelivered: z.coerce.number().int().min(0).max(999),
   amount: z.coerce.number().nonnegative(),
 });

@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 
 import { ProfileVerifyCard } from '@/src/components/profile/ProfileVerifyCard';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleSpacing } from '@/src/theme/dairyTactile';
 
 export type ProfileOtpVerifyModalProps = {
@@ -45,6 +46,8 @@ export function ProfileOtpVerifyModal({
   onSubmit,
   onResend,
 }: ProfileOtpVerifyModalProps) {
+  const t = useStrings('profile');
+  const c = useStrings('common');
   const busy = submitting || resending;
 
   return (
@@ -62,16 +65,17 @@ export function ProfileOtpVerifyModal({
           style={styles.backdrop}
           onPress={busy ? undefined : onDismiss}
           accessibilityRole="button"
-          accessibilityLabel="Close verification"
+          accessibilityLabel={t.verify.closeLabel}
         />
 
         <View style={styles.sheet} accessibilityViewIsModal>
           <Pressable
             onPress={onDismiss}
             disabled={busy}
+            hitSlop={6}
             style={({ pressed }) => [styles.closeBtn, pressed && !busy && styles.pressed]}
             accessibilityRole="button"
-            accessibilityLabel="Close"
+            accessibilityLabel={c.actions.close}
           >
             <MaterialCommunityIcons name="close" size={22} color={amraleColors.textMuted} />
           </Pressable>
@@ -111,7 +115,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: amraleSpacing.lg,
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(26, 43, 75, 0.52)',
   },
   sheet: {

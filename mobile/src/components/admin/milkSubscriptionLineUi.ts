@@ -1,19 +1,36 @@
 import type { CustomerSubscriptionPlanDto } from '@/src/domain/customers/dtos';
 import type { DeliveryFrequency, DeliveryTime } from '@/src/domain/customers/enums';
-import type { Product } from '@/src/domain/products/entities';
+import type { Product, ProductPack } from '@/src/domain/products/entities';
+import { orderablePacks, packPrice } from '@/src/domain/products/packs';
 
 export function isMilkCatalogProduct(p: Product): boolean {
   return p.productType === 'Milk' || p.productType === 'Milk Product';
 }
 
+/** Every pack the admin can put on a line, as the customer app lists them (not just the product's headline size). */
 export function packSizeOptionsForProduct(prod: Product | undefined): string[] {
   if (!prod) return [];
-  const opts: string[] = [];
-  for (const v of prod.variants ?? []) {
-    if (typeof v === 'string' && v.trim() && v !== 'Custom Size') opts.push(v.trim());
-  }
-  if (prod.customVariantLabel?.trim()) opts.push(prod.customVariantLabel.trim());
-  return Array.from(new Set(opts));
+  return Array.from(new Set(orderablePacks(prod).map((p) => p.label.trim()).filter(Boolean)));
+}
+
+/** The pack a line's label refers to, or undefined when the product no longer sells that size. */
+export function packForLabel(prod: Product | undefined, label: string | undefined): ProductPack | undefined {
+  const want = String(label ?? '').trim().toLowerCase();
+  if (!prod || !want) return undefined;
+  return orderablePacks(prod).find((p) => p.label.trim().toLowerCase() === want);
+}
+
+/** Plan fields for a chosen pack: its size, id and price — so a 1 L line is billed at the 1 L price. */
+export function planPatchForPack(pack: ProductPack): Partial<CustomerSubscriptionPlanDto> {
+  return {
+    quantityLabel: pack.label,
+    unitType: pack.unit,
+    packId: pack.id,
+    originalPrice: Math.round(Number(pack.price ?? 0)),
+    // Same fields the customer app saves; planLineTotal charges the discount when it is a real one.
+    discountedPrice: Math.round(Number(pack.discountPrice ?? 0)),
+    effectiveFinalPrice: packPrice(pack),
+  };
 }
 
 export function defaultPackLabelWhenNoOptions(prod: Product): string {

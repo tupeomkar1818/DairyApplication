@@ -6,7 +6,15 @@ import { MockOtpBanner } from '@/src/components/auth/MockOtpBanner';
 import { ProfileOtpInputGrid } from '@/src/components/profile/ProfileOtpInputGrid';
 import { emptyOtpDigits, otpDigitsToString } from '@/src/components/profile/profileOtpUtils';
 import { useOtpCountdown, useOtpResendCountdown } from '@/src/components/profile/useOtpCountdown';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
+
+/** A sentence's words before and after its value, so the value can be styled wherever the language puts it. */
+function around(sentence: (value: string) => string): [string, string] {
+  const mark = '\u0000';
+  const [before = '', after = ''] = sentence(mark).split(mark);
+  return [before, after];
+}
 
 type Props = {
   otpExpiryAt?: string;
@@ -29,12 +37,14 @@ export function ProfileVerifyCard({
   error,
   submitting,
   resending,
-  submitLabel = 'SAVE PROFILE CHANGES',
-  sectionTitle = 'VERIFY TO SAVE',
-  hint = 'Enter the 6-digit code sent to your number to authorize changes.',
+  submitLabel,
+  sectionTitle,
+  hint,
   onSubmit,
   onResend,
 }: Props) {
+  const t = useStrings('profile');
+  const [resendBefore, resendAfter] = around(t.verify.resendIn);
   const [digits, setDigits] = useState(emptyOtpDigits);
   const refs = useRef<Array<RNTextInput | null>>([]);
   const countdown = useOtpCountdown(otpExpiryAt);
@@ -67,7 +77,7 @@ export function ProfileVerifyCard({
       <View style={styles.cardHeader}>
         <View style={styles.cardHeaderLeft}>
           <MaterialCommunityIcons name="shield-check-outline" size={20} color={amraleColors.blue} />
-          <Text style={styles.cardHeaderTitle}>{sectionTitle}</Text>
+          <Text style={styles.cardHeaderTitle}>{sectionTitle ?? t.verify.saveTitle}</Text>
         </View>
         <View style={styles.timer}>
           <MaterialCommunityIcons name="timer-outline" size={18} color={amraleColors.blue} />
@@ -75,7 +85,7 @@ export function ProfileVerifyCard({
         </View>
       </View>
 
-      <Text style={styles.hint}>{hint}</Text>
+      <Text style={styles.hint}>{hint ?? t.verify.saveHint}</Text>
 
       {demoOtp ? <MockOtpBanner otp={demoOtp} variant="inline" /> : null}
 
@@ -106,7 +116,7 @@ export function ProfileVerifyCard({
         {submitting ? (
           <ActivityIndicator color={amraleColors.white} />
         ) : (
-          <Text style={styles.submitBtnText}>{submitLabel}</Text>
+          <Text style={styles.submitBtnText}>{submitLabel ?? t.verify.saveSubmit}</Text>
         )}
       </Pressable>
 
@@ -114,14 +124,16 @@ export function ProfileVerifyCard({
         <View style={styles.resendCooldownRow}>
           <MaterialCommunityIcons name="timer-outline" size={16} color={amraleColors.textMuted} />
           <Text style={styles.resendCooldownText}>
-            Resend OTP in <Text style={styles.resendCooldownBold}>{resendCooldownLabel}</Text>
+            {resendBefore}
+            <Text style={styles.resendCooldownBold}>{resendCooldownLabel}</Text>
+            {resendAfter}
           </Text>
         </View>
       ) : null}
 
-      <Pressable onPress={onResend} disabled={resendLocked} style={styles.resendBtn}>
+      <Pressable onPress={onResend} disabled={resendLocked} hitSlop={10} style={styles.resendBtn}>
         <Text style={[styles.resendText, resendLocked && styles.resendDisabled]}>
-          {resending ? 'Sending…' : 'Resend OTP'}
+          {resending ? t.verify.sending : t.verify.resend}
         </Text>
       </Pressable>
     </View>
@@ -150,6 +162,7 @@ const styles = StyleSheet.create({
   },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   cardHeaderTitle: {
+    flexShrink: 1,
     fontFamily: amraleTypography.fontFamily.bold,
     fontSize: 13,
     color: amraleColors.blue,

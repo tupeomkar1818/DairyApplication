@@ -1,0 +1,414 @@
+---
+/**
+ * Live offers from the admin app's offers file (see "Offers" in the README).
+ *
+ * The page is built without offers: the section starts hidden and a small script in the visitor's browser reads the
+ * offers file, keeps the offers running today (India date) and fills in the cards. So an offer appears on its first
+ * day and leaves after its last day without rebuilding the site, and leaves at once when a new file without it is
+ * uploaded. With no live offers — or no readable file — the section (and its menu link) stays hidden.
+ */
+import Icon from './Icon.astro';
+import { ui, type Lang } from '../i18n/ui';
+
+interface Props {
+  lang: Lang;
+}
+
+const { lang } = Astro.props;
+const t = ui[lang];
+---
+
+<section class="offers" id="offers" hidden data-offers-section data-lang={lang} data-strings={JSON.stringify(t.offers)}>
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">{t.offers.eyebrow}</span>
+      <h2>{t.offers.title}</h2>
+      <p>{t.offers.intro}</p>
+    </div>
+    <ul class="offer-grid" data-offers-list></ul>
+  </div>
+
+  <!-- Card pieces, cloned by the script and filled with textContent. Empty pieces are removed. -->
+  <template data-template="card">
+    <li class="offer">
+      <span class="offer-kind" data-part="kind"></span>
+      <h3 class="offer-title" data-part="title"></h3>
+      <p class="offer-desc" data-part="description"></p>
+      <ul class="offer-prices" data-part="prices"></ul>
+      <p class="offer-note" data-part="regular"></p>
+      <div class="offer-combo" data-part="combo">
+        <p class="offer-combo-head" data-part="combo-head"></p>
+        <ul class="offer-combo-items" data-part="combo-items"></ul>
+        <p class="offer-amounts offer-combo-price">
+          <s class="offer-was" data-part="combo-worth"></s>
+          <strong class="offer-now offer-now-big" data-part="combo-price"></strong>
+          <span class="offer-save" data-part="combo-save"></span>
+        </p>
+      </div>
+      <p class="offer-discount" data-part="discount"></p>
+      <ul class="offer-conditions" data-part="conditions"></ul>
+      <div class="offer-foot">
+        <p class="offer-valid" data-part="validity-row">
+          <Icon name="calendar" size={18} />
+          <span data-part="validity"></span>
+        </p>
+        <a class="btn btn-whatsapp offer-cta" data-part="whatsapp" target="_blank" rel="noopener">
+          <Icon name="whatsapp" />
+          <span>{t.actions.orderWhatsapp}</span>
+        </a>
+      </div>
+    </li>
+  </template>
+
+  <template data-template="price">
+    <li class="offer-price">
+      <span class="offer-price-name" data-part="name"></span>
+      <span class="offer-amounts">
+        <s class="offer-was" data-part="was"></s>
+        <strong class="offer-now" data-part="now"></strong>
+        <span class="offer-save" data-part="save"></span>
+      </span>
+    </li>
+  </template>
+
+  <template data-template="item">
+    <li class="offer-item"><Icon name="check" size={16} /><span data-part="text"></span></li>
+  </template>
+</section>
+
+<script>
+  import { whatsappLink } from '../data/site';
+  import type { Lang } from '../i18n/ui';
+  import {
+    OFFERS_URL,
+    describeOffer,
+    indiaTodayYmd,
+    liveOffers,
+    parseOffersFeed,
+    type OfferStrings,
+    type WebsiteOffersFeed,
+  } from '../lib/offers';
+
+  /** Look again when the visitor comes back to the tab after this long, or on a new India day. */
+  const REFRESH_AFTER_MS = 5 * 60 * 1000;
+
+  const section = document.querySelector<HTMLElement>('[data-offers-section]');
+  if (section) setUp(section);
+
+  function setUp(section: HTMLElement) {
+    const lang = (section.dataset.lang === 'mr' ? 'mr' : 'en') satisfies Lang;
+    const strings = JSON.parse(section.dataset.strings ?? '{}') as OfferStrings;
+    const list = section.querySelector<HTMLElement>('[data-offers-list]')!;
+    const templates = {
+      card: section.querySelector<HTMLTemplateElement>('template[data-template="card"]')!,
+      price: section.querySelector<HTMLTemplateElement>('template[data-template="price"]')!,
+      item: section.querySelector<HTMLTemplateElement>('template[data-template="item"]')!,
+    };
+
+    let feed: WebsiteOffersFeed | null = null;
+    let fetchedAt = 0;
+    let shownDay = '';
+
+    const clone = (template: HTMLTemplateElement) => template.content.firstElementChild!.cloneNode(true) as HTMLElement;
+    const part = (root: ParentNode, name: string) => root.querySelector<HTMLElement>(`[data-part="${name}"]`);
+
+    /** Puts the text in, or removes the element when there is nothing to say. */
+    function fill(root: ParentNode, name: string, value: string | undefined) {
+      const el = part(root, name);
+      if (!el) return;
+      if (value) el.textContent = value;
+      else el.remove();
+    }
+
+    function fillList(root: ParentNode, name: string, texts: string[]) {
+      const el = part(root, name);
+      if (!el) return;
+      if (!texts.length) return el.remove();
+      for (const text of texts) {
+        const li = clone(templates.item);
+        fill(li, 'text', text);
+        el.append(li);
+      }
+    }
+
+    function show(visible: boolean) {
+      section.hidden = !visible;
+      document.querySelectorAll<HTMLElement>('[data-offers-link]').forEach((link) => (link.hidden = !visible));
+    }
+
+    function render() {
+      const today = indiaTodayYmd();
+      shownDay = today;
+      const offers = liveOffers(feed, today);
+      list.replaceChildren(
+        ...offers.map((offer) => {
+          const d = describeOffer(offer, lang, strings, today);
+          const card = clone(templates.card);
+          card.classList.add(`offer-is-${d.kind}`);
+          card.dataset.offerId = d.id;
+          fill(card, 'kind', d.kindLabel);
+          fill(card, 'title', d.title);
+          fill(card, 'description', d.description);
+
+          const prices = part(card, 'prices')!;
+          if (d.priceLines.length) {
+            for (const line of d.priceLines) {
+              const li = clone(templates.price);
+              fill(li, 'name', line.name);
+              fill(li, 'was', line.was);
+              fill(li, 'now', line.now);
+              fill(li, 'save', line.save);
+              prices.append(li);
+            }
+          } else {
+            prices.remove();
+          }
+          fill(card, 'regular', d.regularNote);
+
+          if (d.combo) {
+            fill(card, 'combo-head', d.combo.items.length ? d.combo.heading : undefined);
+            fillList(card, 'combo-items', d.combo.items);
+            fill(card, 'combo-worth', d.combo.worth);
+            fill(card, 'combo-price', d.combo.price);
+            fill(card, 'combo-save', d.combo.save);
+          } else {
+            part(card, 'combo')?.remove();
+          }
+
+          fill(card, 'discount', d.discount);
+          fillList(card, 'conditions', d.conditions);
+          if (d.validity) fill(card, 'validity', d.validity);
+          else part(card, 'validity-row')?.remove();
+
+          const cta = part(card, 'whatsapp') as HTMLAnchorElement | null;
+          if (cta) cta.href = whatsappLink(d.whatsappMessage);
+          return card;
+        }),
+      );
+      show(offers.length > 0);
+    }
+
+    async function refresh() {
+      fetchedAt = Date.now();
+      try {
+        const res = await fetch(OFFERS_URL, { cache: 'no-store', headers: { Accept: 'application/json' } });
+        // A missing or unreadable file means no offers; only a network failure keeps what was already shown.
+        feed = res.ok ? parseOffersFeed(await res.json().catch(() => null)) : null;
+      } catch {
+        // Offline: the offers read earlier still end on their own last day.
+      }
+      render();
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - fetchedAt > REFRESH_AFTER_MS || indiaTodayYmd() !== shownDay) void refresh();
+    });
+
+    void refresh();
+  }
+</script>
+
+<style>
+  .offers {
+    padding-block: clamp(56px, 8vw, 96px) 0;
+  }
+
+  .offer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .offer {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    padding: 22px;
+    border-radius: var(--radius);
+    background: var(--milk);
+    border: 1px solid var(--line);
+    border-top: 5px solid var(--yellow);
+    box-shadow: var(--shadow-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .offer-is-bill,
+  .offer-is-subscription {
+    border-top-color: var(--blue-700);
+  }
+
+  .offer-kind {
+    align-self: flex-start;
+    padding: 3px 12px;
+    border-radius: 999px;
+    background: var(--yellow-soft);
+    color: #8a5a00;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .offer-is-bill .offer-kind,
+  .offer-is-subscription .offer-kind {
+    background: var(--blue-50);
+    color: var(--blue-700);
+  }
+
+  .offer-title {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--blue-950);
+  }
+
+  .offer-desc {
+    font-size: 15px;
+    color: var(--muted);
+  }
+
+  .offer-prices,
+  .offer-combo-items,
+  .offer-conditions {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .offer-price {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2px 12px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--cream);
+  }
+
+  .offer-price-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+
+  .offer-amounts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+  }
+
+  .offer-was {
+    font-size: 15px;
+    color: var(--muted);
+  }
+
+  .offer-now {
+    font-size: 19px;
+    font-weight: 800;
+    color: var(--blue-900);
+  }
+
+  .offer-now-big {
+    font-size: 26px;
+  }
+
+  .offer-save {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: #ddf5e6;
+    color: #11703a;
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .offer-note,
+  .offer-conditions {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .offer-combo {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border-radius: var(--radius-sm);
+    background: var(--cream);
+  }
+
+  .offer-combo-head {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+
+  .offer-item {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .offer-item :global(svg) {
+    flex: none;
+    margin-top: 4px;
+    color: var(--whatsapp);
+  }
+
+  .offer-combo-price {
+    margin-top: 2px;
+  }
+
+  .offer-discount {
+    font-size: 19px;
+    font-weight: 800;
+    line-height: 1.35;
+    color: var(--blue-900);
+  }
+
+  .offer-foot {
+    display: grid;
+    gap: 12px;
+    margin-top: auto;
+    padding-top: 4px;
+  }
+
+  .offer-valid {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #9a4f00;
+  }
+
+  .offer-valid :global(svg) {
+    flex: none;
+  }
+
+  .offer-cta {
+    width: 100%;
+    padding-inline: 16px;
+  }
+
+  :global(html[data-lang='mr']) .offer-kind {
+    font-size: 14px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  :global(html[data-lang='mr']) .offer-title {
+    font-size: 24px;
+  }
+</style>

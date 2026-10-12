@@ -5,15 +5,18 @@ import { LoginLightShell } from '@/src/components/auth';
 import { PrivacyPolicyContent } from '@/src/components/privacyPolicy/PrivacyPolicyContent';
 import { ScreenHeader } from '@/src/components/shared';
 import { usePrivacyPolicy } from '@/src/hooks/privacyPolicy';
+import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
 export default function PrivacyPolicyScreen() {
+  const t = useStrings('help');
+  const c = useStrings('common');
   const { data, isLoading, isError, refetch, isRefetching } = usePrivacyPolicy();
 
   return (
     <LoginLightShell alignTop>
       <ScreenHeader
-        title="Privacy Policy"
+        title={t.privacy.title}
         onBack={() => router.back()}
         backVariant="pill"
         titleColor={amraleColors.text}
@@ -29,9 +32,9 @@ export default function PrivacyPolicyScreen() {
         </View>
       ) : isError ? (
         <View style={styles.centered}>
-          <Text style={styles.errorText}>Could not load privacy policy. Please try again.</Text>
+          <Text style={styles.errorText}>{t.privacy.loadError}</Text>
           <Pressable onPress={() => refetch()} style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}>
-            <Text style={styles.retryLabel}>{isRefetching ? 'Loading…' : 'Retry'}</Text>
+            <Text style={styles.retryLabel}>{isRefetching ? c.states.loading : t.retry}</Text>
           </Pressable>
         </View>
       ) : data?.policy ? (
@@ -60,6 +63,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   retryBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: amraleSpacing.lg,
     paddingVertical: amraleSpacing.sm,
     borderRadius: amraleRadius.lg,

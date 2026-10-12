@@ -45,6 +45,9 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: dairyTactileColors.surface,
+    // The decorative blobs bleed past the edges on purpose; clip them so they never widen the page (on phones the
+    // browser zoomed out to fit them, giving a sideways-scrolling, shrunken screen).
+    overflow: 'hidden',
   },
   blob: {
     position: 'absolute',

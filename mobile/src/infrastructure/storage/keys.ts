@@ -31,3 +31,15 @@ export const CUSTOMER_SUBSCRIPTION_PLAN_HISTORY_MEMO_PREFIX = 'DAIRY_CUSTOMER_SU
 /** Per-customer derived billing ledger rows (day-wise billing snapshot); key suffix = customerId:YYYY-MM */
 export const CUSTOMER_BILLING_LEDGER_PREFIX = 'DAIRY_CUSTOMER_BILL_LEDGER_V1';
 
+
+/** In-app notifications for all three apps; rows carry their own audience. */
+export const NOTIFICATIONS_STORE_KEY = 'DAIRY_NOTIFICATIONS_V1';
+
+/** Messages from the dairy to customers (wishes, notices, delivery updates), with optional pictures or videos. */
+export const ANNOUNCEMENTS_STORE_KEY = 'DAIRY_ANNOUNCEMENTS_V1';
+
+/** Chat messages between each customer and the dairy. */
+export const CHAT_STORE_KEY = 'DAIRY_CHAT_V1';
+
+/** Offers the dairy runs (price offers, combos, bill discounts, subscription rewards), shared by every app. */
+export const OFFERS_STORE_KEY = 'DAIRY_OFFERS_V1';

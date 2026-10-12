@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Snackbar, Text } from 'react-native-paper';
 
@@ -10,6 +10,11 @@ export type AppSnackbarProps = {
   onDismiss: () => void;
   duration?: number;
   actionLabel?: string;
+  /**
+   * Distance from the bottom edge the bar must clear (e.g. a bottom tab bar + the home-indicator inset).
+   * Omit for the default placement. When set, it replaces Paper's own bottom safe-area padding on native.
+   */
+  bottomOffset?: number;
 };
 
 /**
@@ -22,17 +27,26 @@ export function AppSnackbar({
   onDismiss,
   duration = 3500,
   actionLabel = 'OK',
+  bottomOffset,
 }: AppSnackbarProps) {
+  // Callers often pass an inline `onDismiss`; keeping it in a ref stops every parent render from restarting the
+  // auto-dismiss timer (which meant the web bar never dismissed on busy screens).
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
   useEffect(() => {
     if (Platform.OS !== 'web' || !visible) return;
-    const timer = setTimeout(onDismiss, duration);
+    const timer = setTimeout(() => onDismissRef.current(), duration);
     return () => clearTimeout(timer);
-  }, [visible, duration, onDismiss]);
+  }, [visible, duration, message]);
 
   if (Platform.OS === 'web') {
     if (!visible || !message) return null;
     return (
-      <View style={styles.webHost} accessibilityLiveRegion="polite">
+      <View
+        style={[styles.webHost, bottomOffset != null && { bottom: bottomOffset + 12 }]}
+        accessibilityLiveRegion="polite"
+      >
         <View style={styles.webBar}>
           <Text variant="bodyMedium" style={styles.webMessage}>
             {message}
@@ -58,6 +72,7 @@ export function AppSnackbar({
       onDismiss={onDismiss}
       duration={duration}
       action={{ label: actionLabel, onPress: onDismiss }}
+      wrapperStyle={bottomOffset != null ? { bottom: bottomOffset, paddingBottom: 0 } : undefined}
     >
       {message}
     </Snackbar>
@@ -81,7 +96,7 @@ const styles = StyleSheet.create({
     maxWidth: 560,
     width: '92%',
     marginHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 4,
     paddingHorizontal: 16,
     borderRadius: 8,
     backgroundColor: '#323232',
@@ -91,9 +106,13 @@ const styles = StyleSheet.create({
   webMessage: {
     flex: 1,
     color: '#FFFFFF',
+    paddingVertical: 10,
   },
   webAction: {
-    paddingVertical: 4,
+    minHeight: 44,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: 8,
   },
   webActionPressed: {

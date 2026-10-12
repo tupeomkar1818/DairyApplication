@@ -1,10 +1,14 @@
 import { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { MilkSplashDecor } from './MilkSplashDecor';
+import { RESPONSIVE_CONTAINER_MAX_WIDTH } from '@/src/components/shared/ResponsiveContainer';
 import { amraleColors, amraleSpacing } from '@/src/theme/dairyTactile';
+
+/** Below this window height (phone landscape, Android with the keyboard open) the footer scrolls with the content. */
+const PINNED_FOOTER_MIN_HEIGHT = 560;
 
 type Props = {
   children: ReactNode;
@@ -15,6 +19,11 @@ type Props = {
 
 /** Light login layout — centered card, milk splash, pinned footer (mockup) */
 export function LoginLightShell({ children, footer, alignTop = false }: Props) {
+  const { height } = useWindowDimensions();
+  // A pinned footer eats ~100px; on short screens let it scroll so the card isn't squeezed into what's left.
+  const pinFooter = height >= PINNED_FOOTER_MIN_HEIGHT;
+  const footerNode = footer ? <View style={[styles.footer, !pinFooter && styles.footerInScroll]}>{footer}</View> : null;
+
   return (
     <SafeAreaView style={styles.root} edges={['top', 'left', 'right', 'bottom']}>
       <StatusBar style="dark" />
@@ -28,9 +37,11 @@ export function LoginLightShell({ children, footer, alignTop = false }: Props) {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.main}>{children}</View>
+          {/* Reading pages (FAQ / Contact / Privacy) get a wider column than the 400px login card. */}
+          <View style={[styles.main, alignTop && styles.mainReading]}>{children}</View>
+          {pinFooter ? null : footerNode}
         </ScrollView>
-        {footer ? <View style={styles.footer}>{footer}</View> : null}
+        {pinFooter ? footerNode : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -40,6 +51,8 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: amraleColors.surface,
+    // MilkSplashDecor bleeds past the edges; clip it so it never widens the page on phones.
+    overflow: 'hidden',
   },
   flex: { flex: 1, zIndex: 1 },
   scroll: {
@@ -58,6 +71,9 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     alignItems: 'center',
   },
+  mainReading: {
+    maxWidth: RESPONSIVE_CONTAINER_MAX_WIDTH.reading,
+  },
   footer: {
     paddingHorizontal: amraleSpacing.lg,
     paddingBottom: amraleSpacing.lg,
@@ -66,5 +82,11 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 400,
     alignSelf: 'center',
+  },
+  /** Inside the scroll content, which already provides the side/bottom padding. */
+  footerInScroll: {
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+    paddingTop: amraleSpacing.lg,
   },
 });

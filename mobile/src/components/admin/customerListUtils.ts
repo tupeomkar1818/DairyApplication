@@ -1,4 +1,5 @@
 import type { CustomerResponse } from '@/src/domain/customers/dtos';
+import { strings } from '@/src/i18n/strings';
 
 export type CustomerListStatusTone = 'active' | 'leave' | 'inactive';
 
@@ -30,13 +31,14 @@ export function customerListStatus(c: CustomerResponse): { label: string; tone: 
   const paused =
     c.subscriptionStatus === 'Paused' || (c.subscriptionPlans ?? []).some((plan) => plan.status === 'Paused');
 
+  const labels = strings('customers').list.status;
   if (c.status === 'Inactive') {
-    return { label: 'INACTIVE', tone: 'inactive' };
+    return { label: labels.inactive, tone: 'inactive' };
   }
   if (paused) {
-    return { label: 'ON LEAVE', tone: 'leave' };
+    return { label: labels.onLeave, tone: 'leave' };
   }
-  return { label: 'ACTIVE', tone: 'active' };
+  return { label: labels.active, tone: 'active' };
 }
 
 export function customerStatusBadgeColors(tone: CustomerListStatusTone): { bg: string; fg: string } {
