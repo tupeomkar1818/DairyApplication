@@ -83,29 +83,59 @@ async function countWrongTry(env: Env, user: UserRow, now: Date): Promise<never>
 }
 
 /** The dairy's record for this number: the admin's own login, a customer, or a delivery boy. */
+/**
+ * The login that belongs to this record — the one its `user_id` names, never merely one that shares the number.
+ *
+ * A mobile number can come back round: somebody leaves the dairy, and months later the number is somebody
+ * else's. Reading the login off the number alone would hand the new person the old one's login, PIN included, so
+ * it is read off the record instead. A login left sitting on the number belongs to nobody now — it is cleared
+ * out of the way, which it has to be anyway, since a login is unique by number and the new one could not
+ * otherwise be made.
+ */
+export async function loginFor(env: Env, mobile: string, userId: string | null): Promise<UserRow | null> {
+  if (userId) {
+    const theirs = await env.DB.prepare(
+      `select id, mobile, role, display_name, status, created_at, pin_hash, pin_set_at, pin_attempts, pin_locked_until
+         from users where id = ?`,
+    )
+      .bind(userId)
+      .first<UserRow>();
+    if (theirs) return theirs;
+  }
+  await env.DB.prepare("delete from users where mobile = ? and role != 'admin'").bind(mobile).run();
+  return null;
+}
+
+/** The dairy's record for this number: the admin's own login, a customer, or a delivery boy. */
 async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | null; linked: { role: Role; id: string; name: string; status: string; appAccess: boolean } | null }> {
+  const customer = await env.DB.prepare('select id, name, status, app_access_enabled, user_id from customers where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; name: string; status: string; app_access_enabled: number; user_id: string | null }>();
+  if (customer) {
+    return {
+      user: await loginFor(env, mobile, customer.user_id),
+      linked: { role: 'customer', id: customer.id, name: customer.name, status: customer.status, appAccess: customer.app_access_enabled !== 0 },
+    };
+  }
+
+  const boy = await env.DB.prepare('select id, full_name, status, app_access_enabled, user_id from delivery_boys where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; full_name: string; status: string; app_access_enabled: number; user_id: string | null }>();
+  if (boy) {
+    return {
+      user: await loginFor(env, mobile, boy.user_id),
+      linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name, status: boy.status, appAccess: boy.app_access_enabled !== 0 },
+    };
+  }
+
+  // Nobody the dairy keeps under this number. Only the dairy's own login stands on its own.
   const user = await env.DB.prepare(
     `select id, mobile, role, display_name, status, created_at, pin_hash, pin_set_at, pin_attempts, pin_locked_until
        from users where mobile = ?`,
   )
     .bind(mobile)
     .first<UserRow>();
-
-  const customer = await env.DB.prepare('select id, name, status, app_access_enabled from customers where mobile = ?')
-    .bind(mobile)
-    .first<{ id: string; name: string; status: string; app_access_enabled: number }>();
-  if (customer) {
-    return { user, linked: { role: 'customer', id: customer.id, name: customer.name, status: customer.status, appAccess: customer.app_access_enabled !== 0 } };
-  }
-
-  const boy = await env.DB.prepare('select id, full_name, status, app_access_enabled from delivery_boys where mobile = ?')
-    .bind(mobile)
-    .first<{ id: string; full_name: string; status: string; app_access_enabled: number }>();
-  if (boy) {
-    return { user, linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name, status: boy.status, appAccess: boy.app_access_enabled !== 0 } };
-  }
-
-  return { user, linked: null };
+  return { user: user?.role === 'admin' ? user : null, linked: null };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { maskMobile, randomOtp, randomToken, sameHash, sha256Hex } from '@/auth/crypto';
-import { refuseIfClosed } from '@/auth/pin';
+import { loginFor, refuseIfClosed } from '@/auth/pin';
 import { sendOtpSms } from '@/auth/sms';
 import { newId, nowIso } from '@/db';
 import { ApiError, type Env, type RequestContext } from '@/http';
@@ -53,25 +53,32 @@ function pepper(env: Env): string {
 
 /** The dairy's record for this number: the admin's own login, a customer, or a delivery boy. */
 async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | null; linked: { role: Role; id: string; name: string; status: string; appAccess: boolean } | null }> {
+  const customer = await env.DB.prepare('select id, name, status, app_access_enabled, user_id from customers where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; name: string; status: string; app_access_enabled: number; user_id: string | null }>();
+  if (customer) {
+    return {
+      user: await loginFor(env, mobile, customer.user_id),
+      linked: { role: 'customer', id: customer.id, name: customer.name, status: customer.status, appAccess: customer.app_access_enabled !== 0 },
+    };
+  }
+
+  const boy = await env.DB.prepare('select id, full_name, status, app_access_enabled, user_id from delivery_boys where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; full_name: string; status: string; app_access_enabled: number; user_id: string | null }>();
+  if (boy) {
+    return {
+      user: await loginFor(env, mobile, boy.user_id),
+      linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name, status: boy.status, appAccess: boy.app_access_enabled !== 0 },
+    };
+  }
+
+  // Nobody the dairy keeps under this number. Only the dairy's own login stands on its own.
   const user = await env.DB.prepare('select id, mobile, role, display_name, status, created_at from users where mobile = ?')
     .bind(mobile)
     .first<UserRow>();
 
-  const customer = await env.DB.prepare('select id, name, status, app_access_enabled from customers where mobile = ?')
-    .bind(mobile)
-    .first<{ id: string; name: string; status: string; app_access_enabled: number }>();
-  if (customer) {
-    return { user, linked: { role: 'customer', id: customer.id, name: customer.name, status: customer.status, appAccess: customer.app_access_enabled !== 0 } };
-  }
-
-  const boy = await env.DB.prepare('select id, full_name, status, app_access_enabled from delivery_boys where mobile = ?')
-    .bind(mobile)
-    .first<{ id: string; full_name: string; status: string; app_access_enabled: number }>();
-  if (boy) {
-    return { user, linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name, status: boy.status, appAccess: boy.app_access_enabled !== 0 } };
-  }
-
-  return { user, linked: null };
+  return { user: user?.role === 'admin' ? user : null, linked: null };
 }
 
 async function linkedRecordId(env: Env, user: UserRow): Promise<string | undefined> {

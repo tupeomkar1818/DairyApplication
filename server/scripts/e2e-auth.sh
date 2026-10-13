@@ -22,7 +22,17 @@ code_for() {
   done
   echo "$otp"
 }
-token_for() { j -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$1\",\"otp\":\"$2\"}" | field session.sessionId; }
+token_for() {
+  _res=$(j -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$1\",\"otp\":\"$2\"}")
+  _tok=$(echo "$_res" | field session.sessionId)
+  # A session can do nothing else until a PIN is chosen, so pick one — but only when there isn't one yet,
+  # since answering that for a login that has one counts as a wrong try.
+  if [ "$(echo "$_res" | field mustSetPin)" = "true" ]; then
+    curl -s -o /dev/null -H 'content-type: application/json' -H "Authorization: Bearer $_tok" \
+      -X POST "$API/auth/pin" -d "{\"pin\":\"${E2E_PIN:-4321}\"}"
+  fi
+  echo "$_tok"
+}
 
 step "a number the dairy does not know is refused"
 j -X POST "$API/auth/otp/request" -d '{"mobileNumber":"9000000000"}'; echo
@@ -48,6 +58,8 @@ j -H "Authorization: Bearer $ADMIN_TOKEN" "$API/auth/me"; echo
 step "the same code cannot be used twice"
 j -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$ADMIN_MOBILE\",\"otp\":\"$ADMIN_OTP\"}"; echo
 
+find_id() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const list=(JSON.parse(s).items)||[];const m=list.find(x=>(x.mobile||x.mobileNumber)===process.argv[1]);console.log(m?m.id:"")})' "$1"; }
+
 step "no token: the catalog is closed"
 j -o /dev/null -w "status %{http_code}: " "$API/products"; j "$API/products"; echo
 
@@ -55,10 +67,17 @@ step "a made-up token is refused"
 j -o /dev/null -w "status %{http_code}\n" -H "Authorization: Bearer not-a-real-token" "$API/products"
 
 step "the dairy adds a product and a customer"
+# Start from nothing. A customer left behind by an earlier run carries that run’s paused days with them, and a
+# customer may not undo a day that has gone by — so the steps below would be refused for the right reason and
+# read as the wrong one.
+OLD=$(j -H "Authorization: Bearer $ADMIN_TOKEN" "$API/customers" | find_id "$CUSTOMER_MOBILE")
+[ -n "$OLD" ] && j -o /dev/null -H "Authorization: Bearer $ADMIN_TOKEN" -X DELETE "$API/customers/$OLD"
 PROD=$(j -H "Authorization: Bearer $ADMIN_TOKEN" -X POST "$API/products" -d '{"name":"Cow Milk","category":"Milk","productType":"Milk","unit":"ml","price":30,"description":"","availability":"Available","features":[],"isVisibleToCustomer":true,"isActive":true,"packs":[{"id":"","label":"500 ml","unit":"ml","quantity":500,"price":30,"isActive":true}]}')
 echo "product: $(echo "$PROD" | field name)"
 CUST=$(j -H "Authorization: Bearer $ADMIN_TOKEN" -X POST "$API/customers" -d "{\"name\":\"Asha Patil\",\"mobile\":\"$CUSTOMER_MOBILE\",\"address\":\"B-12\",\"societyName\":\"Sai Heights\",\"deliveryTime\":\"Morning\",\"paymentType\":\"Monthly\",\"status\":\"Active\"}")
 CUST_ID=$(echo "$CUST" | field id)
+# Without an id every step below would quietly ask about customer "" and read as a pile of 405s.
+[ -n "$CUST_ID" ] || { echo "could not add the customer: $CUST"; exit 1; }
 echo "customer: $(echo "$CUST" | field name) ($CUST_ID)"
 
 step "that customer can now sign in — their login is created on the spot"

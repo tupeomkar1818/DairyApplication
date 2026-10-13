@@ -18,17 +18,18 @@ problem() { show 'v.error ? v.error.code : "ACCEPTED (should not be)"'; }
 BODY=${TMPDIR:-/tmp}/amrale-message-body.json
 body() { cat > "$BODY"; }
 sign_in() {
-  local otp="" tries=0 answer
-  until [ -n "$otp" ]; do
-    answer=$(anon -X POST "$API/auth/otp/request" -d "{\"mobileNumber\":\"$1\"}")
-    otp=$(echo "$answer" | field demoOtp)
-    if [ -z "$otp" ]; then
-      tries=$((tries + 1))
-      [ "$tries" -gt 8 ] && { echo "could not get a code for $1: $answer" >&2; return 1; }
-      sleep 9
-    fi
-  done
-  anon -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$1\",\"otp\":\"$otp\"}" | field session.sessionId
+  # Signing in the way the apps do: the number and the PIN. The first time for anybody, their own number is the
+  # password and the PIN is chosen on the spot. No codes, so these never queue behind the one-minute cooldown.
+  _res=$(anon -X POST "$API/auth/login" -d "{\"mobileNumber\":\"$1\",\"secret\":\"${E2E_PIN:-4321}\"}")
+  _tok=$(echo "$_res" | field session.sessionId)
+  if [ -z "$_tok" ]; then
+    _res=$(anon -X POST "$API/auth/login" -d "{\"mobileNumber\":\"$1\",\"secret\":\"$1\"}")
+    _tok=$(echo "$_res" | field session.sessionId)
+    [ -n "$_tok" ] || { echo "could not sign $1 in: $_res" >&2; return 1; }
+    curl -s -o /dev/null -H 'content-type: application/json' -H "Authorization: Bearer $_tok" \
+      -X POST "$API/auth/pin" -d "{\"pin\":\"${E2E_PIN:-4321}\"}"
+  fi
+  echo "$_tok"
 }
 find_id() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const list=(JSON.parse(s).items)||[];const m=list.find(x=>(x.mobile||x.mobileNumber)===process.argv[1]);console.log(m?m.id:"")})' "$1"; }
 

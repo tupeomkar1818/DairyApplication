@@ -14,17 +14,18 @@ step() { printf '\n=== %s\n' "$1"; }
 show() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let v;try{v=JSON.parse(s)}catch{console.log(s);return}console.log(eval(process.argv[1]))})' "$1"; }
 problem() { show 'v.error ? v.error.code : "ACCEPTED (should not be)"'; }
 sign_in() {
-  local otp="" tries=0 answer
-  until [ -n "$otp" ]; do
-    answer=$(anon -X POST "$API/auth/otp/request" -d "{\"mobileNumber\":\"$1\"}")
-    otp=$(echo "$answer" | field demoOtp)
-    if [ -z "$otp" ]; then
-      tries=$((tries + 1))
-      [ "$tries" -gt 8 ] && { echo "could not get a code for $1: $answer" >&2; return 1; }
-      sleep 9
-    fi
-  done
-  anon -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$1\",\"otp\":\"$otp\"}" | field session.sessionId
+  # Signing in the way the apps do: the number and the PIN. The first time for anybody, their own number is the
+  # password and the PIN is chosen on the spot. No codes, so these never queue behind the one-minute cooldown.
+  _res=$(anon -X POST "$API/auth/login" -d "{\"mobileNumber\":\"$1\",\"secret\":\"${E2E_PIN:-4321}\"}")
+  _tok=$(echo "$_res" | field session.sessionId)
+  if [ -z "$_tok" ]; then
+    _res=$(anon -X POST "$API/auth/login" -d "{\"mobileNumber\":\"$1\",\"secret\":\"$1\"}")
+    _tok=$(echo "$_res" | field session.sessionId)
+    [ -n "$_tok" ] || { echo "could not sign $1 in: $_res" >&2; return 1; }
+    curl -s -o /dev/null -H 'content-type: application/json' -H "Authorization: Bearer $_tok" \
+      -X POST "$API/auth/pin" -d "{\"pin\":\"${E2E_PIN:-4321}\"}"
+  fi
+  echo "$_tok"
 }
 find_id() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const list=(JSON.parse(s).items)||[];const m=list.find(x=>(x.mobile||x.mobileNumber)===process.argv[1]);console.log(m?m.id:"")})' "$1"; }
 
@@ -55,7 +56,22 @@ step "changing a detail without the code is refused"
 cust -X PATCH "$API/me/profile" -d '{"displayName":"Rina D Shah","otp":"000000"}' | problem
 
 step "so they ask for one, and save with it"
-SAVE_OTP=$(cust -X POST "$API/me/profile/otp" | field demoOtp)
+# Waits out the minute between codes, so running this twice in a row reads the same as running it once.
+profile_code() {
+  _otp=""; _tries=0
+  until [ -n "$_otp" ]; do
+    _answer=$(cust -X POST "$API$1" ${2:+-d "$2"})
+    _otp=$(echo "$_answer" | field demoOtp)
+    if [ -z "$_otp" ]; then
+      _tries=$((_tries + 1))
+      [ "$_tries" -gt 8 ] && { echo "could not get a code from $1: $_answer" >&2; return 1; }
+      sleep 9
+    fi
+  done
+  echo "$_otp"
+}
+
+SAVE_OTP=$(profile_code "/me/profile/otp")
 echo "code sent to their own number"
 cust -X PATCH "$API/me/profile" -d "{\"displayName\":\"Rina D Shah\",\"address\":\"C-3, Shivneri, Kothrud\",
   \"houseFlatNumber\":\"C-3\",\"alternateMobile\":\"9876500123\",\"otp\":\"$SAVE_OTP\"}" \
@@ -77,7 +93,7 @@ step "changing their number: the new one cannot be asked for first"
 cust -X POST "$API/me/profile/mobile/new/otp" -d "{\"newMobileNumber\":\"$NEW_MOBILE\"}" | problem
 
 step "so the old number answers first"
-OLD_OTP=$(cust -X POST "$API/me/profile/mobile/old/otp" | field demoOtp)
+OLD_OTP=$(profile_code "/me/profile/mobile/old/otp")
 cust -X POST "$API/me/profile/mobile/old/verify" -d "{\"otp\":\"$OLD_OTP\"}" | show 'JSON.stringify(v)'
 
 step "a number somebody else uses is refused, and so is the one they already have"
@@ -85,9 +101,9 @@ cust -X POST "$API/me/profile/mobile/new/otp" -d "{\"newMobileNumber\":\"$TAKEN_
 cust -X POST "$API/me/profile/mobile/new/otp" -d "{\"newMobileNumber\":\"$MOBILE\"}" | problem
 
 step "the new number answers, and the move is made"
-NEW_OTP=$(cust -X POST "$API/me/profile/mobile/new/otp" -d "{\"newMobileNumber\":\"$NEW_MOBILE\"}" | field demoOtp)
+NEW_OTP=$(profile_code "/me/profile/mobile/new/otp" "{\"newMobileNumber\":\"$NEW_MOBILE\"}")
 cust -X POST "$API/me/profile/mobile/new/verify" -d "{\"newMobileNumber\":\"$NEW_MOBILE\",\"otp\":\"$NEW_OTP\"}" \
-  | show '"they now sign in with " + v.profile.mobileNumberRaw'
+  | show 'v.profile ? "they now sign in with " + v.profile.mobileNumberRaw : JSON.stringify(v)'
 
 step "the record the dairy keeps moved with it, and they are still signed in"
 admin "$API/customers/$CUST_ID" | show '"the dairy has: " + v.mobile'

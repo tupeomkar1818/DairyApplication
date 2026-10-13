@@ -33,10 +33,15 @@ import { customerSelfPatch, type CatalogPack, type SelfServiceContext } from '@/
 
 /** One mobile number, one customer: it is how they sign in. */
 async function assertMobileFree(env: Env, mobile: string, exceptId?: string): Promise<void> {
-  const row = await env.DB.prepare('select id from customers where mobile = ? and id != ?')
+  const clash = await env.DB.prepare(
+    'select (select count(*) from customers where mobile = ?1 and id != ?2)' +
+      ' + (select count(*) from delivery_boys where mobile = ?1) as used',
+  )
     .bind(mobile.trim(), exceptId ?? '')
-    .first<{ id: string }>();
-  if (row) throw ApiError.badRequest('CUSTOMER_MOBILE_EXISTS', 'Another customer already uses this mobile number.');
+    .first<{ used: number }>();
+  if ((clash?.used ?? 0) > 0) {
+    throw ApiError.badRequest('CUSTOMER_MOBILE_EXISTS', 'Somebody else at the dairy already uses this mobile number.');
+  }
 }
 
 function assertRequiredFields(customer: Partial<Customer>): void {

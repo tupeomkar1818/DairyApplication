@@ -14,7 +14,15 @@ until [ -n "$OTP" ]; do
   OTP=$(j -X POST "$API/auth/otp/request" -d "{\"mobileNumber\":\"$ADMIN_MOBILE\"}" | field demoOtp)
   [ -n "$OTP" ] || { echo "waiting for the code cooldown…"; sleep 10; }
 done
-TOKEN=$(j -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$ADMIN_MOBILE\",\"otp\":\"$OTP\"}" | field session.sessionId)
+_res=$(j -X POST "$API/auth/otp/verify" -d "{\"mobileNumber\":\"$ADMIN_MOBILE\",\"otp\":\"$OTP\"}")
+_tok=$(echo "$_res" | field session.sessionId)
+# A session can do nothing else until a PIN is chosen, so pick one — but only when there isn't one yet,
+# since answering that for a login that has one counts as a wrong try.
+if [ "$(echo "$_res" | field mustSetPin)" = "true" ]; then
+  curl -s -o /dev/null -H 'content-type: application/json' -H "Authorization: Bearer $_tok" \
+    -X POST "$API/auth/pin" -d "{\"pin\":\"${E2E_PIN:-4321}\"}"
+fi
+TOKEN="$_tok"
 [ -n "$TOKEN" ] || { echo "could not sign in"; exit 1; }
 auth() { curl -s -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" "$@"; }
 
