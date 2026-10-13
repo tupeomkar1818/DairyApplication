@@ -13,9 +13,15 @@ interface Props {
   description: string;
   /** Path of the page's share image under /public. */
   image?: string;
+  /**
+   * The not-found page, which is not one of the dairy's own. It is kept out of search results, and it does not
+   * send a Marathi reader anywhere: the address in the bar is whatever was mistyped, not this page's, so the usual
+   * hop to /mr/… would land on another address that does not exist either.
+   */
+  notFound?: boolean;
 }
 
-const { lang, title, description, image = '/images/amrale-products-banner.png' } = Astro.props;
+const { lang, title, description, image = '/images/amrale-products-banner.png', notFound = false } = Astro.props;
 const t = ui[lang];
 const base = Astro.site ?? new URL(site.url);
 const canonical = new URL(Astro.url.pathname, base).toString();
@@ -64,6 +70,7 @@ const jsonLd = {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    {notFound && <meta name="robots" content="noindex, follow" />}
     <link rel="canonical" href={canonical} />
     {alternates.map((a) => <link rel="alternate" hreflang={a.hreflang} href={a.href} />)}
     <link rel="alternate" hreflang="x-default" href={defaultAlternate} />
@@ -88,8 +95,8 @@ const jsonLd = {
       href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Mukta:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
     />
 
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
-    <script is:inline define:vars={{ pageLang: lang, mrHref: localePath('mr', pagePath) }}>
+    {!notFound && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+    <script is:inline define:vars={{ pageLang: notFound ? 'skip' : lang, mrHref: localePath('mr', pagePath) }}>
       // Open the English address in Marathi for a visitor who chose Marathi last time, or whose phone is set to
       // Marathi on a first visit. A /mr/ link always stays Marathi (it was shared on purpose), and search engines
       // are never redirected: they keep no choice and do not use Marathi.

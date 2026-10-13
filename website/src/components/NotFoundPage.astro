@@ -1,0 +1,104 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Icon from './Icon.astro';
+import { site, whatsappLink } from '../data/site';
+import { localePath, ui, type Lang } from '../i18n/ui';
+
+interface Props {
+  lang: Lang;
+}
+
+const { lang } = Astro.props;
+const t = ui[lang];
+---
+
+<BaseLayout lang={lang} title={`${t.notFound.title} · ${t.brand.name}`} description={t.notFound.body} notFound>
+  <section class="lost">
+    <div class="container">
+      <p class="code">404</p>
+      <h1>{t.notFound.heading}</h1>
+      <p class="body">{t.notFound.body}</p>
+
+      <div class="actions">
+        <a class="btn btn-yellow" href={localePath(lang, '/')}>
+          <Icon name="milk" />
+          <span>{t.notFound.home}</span>
+        </a>
+        <a class="btn btn-blue" href={whatsappLink(t.whatsapp.start)} target="_blank" rel="noopener">
+          <Icon name="whatsapp" />
+          <span>{t.notFound.ask}</span>
+        </a>
+      </div>
+
+      <p class="phone">
+        <a href={`tel:${site.phoneDial}`}>{site.phoneDisplay}</a>
+      </p>
+    </div>
+  </section>
+
+  <script is:inline define:vars={{ pageLang: lang, mrPath: '/mr/404' }}>
+    // Cloudflare answers an unknown address with the nearest 404.html, and for /mr/… that is still this English
+    // one, so a Marathi reader would otherwise get a Marathi message under an English header. Send them to the
+    // Marathi not-found page, which is a real page of its own.
+    //
+    // The guard is the point: if that page were ever missing, Cloudflare would answer /mr/404 with this same file,
+    // and without it the page would send itself there for ever. With it, the worst case is the English page — which
+    // is what they would have had anyway.
+    try {
+      if (pageLang === 'en' && location.pathname !== mrPath) {
+        var saved = localStorage.getItem('amrale-lang');
+        var wanted = saved || ((navigator.languages || [navigator.language]).some(function (l) { return /^mr/i.test(l); }) ? 'mr' : '');
+        if (wanted === 'mr') location.replace(mrPath);
+      }
+    } catch (e) {}
+  </script>
+</BaseLayout>
+
+<style>
+  /* Tall enough that the footer still sits at the bottom of a phone screen rather than halfway up it. */
+  .lost {
+    display: grid;
+    place-items: center;
+    min-height: min(70vh, 560px);
+    padding-block: clamp(48px, 10vw, 96px);
+    text-align: center;
+  }
+
+  .code {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: clamp(64px, 18vw, 128px);
+    line-height: 1;
+    color: var(--yellow);
+    letter-spacing: 2px;
+  }
+
+  h1 {
+    margin: 8px 0 0;
+    font-size: clamp(26px, 5vw, 40px);
+  }
+
+  .body {
+    max-width: 46ch;
+    margin: 14px auto 0;
+    color: var(--muted);
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 28px;
+  }
+
+  .phone {
+    margin-top: 20px;
+    color: var(--muted);
+  }
+
+  .phone a {
+    color: inherit;
+    font-weight: 700;
+  }
+</style>

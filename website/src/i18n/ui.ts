@@ -25,6 +25,13 @@ const en = {
     sub: 'अमराळे · Since 1976',
     tagline: 'Kothrud’s trusted dairy since 1976',
   },
+  notFound: {
+    title: 'Page not found',
+    heading: 'That page is not here',
+    body: 'The address may have been mistyped, or the page may have moved. Everything about the dairy is on the home page.',
+    home: 'Go to the home page',
+    ask: 'Ask us on WhatsApp',
+  },
   a11y: {
     skip: 'Skip to content',
     home: 'Amrale Dairy home',
@@ -184,6 +191,13 @@ const mr: Dictionary = {
     legalName: 'श्रीकृष्ण डेअरी फार्मस्',
     sub: 'Amrale Dairy · 1976 पासून',
     tagline: '1976 पासून कोथरूडची विश्वासू डेअरी',
+  },
+  notFound: {
+    title: 'पान सापडलं नाही',
+    heading: 'हे पान इथे नाही',
+    body: 'पत्ता चुकून टाइप झाला असेल, किंवा पान हलवलं असेल. डेअरीबद्दल सगळं मुख्यपृष्ठावर आहे.',
+    home: 'मुख्यपृष्ठावर जा',
+    ask: 'WhatsApp वर विचारा',
   },
   a11y: {
     skip: 'मुख्य मजकुराकडे जा',
