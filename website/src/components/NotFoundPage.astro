@@ -36,16 +36,17 @@ const t = ui[lang];
     </div>
   </section>
 
-  <script is:inline define:vars={{ pageLang: lang, mrPath: '/mr/404' }}>
+  <script is:inline define:vars={{ pageLang: lang, mrPath: '/mr/404/' }}>
     // Cloudflare answers an unknown address with the nearest 404.html, and for /mr/… that is still this English
     // one, so a Marathi reader would otherwise get a Marathi message under an English header. Send them to the
     // Marathi not-found page, which is a real page of its own.
     //
-    // The guard is the point: if that page were ever missing, Cloudflare would answer /mr/404 with this same file,
+    // The guard is the point: if that page were ever missing, Cloudflare would answer /mr/404/ with this same file,
     // and without it the page would send itself there for ever. With it, the worst case is the English page — which
-    // is what they would have had anyway.
+    // is what they would have had anyway. Both spellings of the address count as being there already, since the one
+    // without the slash redirects to the one with it.
     try {
-      if (pageLang === 'en' && location.pathname !== mrPath) {
+      if (pageLang === 'en' && location.pathname.replace(/\/+$/, '') !== mrPath.replace(/\/+$/, '')) {
         var saved = localStorage.getItem('amrale-lang');
         var wanted = saved || ((navigator.languages || [navigator.language]).some(function (l) { return /^mr/i.test(l); }) ? 'mr' : '');
         if (wanted === 'mr') location.replace(mrPath);
