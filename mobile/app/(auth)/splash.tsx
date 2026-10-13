@@ -9,8 +9,11 @@ import { amraleColors, amraleTypography } from '@/src/theme/dairyTactile';
 
 function roleToRoute(role: string) {
   switch (role) {
+    case 'super_admin':
     case 'admin':
       return '/(admin)';
+    case 'desk':
+      return '/(desk)';
     case 'customer':
       return '/(customer)';
     case 'delivery_boy':

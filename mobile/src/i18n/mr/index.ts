@@ -17,6 +17,7 @@ import { inbox } from '@/src/i18n/mr/inbox';
 import { offerAdmin } from '@/src/i18n/mr/offerAdmin';
 import { offerCustomer } from '@/src/i18n/mr/offerCustomer';
 import { offers } from '@/src/i18n/mr/offers';
+import { counter } from '@/src/i18n/mr/counter';
 
 export const mr: Dictionary = {
   common,
@@ -35,6 +36,7 @@ export const mr: Dictionary = {
   reports,
   inbox,
   offers,
+  counter,
   offerAdmin,
   offerCustomer,
 };

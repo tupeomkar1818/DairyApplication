@@ -55,7 +55,9 @@ type MobileStep = 'idle' | 'old_otp' | 'new_input' | 'new_otp';
 const TWO_FIELD_ROW_MIN_WIDTH = 560;
 
 const HOME_BY_ROLE: Record<UserRole, string> = {
+  super_admin: '/(admin)',
   admin: '/(admin)',
+  desk: '/(desk)',
   customer: '/(customer)',
   delivery_boy: '/(delivery)',
 };

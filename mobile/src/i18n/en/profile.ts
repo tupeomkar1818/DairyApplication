@@ -4,7 +4,9 @@ export const profile = {
   loadErrorTitle: "Couldn't load your profile",
   retry: 'Retry',
   roles: {
+    super_admin: 'Owner',
     admin: 'Administrator',
+    desk: 'Counter',
     customer: 'Customer',
     delivery_boy: 'Delivery Partner',
   },

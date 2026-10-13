@@ -67,6 +67,12 @@ DESK=$(sign_in "$DESK_MOBILE") || exit 1
 desk() { curl -s -m 20 -H 'content-type: application/json' -H "Authorization: Bearer $DESK" "$@"; }
 desk "$API/auth/me" | show '"signed in as " + v.session.role'
 
+# Signing in twice is the test: a login that nothing points at is taken for a leftover and cleared away, so the
+# second sign-in would ask for the number again and the PIN would never stick.
+step "and again tomorrow, with the PIN they chose"
+anon -X POST "$API/auth/login" -d "{\"mobileNumber\":\"$DESK_MOBILE\",\"secret\":\"${E2E_PIN:-4321}\"}" \
+  | show 'JSON.stringify({signedIn: !!v.session, role: v.session?.role, mustSetPin: v.mustSetPin})'
+
 step "the desk may read the catalogue, and nothing of the dairy's"
 desk -o /dev/null -w "products %{http_code}, " "$API/products"
 desk -o /dev/null -w "customers %{http_code}, " "$API/customers"

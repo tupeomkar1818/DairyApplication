@@ -33,3 +33,16 @@ export const NOT_STAFF = `role not in (${STAFF_ROLES.map((r) => `'${r}'`).join('
 export function isDairy(role: Role): boolean {
   return role === 'super_admin' || role === 'admin';
 }
+
+/**
+ * The table a login belongs to, for a role that has a record.
+ *
+ * Written once because getting it wrong is silent: the login is made, nothing points at it, and the next sign-in
+ * takes it for a leftover and clears it away — so the person can never keep a PIN.
+ */
+export function recordTableFor(role: Role): 'customers' | 'delivery_boys' | 'desk_users' | null {
+  if (role === 'customer') return 'customers';
+  if (role === 'delivery_boy') return 'delivery_boys';
+  if (role === 'desk') return 'desk_users';
+  return null;
+}

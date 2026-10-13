@@ -5,7 +5,9 @@ export const profile: typeof En = {
   loadErrorTitle: 'तुमचे प्रोफाइल लोड करता आले नाही',
   retry: 'पुन्हा प्रयत्न करा',
   roles: {
+    super_admin: 'मालक',
     admin: 'ॲडमिन',
+    desk: 'काउंटर',
     customer: 'ग्राहक',
     delivery_boy: 'डिलिव्हरी बॉय',
   },

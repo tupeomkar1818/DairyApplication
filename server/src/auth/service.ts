@@ -1,6 +1,6 @@
 import { maskMobile, randomOtp, randomToken, sameHash, sha256Hex } from '@/auth/crypto';
 import { loginFor, refuseIfClosed } from '@/auth/pin';
-import { STANDALONE_ROLES } from '@/auth/roles';
+import { STANDALONE_ROLES, recordTableFor } from '@/auth/roles';
 import { sendOtpSms } from '@/auth/sms';
 import { newId, nowIso } from '@/db';
 import { ApiError, type Env, type RequestContext } from '@/http';
@@ -220,8 +220,10 @@ export async function verifyOtp(env: Env, mobile: string, code: string): Promise
     )
       .bind(account.id, account.mobile, account.role, account.display_name, account.status, now, now)
       .run();
-    const table = linked!.role === 'customer' ? 'customers' : 'delivery_boys';
-    await env.DB.prepare(`update ${table} set user_id = ? where id = ?`).bind(account.id, linked!.id).run();
+    const table = recordTableFor(linked!.role);
+    if (table) {
+      await env.DB.prepare(`update ${table} set user_id = ? where id = ?`).bind(account.id, linked!.id).run();
+    }
   }
 
   const token = randomToken();

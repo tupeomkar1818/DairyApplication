@@ -16,6 +16,7 @@ import { inbox } from '@/src/i18n/en/inbox';
 import { offerAdmin } from '@/src/i18n/en/offerAdmin';
 import { offerCustomer } from '@/src/i18n/en/offerCustomer';
 import { offers } from '@/src/i18n/en/offers';
+import { counter } from '@/src/i18n/en/counter';
 
 /** Every namespace of app wording, in English (the source the Marathi dictionary is checked against). */
 export const en = {
@@ -35,6 +36,7 @@ export const en = {
   reports,
   inbox,
   offers,
+  counter,
   offerAdmin,
   offerCustomer,
 };

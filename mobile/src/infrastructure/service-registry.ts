@@ -21,6 +21,8 @@ import { ChatServiceMock } from '@/src/domain/chat/service.mock';
 import type { INotificationService } from '@/src/domain/notifications/service.interface';
 import { NotificationServiceApi } from '@/src/domain/notifications/service.api';
 import { NotificationServiceMock } from '@/src/domain/notifications/service.mock';
+import type { ICounterService } from '@/src/domain/counter/service.interface';
+import { CounterServiceApi } from '@/src/domain/counter/service.api';
 import type { IMediaService } from '@/src/domain/media/service.interface';
 import { MediaServiceApi } from '@/src/domain/media/service.api';
 import type { IPushService } from '@/src/domain/push/service.interface';
@@ -150,6 +152,14 @@ function resolveNotificationService(): INotificationService {
  * Pictures go to the dairy's server where there is one; a phone keeping its own records keeps the picture as it
  * was picked (see `uploadPicture`).
  */
+/**
+ * The counter only exists with the dairy’s server: a sale is money taken, and a phone does not keep its own
+ * copy of that. Where the app keeps its own records there is no desk, and no desk user to sign in as one.
+ */
+function resolveCounterService(): ICounterService | undefined {
+  return SERVICE_MODE === 'api' ? new CounterServiceApi() : undefined;
+}
+
 function resolveMediaService(): IMediaService | undefined {
   return SERVICE_MODE === 'api' ? new MediaServiceApi() : undefined;
 }
@@ -239,6 +249,7 @@ export const services = {
   notifications: resolveNotificationService(),
   push: resolvePushService(),
   media: resolveMediaService(),
+  counter: resolveCounterService(),
   subscriptionSchedule: resolveSubscriptionScheduleService(),
 };
 

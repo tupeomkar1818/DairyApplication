@@ -1,7 +1,7 @@
 import { randomToken, sameHash, sha256Hex } from '@/auth/crypto';
 import { newId, nowIso } from '@/db';
 import { ApiError, type Env } from '@/http';
-import { NOT_STAFF, STANDALONE_ROLES } from '@/auth/roles';
+import { NOT_STAFF, STANDALONE_ROLES, recordTableFor } from '@/auth/roles';
 import type { Role, Session } from '@/auth/service';
 
 /**
@@ -208,8 +208,10 @@ export async function signInWithPin(env: Env, mobile: string, secret: string, no
     await env.DB.prepare('insert into users (id, mobile, role, display_name, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)')
       .bind(account.id, account.mobile, account.role, account.display_name, account.status, at, at)
       .run();
-    const table = linked!.role === 'customer' ? 'customers' : 'delivery_boys';
-    await env.DB.prepare(`update ${table} set user_id = ? where id = ?`).bind(account.id, linked!.id).run();
+    const table = recordTableFor(linked!.role);
+    if (table) {
+      await env.DB.prepare(`update ${table} set user_id = ? where id = ?`).bind(account.id, linked!.id).run();
+    }
   }
 
   const locked = lockedUntil(account, now);

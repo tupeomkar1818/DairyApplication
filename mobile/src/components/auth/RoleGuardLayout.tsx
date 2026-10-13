@@ -37,7 +37,11 @@ export function RoleGuardLayout({ role, children }: Props) {
   // happens for an ordinary reason: three of the apps have a screen called `reports`, so opening /reports cold (a
   // link, or a refresh on the web) can land in the wrong group's stack before anyone has done anything wrong. The
   // splash is the screen whose job is working out where somebody belongs, so it takes them to their own app.
-  if (session.data.role !== role) {
+  // The owner goes wherever a manager goes. That is the whole of the hierarchy, and it is written here for the
+  // same reason the server writes it in one place: spelled out per screen, one forgotten line locks the dairy out
+  // of its own app.
+  const mayEnter = session.data.role === role || (session.data.role === 'super_admin' && role === 'admin');
+  if (!mayEnter) {
     return <Redirect href="/(auth)/splash" />;
   }
 
