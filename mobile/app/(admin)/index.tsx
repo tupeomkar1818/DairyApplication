@@ -22,6 +22,7 @@ import { AppSnackbar } from '@/src/components/shared/AppSnackbar';
 import { useDashboardSettings } from '@/src/hooks/adminDashboard';
 import { useConfirmLogout } from '@/src/hooks/auth';
 import { useStrings } from '@/src/i18n/useStrings';
+import { isOwner } from '@/src/domain/shared/enums';
 import { useAuthSession } from '@/src/hooks/auth/useAuth';
 import { useCustomers } from '@/src/hooks/customers';
 import { useDeliveryBoys } from '@/src/hooks/deliveryBoys';
@@ -245,6 +246,7 @@ export default function AdminDashboard() {
   );
 
   const tOffers = useStrings('offerAdmin');
+  const tCounter = useStrings('counter');
   const liveOffers = useMemo(() => offers.all.filter((o) => offerStatus(o, todayYmd()) === 'live').length, [offers.all]);
 
   const chat = useChat();
@@ -310,6 +312,24 @@ export default function AdminDashboard() {
         href: '/(admin)/payment-requests',
       },
       {
+        key: 'counter',
+        title: tCounter.day.title,
+        subtitle: tCounter.day.subtitle,
+        icon: 'cash-register',
+        href: '/(admin)/counter-day',
+      },
+      ...(isOwner(session.data?.role)
+        ? [
+            {
+              key: 'staff',
+              title: tCounter.staff.deskTitle,
+              subtitle: tCounter.staff.deskSubtitle,
+              icon: 'account-tie-outline' as const,
+              href: '/(admin)/staff' as const,
+            },
+          ]
+        : []),
+      {
         key: 'reports',
         title: t.dashboard.rows.reports.title,
         subtitle: t.dashboard.rows.reports.subtitle,
@@ -317,7 +337,7 @@ export default function AdminDashboard() {
         href: '/(admin)/reports',
       },
     ],
-    [unreadChats, pendingPayments, liveOffers, t, tOffers],
+    [unreadChats, pendingPayments, liveOffers, t, tOffers, tCounter, session.data?.role],
   );
 
   const cover = settingsQuery.data?.settings.cover;

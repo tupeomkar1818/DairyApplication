@@ -10,7 +10,8 @@ export function ExternalLink(
     <Link
       target="_blank"
       {...props}
-      href={props.href}
+      // An external URL is not one of the app's own routes, which is the whole point of this component.
+      href={props.href as React.ComponentProps<typeof Link>['href']}
       onPress={(e) => {
         if (Platform.OS !== 'web') {
           // Prevent the default behavior of linking to the default browser on native.
