@@ -37,7 +37,30 @@ Everything else below works today.
 
 ## Putting the dairy in
 
-In this order, from the admin app:
+Two ways. **From one file** is quicker for the first load and much easier to correct:
+
+```bash
+cd server && cp data/dairy.example.json data/dairy.json
+```
+
+Fill that in — every product with its packs and real prices, the delivery team, the first customers and what
+each of them takes every day — then:
+
+```bash
+cd server && npm run import -- --live --pin 1234 --dry-run
+```
+
+That writes nothing; it just says what it would do, and lists anything still missing (a price left at 0, a
+customer with no mobile number, a plan naming a pack that does not exist). When it reads right, run it again
+without `--dry-run`.
+
+**Run it as often as you like.** Products are matched by name and people by mobile number, so a second run
+corrects what is there rather than making a second copy. Change a price in the file, run it again, and every
+customer taking that pack moves to the new price. `data/dairy.json` is kept out of the repo, because it holds
+customers’ names, numbers and addresses.
+
+The other way is **from the admin app**, screen by screen, which is how everything is edited from day two
+anyway. In this order:
 
 1. **Products** — each product with its packs and real prices. A pack's price is what every bill is worked out
    from, so get these right first. (The server starts empty: there is nothing to correct, only to enter.)

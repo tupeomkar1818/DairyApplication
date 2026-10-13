@@ -1,0 +1,74 @@
+{
+  "_readme": [
+    "The dairy's own data, in one file. Copy this to dairy.json, replace every value with the real one,",
+    "and run `npm run import` (add `-- --live` for the real server).",
+    "",
+    "Nothing here is invented for you: prices become bills, so they have to come from the dairy.",
+    "Running it again after an edit updates what is already there rather than making a second copy —",
+    "products are matched by name, people by mobile number.",
+    "",
+    "Delete this _readme key, or leave it; the importer ignores it."
+  ],
+
+  "products": [
+    {
+      "name": "Cow Milk",
+      "category": "Milk",
+      "unit": "ml",
+      "description": "Fresh cow milk, delivered every morning.",
+      "packs": [
+        { "label": "500 ml", "quantity": 500, "price": 0 },
+        { "label": "1 litre", "quantity": 1000, "price": 0 }
+      ]
+    },
+    {
+      "name": "Buffalo Milk",
+      "category": "Milk",
+      "unit": "ml",
+      "description": "",
+      "packs": [{ "label": "500 ml", "quantity": 500, "price": 0 }]
+    },
+    {
+      "name": "Paneer",
+      "category": "Paneer",
+      "unit": "g",
+      "description": "",
+      "packs": [{ "label": "200 g", "quantity": 200, "price": 0 }]
+    }
+  ],
+
+  "deliveryBoys": [
+    {
+      "fullName": "",
+      "mobileNumber": "",
+      "primaryRouteName": "Kothrud A",
+      "salaryType": "Monthly",
+      "monthlySalary": 0,
+      "joiningDate": ""
+    }
+  ],
+
+  "customers": [
+    {
+      "name": "",
+      "mobile": "",
+      "flatNo": "",
+      "societyName": "",
+      "street": "",
+      "routeName": "Kothrud A",
+      "deliveryTime": "Morning",
+      "billingType": "Postpaid",
+      "billingCycleDate": 1,
+      "subscriptionStartDate": "",
+      "plans": [
+        {
+          "productName": "Cow Milk",
+          "quantityLabel": "500 ml",
+          "numberOfItems": 1,
+          "frequency": "Daily",
+          "deliveryTime": "Morning"
+        }
+      ]
+    }
+  ]
+}

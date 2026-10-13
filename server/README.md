@@ -127,6 +127,29 @@ the number going dead, the five tries, the lockout, the dairy’s reset.
 The OTP routes are still here and still work, for the day MSG91 and the DLT registration are through: with
 `SMS_PROVIDER=log` no SMS is sent and the code is written to the Worker's log instead.
 
+## Putting the dairy’s own data in
+
+`data/dairy.json` (copied from `data/dairy.example.json`, and kept out of the repo because it holds customers’
+names, numbers and addresses) holds the products with their packs and prices, the delivery team, and the
+customers with what each takes every day. `npm run import` writes it through the API as the dairy itself:
+
+```bash
+npm run import                          # the local dev server
+npm run import -- --live --pin 1234     # the real one
+npm run import -- --dry-run             # say what would happen, write nothing
+```
+
+What it is careful about:
+
+- **It refuses a half-filled file** before writing anything — a pack still priced 0, a customer with no mobile
+  number, two customers sharing one, a plan naming a pack the product does not have. Prices become bills, so a
+  file that is not ready is better not written at all.
+- **It can be run again.** Products are matched by name and people by mobile number, so a second run updates
+  what is there. Correcting a price in the file is how prices are corrected.
+- **A plan’s price is never written by hand**: it is read off the pack it is for, on every run, so a
+  subscription cannot drift away from the price list.
+- **A customer is put on the round** whose delivery boy has their `routeName`.
+
 ## Customer self-service
 
 The customer app writes on the customer’s own record: a one-off order, a paused day, a different everyday quantity,
