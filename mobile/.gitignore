@@ -10,6 +10,13 @@ web-build/
 expo-env.d.ts
 
 # Native
+
+# `expo prebuild` writes these from app.json; they are output, not source, and regenerating them is how
+# a build starts. Keeping them would mean editing two copies of the same config and hoping they agree.
+/android/
+/ios/
+# Gradle output from building a local module.
+modules/*/android/build/
 .kotlin/
 *.orig.*
 *.jks
