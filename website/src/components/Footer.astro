@@ -17,7 +17,10 @@ const year = new Date().getFullYear();
   <div class="container grid">
     <div class="about">
       <a class="brand" href={localePath(lang, '/')}>
-        <img src="/images/amrale-logo.png" alt="" width="56" height="56" loading="lazy" />
+        <picture>
+          <source srcset="/images/amrale-logo.webp" type="image/webp" />
+          <img src="/images/amrale-logo.png" alt="" width="56" height="56" loading="lazy" />
+        </picture>
         <span>
           <strong>{t.brand.name}</strong>
           <span class="brand-second">{lang === 'mr' ? site.name : site.legalNameMarathi}</span>

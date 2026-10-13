@@ -26,7 +26,10 @@ const links = [
 <header class="header">
   <div class="container bar">
     <a class="brand" href={localePath(lang, '/')} aria-label={t.a11y.home}>
-      <img src="/images/amrale-logo.png" alt="" width="48" height="48" />
+      <picture>
+        <source srcset="/images/amrale-logo.webp" type="image/webp" />
+        <img src="/images/amrale-logo.png" alt="" width="48" height="48" />
+      </picture>
       <span class="brand-text">
         <span class="brand-name">{t.brand.name}</span>
         <span class="brand-sub">{t.brand.sub}</span>

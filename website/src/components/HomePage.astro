@@ -51,7 +51,10 @@ const promiseIcons = ['shield', 'truck', 'clock', 'wallet'] as const;
 
       <div class="hero-visual" aria-hidden="true">
         <div class="logo-ring">
-          <img src="/images/amrale-logo.png" alt="" width="360" height="360" />
+          <picture>
+            <source srcset="/images/amrale-logo.webp" type="image/webp" />
+            <img src="/images/amrale-logo.png" alt="" width="360" height="360" />
+          </picture>
         </div>
         <div class="badge-years">
           <strong>{yearsServing}</strong>
@@ -103,7 +106,10 @@ const promiseIcons = ['shield', 'truck', 'clock', 'wallet'] as const;
       </div>
 
       <figure class="banner">
-        <img src="/images/amrale-products-banner.png" alt={t.products.bannerAlt} width="1024" height="393" loading="lazy" />
+        <picture>
+          <source srcset="/images/amrale-products-banner.webp" type="image/webp" />
+          <img src="/images/amrale-products-banner.png" alt={t.products.bannerAlt} width="1024" height="393" loading="lazy" />
+        </picture>
       </figure>
 
       <ul class="product-grid">
