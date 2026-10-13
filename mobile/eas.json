@@ -1,0 +1,45 @@
+{
+  "cli": {
+    "version": ">= 5.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "counter": {
+      "//": "The build for the counter phone: an APK that is installed by hand, with the dairy's own server.",
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "counter",
+      "env": {
+        "EXPO_PUBLIC_SERVICE_MODE": "api",
+        "EXPO_PUBLIC_API_BASE_URL": "https://amrale-dairy-api.amrale-dairy-website.workers.dev"
+      }
+    },
+    "preview": {
+      "//": "The same thing for a phone that is not the counter — a customer's, a delivery boy's, or yours.",
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_SERVICE_MODE": "api",
+        "EXPO_PUBLIC_API_BASE_URL": "https://amrale-dairy-api.amrale-dairy-website.workers.dev"
+      }
+    },
+    "production": {
+      "//": "For the Play Store, when the dairy gets there. An app bundle, which is what Google takes.",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "channel": "production",
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SERVICE_MODE": "api",
+        "EXPO_PUBLIC_API_BASE_URL": "https://amrale-dairy-api.amrale-dairy-website.workers.dev"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

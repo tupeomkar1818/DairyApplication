@@ -26,9 +26,19 @@ UPI, and presses **Place the order** — the bill prints and the sale is done. I
 You see the day's takings under **Counter sales**: the total, split by cash and UPI, by who sold, and what sold.
 It is kept apart from the milk round's money so you can tell which of the two is paying for the dairy.
 
-**The printer is the one thing still to set up.** Printing to a Bluetooth counter printer needs the app installed
-as a build (not the Expo preview), which is the same EAS step that push notifications need. Until then a sale is
-still rung up and saved, and the desk is simply told the bill did not print.
+**The printer needs the built app**, not the Expo preview — a Bluetooth socket is native work. Everything for
+that build is ready (see `mobile/BUILD.md`); what is left is signing in to an Expo account, which is yours:
+
+```bash
+cd mobile && npx eas-cli login && npx eas-cli init
+```
+
+```bash
+cd mobile && npx eas-cli build --profile counter --platform android
+```
+
+The same step turns push notifications on. Until it is done a sale is still rung up and saved, and the desk is
+simply told the bill did not print.
 
 ## How everybody signs in
 
