@@ -56,6 +56,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "66d80650-cd65-43ce-a5c0-163c36d363a0"
+      }
+    },
+    "owner": "tupeomkar1818"
   }
 }
