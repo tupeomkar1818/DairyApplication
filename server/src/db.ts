@@ -4,6 +4,16 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * The dairy's own day, whatever time zone the server thinks it is in.
+ *
+ * Everything dated — an offer, a round, a counter sale — is dated by the day it happened in Kothrud, not in UTC.
+ * A sale at eight in the evening is still that evening, not tomorrow morning.
+ */
+export function todayInIndia(): string {
+  return new Date(Date.now() + 5.5 * 60 * 60_000).toISOString().slice(0, 10);
+}
+
 export function newId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`;
 }

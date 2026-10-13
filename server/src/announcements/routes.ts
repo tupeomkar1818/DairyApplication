@@ -13,6 +13,7 @@ import { requireRole, requireUser } from '@/auth/service';
 import { nowIso } from '@/db';
 import { ApiError, json, readJson, type Env, type Router } from '@/http';
 import { assertPictureIsAnAddress } from '@/media/routes';
+import { isDairy } from '@/auth/roles';
 
 /**
  * Announcements: what the dairy tells its customers — festival and birthday wishes, notices — and the message a
@@ -66,7 +67,7 @@ export function mountAnnouncements(router: Router): Router {
     .get('/announcements', async (context) => {
       const principal = await requireUser(context);
       const all = await loadAnnouncements(context.env);
-      if (principal.role === 'admin') return json({ items: all });
+      if (isDairy(principal.role)) return json({ items: all });
 
       if (principal.role === 'customer') {
         // Only the messages sent to this customer, and only their own read mark — never another household's.
@@ -87,7 +88,7 @@ export function mountAnnouncements(router: Router): Router {
       const principal = await requireUser(context);
       const [announcement] = await loadAnnouncements(context.env, { id: context.params.id! });
       if (!announcement) throw ApiError.notFound('ANNOUNCEMENT_NOT_FOUND', 'That message is no longer there.');
-      if (principal.role === 'admin') return json(announcement);
+      if (isDairy(principal.role)) return json(announcement);
 
       if (principal.role === 'customer') {
         const id = principal.linkedRecordId ?? '';

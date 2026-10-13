@@ -28,14 +28,17 @@ import { claimsByCustomer } from '@/offers/claims';
 import { offerFromRow, type OfferRow } from '@/offers/mapping';
 import { getCustomer, loadCustomers } from '@/customers/read';
 import { customerSelfPatch, type CatalogPack, type SelfServiceContext } from '@/customers/selfService';
+import { isDairy } from '@/auth/roles';
 
 /** Customers: their profile, address, billing settings and subscription lines. */
 
 /** One mobile number, one customer: it is how they sign in. */
 async function assertMobileFree(env: Env, mobile: string, exceptId?: string): Promise<void> {
   const clash = await env.DB.prepare(
-    'select (select count(*) from customers where mobile = ?1 and id != ?2)' +
-      ' + (select count(*) from delivery_boys where mobile = ?1) as used',
+    `select (select count(*) from customers where mobile = ?1 and id != ?2)` +
+      ` + (select count(*) from delivery_boys where mobile = ?1)` +
+      ` + (select count(*) from desk_users where mobile = ?1)` +
+      ` + (select count(*) from users where mobile = ?1 and role in ('super_admin', 'admin')) as used`,
   )
     .bind(mobile.trim(), exceptId ?? '')
     .first<{ used: number }>();
@@ -245,7 +248,7 @@ async function selfServiceContext(env: Env, customerId: string): Promise<SelfSer
 
 /** A customer may open their own record; a delivery boy, the houses on their route; the dairy, everyone. */
 async function assertMayRead(env: Env, principal: Principal, customer: Customer): Promise<void> {
-  if (principal.role === 'admin') return;
+  if (isDairy(principal.role)) return;
   if (principal.role === 'customer' && customer.id === principal.linkedRecordId) return;
   if (principal.role === 'delivery_boy' && customer.assignedDeliveryBoyId === principal.linkedRecordId) return;
   throw ApiError.forbidden();
@@ -257,7 +260,7 @@ export function mountCustomers(router: Router): Router {
     .get('/customers', async (context) => {
       const principal = await requireRole(context, 'admin', 'delivery_boy');
       const all = await loadCustomers(context.env);
-      const items = principal.role === 'admin' ? all : all.filter((c) => c.assignedDeliveryBoyId === principal.linkedRecordId);
+      const items = isDairy(principal.role) ? all : all.filter((c) => c.assignedDeliveryBoyId === principal.linkedRecordId);
       return json({ items });
     })
 
@@ -315,7 +318,7 @@ export function mountCustomers(router: Router): Router {
     })
 
     .delete('/customers/:id', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const { env, params } = context;
       const id = params.id!;
       const gone = await getCustomer(env, id);

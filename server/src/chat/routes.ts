@@ -1,6 +1,7 @@
 import { requireRole } from '@/auth/service';
 import { newId, nowIso } from '@/db';
 import { ApiError, json, readJson, type Env, type Router } from '@/http';
+import { isDairy } from '@/auth/roles';
 
 /**
  * The chat between a customer and the dairy. One conversation per customer, so every message carries the customer
@@ -47,7 +48,7 @@ export function mountChat(router: Router): Router {
   return router
     .get('/chat', async (context) => {
       const principal = await requireRole(context, 'admin', 'customer');
-      if (principal.role === 'admin') return json({ items: await conversation(context.env) });
+      if (isDairy(principal.role)) return json({ items: await conversation(context.env) });
       if (!principal.linkedRecordId) throw ApiError.notFound('CUSTOMER_NOT_FOUND', 'No customer record for this number.');
       return json({ items: await conversation(context.env, principal.linkedRecordId) });
     })
@@ -61,7 +62,7 @@ export function mountChat(router: Router): Router {
       // A customer writes to their own conversation, whatever the phone sent as the customer.
       const customerId = principal.role === 'customer' ? principal.linkedRecordId : String(body.customerId ?? '').trim();
       if (!customerId) throw ApiError.badRequest('CUSTOMER_NOT_FOUND', 'Say which customer this message is for.');
-      if (principal.role === 'admin') {
+      if (isDairy(principal.role)) {
         const known = await context.env.DB.prepare('select id from customers where id = ?').bind(customerId).first<{ id: string }>();
         if (!known) throw ApiError.notFound('CUSTOMER_NOT_FOUND', 'That customer is no longer on the list.');
       }
@@ -70,7 +71,7 @@ export function mountChat(router: Router): Router {
       await context.env.DB.prepare(
         'insert into chat_messages (id, customer_id, sender, sender_name, text, read_at, created_at) values (?, ?, ?, ?, ?, null, ?)',
       )
-        .bind(id, customerId, principal.role === 'admin' ? 'dairy' : 'customer', String(body.senderName ?? '').trim() || null, text.slice(0, 2000), nowIso())
+        .bind(id, customerId, isDairy(principal.role) ? 'dairy' : 'customer', String(body.senderName ?? '').trim() || null, text.slice(0, 2000), nowIso())
         .run();
 
       const row = await context.env.DB.prepare('select * from chat_messages where id = ?').bind(id).first<ChatRow>();
@@ -84,7 +85,7 @@ export function mountChat(router: Router): Router {
       const customerId = principal.role === 'customer' ? principal.linkedRecordId : String(body.customerId ?? '').trim();
       if (!customerId) throw ApiError.badRequest('CUSTOMER_NOT_FOUND', 'Say which conversation was read.');
 
-      const writtenByTheOtherSide = principal.role === 'admin' ? 'customer' : 'dairy';
+      const writtenByTheOtherSide = isDairy(principal.role) ? 'customer' : 'dairy';
       await context.env.DB.prepare('update chat_messages set read_at = ? where customer_id = ? and sender = ? and read_at is null')
         .bind(nowIso(), customerId, writtenByTheOtherSide)
         .run();

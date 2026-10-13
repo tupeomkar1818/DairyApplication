@@ -3,6 +3,8 @@ import { mountAnnouncements } from '@/announcements/routes';
 import { mountAuth } from '@/auth/routes';
 import { mountBilling } from '@/billing/routes';
 import { mountChat } from '@/chat/routes';
+import { mountCounter } from '@/counter/routes';
+import { mountStaff } from '@/counter/staff';
 import { mountCustomers } from '@/customers/routes';
 import { mountDeliveryBoys } from '@/deliveryBoys/routes';
 import { mountMedia } from '@/media/routes';
@@ -46,6 +48,8 @@ mountNotifications(router);
 mountPush(router);
 mountMedia(router);
 mountSettings(router);
+mountStaff(router);
+mountCounter(router);
 mountProfile(router);
 
 export default {

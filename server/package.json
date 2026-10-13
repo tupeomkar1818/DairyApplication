@@ -25,7 +25,8 @@
     "e2e:bills": "bash scripts/e2e-bills.sh",
     "e2e:media": "bash scripts/e2e-media.sh",
     "e2e:settings": "bash scripts/e2e-settings.sh",
-    "e2e:profile": "bash scripts/e2e-profile.sh"
+    "e2e:profile": "bash scripts/e2e-profile.sh",
+    "e2e:counter": "bash scripts/e2e-counter.sh"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261006.1",

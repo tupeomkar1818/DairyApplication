@@ -33,7 +33,7 @@ export function mountAuth(router: Router): Router {
 
     // Somebody has forgotten their PIN: the dairy forgets it for them, and they start again with their number.
     .post('/auth/pin/reset', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const { mobileNumber } = await readJson<{ mobileNumber?: string }>(context.request);
       const mobile = normalizeMobile(mobileNumber);
       if (!mobile) throw ApiError.badRequest('MOBILE_INVALID', 'Please enter a valid 10-digit mobile number.');

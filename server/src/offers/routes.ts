@@ -1,8 +1,9 @@
 import { requireRole, requireUser } from '@/auth/service';
-import { newId, nowIso } from '@/db';
+import { newId, nowIso, todayInIndia } from '@/db';
 import { ApiError, json, readJson, type Env, type Router } from '@/http';
 import { assertPictureIsAnAddress } from '@/media/routes';
 import { offerFromRow, offerStatus, offerToRow, websiteOffer, type Offer, type OfferRow } from '@/offers/mapping';
+import { isDairy } from '@/auth/roles';
 
 /**
  * Offers: price offers, combos, bill discounts and subscription rewards.
@@ -12,10 +13,6 @@ import { offerFromRow, offerStatus, offerToRow, websiteOffer, type Offer, type O
  * never changes afterwards.
  */
 
-/** The dairy's day, whatever time zone the server itself thinks it is in. */
-function todayInIndia(): string {
-  return new Date(Date.now() + 5.5 * 60 * 60_000).toISOString().slice(0, 10);
-}
 
 function statusOf(offer: Offer, todayYmd: string): 'scheduled' | 'live' | 'ended' {
   return offerStatus(
@@ -125,7 +122,7 @@ export function mountOffers(router: Router): Router {
     .get('/offers', async (context) => {
       const principal = await requireUser(context);
       const offers = await loadOffers(context.env);
-      if (principal.role === 'admin') return json({ items: offers });
+      if (isDairy(principal.role)) return json({ items: offers });
 
       const today = todayInIndia();
       const running = offers.filter((offer) => statusOf(offer, today) !== 'ended');
@@ -140,7 +137,7 @@ export function mountOffers(router: Router): Router {
     .get('/offers/:id', async (context) => {
       const principal = await requireUser(context);
       const offer = await getOffer(context.env, context.params.id!);
-      if (principal.role === 'admin') return json(offer);
+      if (isDairy(principal.role)) return json(offer);
       if (statusOf(offer, todayInIndia()) === 'ended') throw ApiError.notFound('OFFER_NOT_FOUND', 'That offer has ended.');
       if (principal.role === 'customer' && offer.code) {
         const claimed = principal.linkedRecordId ? await claimedOfferIds(context.env, principal.linkedRecordId) : new Set<string>();

@@ -1,5 +1,6 @@
 import { maskMobile, randomOtp, randomToken, sameHash, sha256Hex } from '@/auth/crypto';
 import { loginFor, refuseIfClosed } from '@/auth/pin';
+import { STANDALONE_ROLES } from '@/auth/roles';
 import { sendOtpSms } from '@/auth/sms';
 import { newId, nowIso } from '@/db';
 import { ApiError, type Env, type RequestContext } from '@/http';
@@ -22,7 +23,14 @@ export const OTP_MAX_PER_HOUR = 6;
 /** How long a phone stays signed in without signing in again. */
 export const SESSION_DAYS = 180;
 
-export type Role = 'admin' | 'customer' | 'delivery_boy';
+/**
+ * Who somebody is to the dairy. `super_admin` is the dairy's own login and owns everything; `admin` runs the
+ * day without being able to re-price the milk, change where money goes, or add staff; `desk` sells over the
+ * counter and nothing else.
+ */
+export type Role = 'super_admin' | 'admin' | 'desk' | 'customer' | 'delivery_boy';
+
+export { STANDALONE_ROLES, STAFF_ROLES } from '@/auth/roles';
 
 export type Principal = {
   sessionId: string;
@@ -73,12 +81,22 @@ async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | nu
     };
   }
 
+  const desk = await env.DB.prepare('select id, full_name, status, app_access_enabled, user_id from desk_users where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; full_name: string; status: string; app_access_enabled: number; user_id: string | null }>();
+  if (desk) {
+    return {
+      user: await loginFor(env, mobile, desk.user_id),
+      linked: { role: 'desk', id: desk.id, name: desk.full_name, status: desk.status, appAccess: desk.app_access_enabled !== 0 },
+    };
+  }
+
   // Nobody the dairy keeps under this number. Only the dairy's own login stands on its own.
   const user = await env.DB.prepare('select id, mobile, role, display_name, status, created_at from users where mobile = ?')
     .bind(mobile)
     .first<UserRow>();
 
-  return { user: user?.role === 'admin' ? user : null, linked: null };
+  return { user: user && STANDALONE_ROLES.includes(user.role) ? user : null, linked: null };
 }
 
 async function linkedRecordId(env: Env, user: UserRow): Promise<string | undefined> {
@@ -88,6 +106,10 @@ async function linkedRecordId(env: Env, user: UserRow): Promise<string | undefin
   }
   if (user.role === 'delivery_boy') {
     const row = await env.DB.prepare('select id from delivery_boys where mobile = ?').bind(user.mobile).first<{ id: string }>();
+    return row?.id;
+  }
+  if (user.role === 'desk') {
+    const row = await env.DB.prepare('select id from desk_users where mobile = ?').bind(user.mobile).first<{ id: string }>();
     return row?.id;
   }
   return undefined;
@@ -280,8 +302,16 @@ export async function requireUser(
 }
 
 /** Sign-in required, and one of these roles. */
+/**
+ * Lets a session through only for the roles named.
+ *
+ * The owner passes anywhere an admin would. That is the whole of the hierarchy, and it is written here rather
+ * than spelled out at seventy call sites, where one forgotten `super_admin` would quietly shut the dairy out
+ * of its own screen. Where something is the owner’s alone, the call says `super_admin` and only that.
+ */
 export async function requireRole(context: Pick<RequestContext, 'request' | 'env'>, ...roles: Role[]): Promise<Principal> {
   const principal = await requireUser(context);
-  if (!roles.includes(principal.role)) throw ApiError.forbidden();
+  const allowed = roles.includes(principal.role) || (principal.role === 'super_admin' && roles.includes('admin'));
+  if (!allowed) throw ApiError.forbidden();
   return principal;
 }

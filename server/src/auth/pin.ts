@@ -1,6 +1,7 @@
 import { randomToken, sameHash, sha256Hex } from '@/auth/crypto';
 import { newId, nowIso } from '@/db';
 import { ApiError, type Env } from '@/http';
+import { NOT_STAFF, STANDALONE_ROLES } from '@/auth/roles';
 import type { Role, Session } from '@/auth/service';
 
 /**
@@ -102,7 +103,7 @@ export async function loginFor(env: Env, mobile: string, userId: string | null):
       .first<UserRow>();
     if (theirs) return theirs;
   }
-  await env.DB.prepare("delete from users where mobile = ? and role != 'admin'").bind(mobile).run();
+  await env.DB.prepare(`delete from users where mobile = ? and ${NOT_STAFF}`).bind(mobile).run();
   return null;
 }
 
@@ -128,14 +129,25 @@ async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | nu
     };
   }
 
-  // Nobody the dairy keeps under this number. Only the dairy's own login stands on its own.
+  const desk = await env.DB.prepare('select id, full_name, status, app_access_enabled, user_id from desk_users where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; full_name: string; status: string; app_access_enabled: number; user_id: string | null }>();
+  if (desk) {
+    return {
+      user: await loginFor(env, mobile, desk.user_id),
+      linked: { role: 'desk', id: desk.id, name: desk.full_name, status: desk.status, appAccess: desk.app_access_enabled !== 0 },
+    };
+  }
+
+  // Nobody the dairy keeps a record for under this number. Only the owner's own login and a manager's stand
+  // on their own; anything else here is a login whose record has gone.
   const user = await env.DB.prepare(
     `select id, mobile, role, display_name, status, created_at, pin_hash, pin_set_at, pin_attempts, pin_locked_until
        from users where mobile = ?`,
   )
     .bind(mobile)
     .first<UserRow>();
-  return { user: user?.role === 'admin' ? user : null, linked: null };
+  return { user: user && STANDALONE_ROLES.includes(user.role) ? user : null, linked: null };
 }
 
 /**
@@ -170,7 +182,7 @@ export async function signInWithPin(env: Env, mobile: string, secret: string, no
   const { user, linked } = await findLogin(env, mobile);
   // Nobody the dairy keeps under this number — including a login left behind by a record that has since been
   // removed or renumbered, which is no more a way in than a number the dairy never had.
-  if (!linked && user?.role !== 'admin') {
+  if (!linked && !(user && STANDALONE_ROLES.includes(user.role))) {
     throw ApiError.badRequest('MOBILE_NOT_REGISTERED', 'This number is not registered with the dairy. Please contact us.');
   }
   refuseIfClosed(user, linked);
@@ -249,7 +261,7 @@ export async function signInWithPin(env: Env, mobile: string, secret: string, no
  */
 export function matchLoginToRecord(env: Env, mobile: string, open: boolean, at: string) {
   return env.DB
-    .prepare("update users set status = ?, updated_at = ? where mobile = ? and role != 'admin'")
+    .prepare(`update users set status = ?, updated_at = ? where mobile = ? and ${NOT_STAFF}`)
     .bind(open ? 'Active' : 'Inactive', at, mobile);
 }
 
@@ -265,13 +277,13 @@ export function matchLoginToRecord(env: Env, mobile: string, open: boolean, at: 
 export async function moveLogin(env: Env, from: string, to: string): Promise<void> {
   if (from === to) return;
   await env.DB
-    .prepare("update users set mobile = ?, updated_at = ? where mobile = ? and role != 'admin'")
+    .prepare(`update users set mobile = ?, updated_at = ? where mobile = ? and ${NOT_STAFF}`)
     .bind(to, nowIso(), from)
     .run();
 }
 
 export async function forgetLogin(env: Env, mobile: string): Promise<void> {
-  await env.DB.prepare("delete from users where mobile = ? and role != 'admin'").bind(mobile).run();
+  await env.DB.prepare(`delete from users where mobile = ? and ${NOT_STAFF}`).bind(mobile).run();
 }
 
 /**

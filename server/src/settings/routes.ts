@@ -74,7 +74,7 @@ export function mountSettings(router: Router): Router {
     })
 
     .put('/settings/:key', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const key = context.params.key as Key;
       if (!KEYS.includes(key)) throw ApiError.notFound('SETTING_NOT_FOUND', 'There is no such setting.');
 

@@ -12,6 +12,7 @@ import {
   type Row,
 } from '@/deliveryBoys/mapping';
 import { ApiError, json, readJson, type Env, type Router } from '@/http';
+import { isDairy } from '@/auth/roles';
 
 /** The delivery team: who they are, the routes they take, the days they worked, and what they are owed. */
 
@@ -46,7 +47,10 @@ async function getBoy(env: Env, id: string): Promise<DeliveryBoy> {
 /** One mobile number, one person: it is how they sign in. */
 async function assertMobileFree(env: Env, mobile: string, exceptId?: string): Promise<void> {
   const clash = await env.DB.prepare(
-    'select (select count(*) from delivery_boys where mobile = ?1 and id != ?2) + (select count(*) from customers where mobile = ?1) as used',
+    `select (select count(*) from delivery_boys where mobile = ?1 and id != ?2)` +
+      ` + (select count(*) from customers where mobile = ?1)` +
+      ` + (select count(*) from desk_users where mobile = ?1)` +
+      ` + (select count(*) from users where mobile = ?1 and role in ('super_admin', 'admin')) as used`,
   )
     .bind(mobile.trim(), exceptId ?? '')
     .first<{ used: number }>();
@@ -139,7 +143,7 @@ export function mountDeliveryBoys(router: Router): Router {
     .get('/delivery-boys', async (context) => {
       const principal = await requireRole(context, 'admin', 'delivery_boy');
       const items = await loadBoys(context.env);
-      return json({ items: principal.role === 'admin' ? items : items.map(withoutPrivateDetails) });
+      return json({ items: isDairy(principal.role) ? items : items.map(withoutPrivateDetails) });
     })
 
     .get('/me/delivery-boy', async (context) => {
@@ -151,13 +155,13 @@ export function mountDeliveryBoys(router: Router): Router {
     .get('/delivery-boys/:id', async (context) => {
       const principal = await requireUser(context);
       const boy = await getBoy(context.env, context.params.id!);
-      if (principal.role === 'admin') return json(boy);
+      if (isDairy(principal.role)) return json(boy);
       if (principal.role === 'delivery_boy') return json(boy.id === principal.linkedRecordId ? boy : withoutPrivateDetails(boy));
       throw ApiError.forbidden();
     })
 
     .post('/delivery-boys', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const body = await readJson<DeliveryBoy>(context.request);
       assertRequiredFields(body);
       await assertMobileFree(context.env, String(body.mobileNumber));
@@ -199,7 +203,7 @@ export function mountDeliveryBoys(router: Router): Router {
     })
 
     .delete('/delivery-boys/:id', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const id = context.params.id!;
       const gone = await getBoy(context.env, id);
       const onRoute = await customersOnRoute(context.env, id);

@@ -106,7 +106,7 @@ export function mountProducts(router: Router): Router {
     })
 
     .post('/products', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const { env, request } = context;
       const body = await readJson<Product>(request);
       if (!String(body.name ?? '').trim()) throw ApiError.badRequest('PRODUCT_NAME_REQUIRED', 'Give the product a name.');
@@ -118,7 +118,7 @@ export function mountProducts(router: Router): Router {
     })
 
     .patch('/products/:id', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const { env, params, request } = context;
       const id = params.id!;
       const current = await getProduct(env, id);
@@ -134,7 +134,7 @@ export function mountProducts(router: Router): Router {
     })
 
     .delete('/products/:id', async (context) => {
-      await requireRole(context, 'admin');
+      await requireRole(context, 'super_admin');
       const { env, params } = context;
       const id = params.id!;
       // A product on someone's subscription stays in the catalog, inactive, so old bills still read. Plan lines

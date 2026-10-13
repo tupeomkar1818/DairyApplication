@@ -3,6 +3,7 @@ import { newId, nowIso } from '@/db';
 import { ApiError, json, readJson, type Env, type Router } from '@/http';
 import { updateAnswersTally } from '@/jobs/reminders';
 import { notificationFromRow, notificationToRow, replacedBy, type Notification, type NotificationRow } from '@/notifications/mapping';
+import { isDairy } from '@/auth/roles';
 
 /**
  * In-app notifications: one row per thing worth telling somebody about — an order placed, a delivery marked, a bill
@@ -23,7 +24,7 @@ async function myRound(env: Env, deliveryBoyId: string): Promise<Set<string>> {
 
 /** The rows this reader may see. The dairy may also ask for every row, which its reports are built from. */
 async function inbox(env: Env, principal: Principal, scope: string | null): Promise<Notification[]> {
-  if (principal.role === 'admin') {
+  if (isDairy(principal.role)) {
     const rows =
       scope === 'all'
         ? await env.DB.prepare('select * from notifications order by created_at desc limit ?').bind(INBOX_LIMIT).all<NotificationRow>()
@@ -50,7 +51,7 @@ async function inbox(env: Env, principal: Principal, scope: string | null): Prom
  * app tells the dairy, itself, and the houses on its round. Nobody writes into another household's inbox.
  */
 async function mayAddress(env: Env, principal: Principal, row: Notification): Promise<boolean> {
-  if (principal.role === 'admin') return true;
+  if (isDairy(principal.role)) return true;
   const audience = String(row.audience);
   const customerId = (row.customerId as string | undefined) ?? '';
   const deliveryBoyId = (row.deliveryBoyId as string | undefined) ?? '';
@@ -210,14 +211,14 @@ export function mountNotifications(router: Router): Router {
 
 /** True when this row is addressed to this reader. */
 function readable(principal: Principal, row: NotificationRow): boolean {
-  if (principal.role === 'admin') return row.audience === 'Admin';
+  if (isDairy(principal.role)) return row.audience === 'Admin';
   if (principal.role === 'customer') return row.audience === 'Customer' && row.customer_id === principal.linkedRecordId;
   return row.audience === 'DeliveryBoy' && row.delivery_boy_id === principal.linkedRecordId;
 }
 
 /** The same question as SQL, for marking a whole inbox read. */
 function whereForReader(principal: Principal): { sql: string; values: unknown[] } {
-  if (principal.role === 'admin') return { sql: "audience = 'Admin'", values: [] };
+  if (isDairy(principal.role)) return { sql: "audience = 'Admin'", values: [] };
   const column = principal.role === 'customer' ? 'customer_id' : 'delivery_boy_id';
   const audience = principal.role === 'customer' ? 'Customer' : 'DeliveryBoy';
   return { sql: `audience = ? and ${column} = ?`, values: [audience, principal.linkedRecordId ?? ''] };
