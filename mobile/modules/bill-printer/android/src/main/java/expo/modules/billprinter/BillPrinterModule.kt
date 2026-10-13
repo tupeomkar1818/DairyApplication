@@ -69,12 +69,6 @@ class BillPrinterModule : Module() {
       adapter != null && adapter?.isEnabled == true && mayUseBluetooth()
     }
 
-    /** Asks for the permission Android wants on this version, and says whether it was given. */
-    AsyncFunction("requestPermission") Coroutine { ->
-      // Expo asks on the UI thread and hands back the answer; nothing here needs to block on it.
-      mayUseBluetooth()
-    }
-
     /** Printers already paired with this phone, as {id, name}. */
     Function("pairedPrinters") {
       if (!mayUseBluetooth()) throw PermissionMissing()
