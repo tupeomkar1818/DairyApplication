@@ -5,6 +5,31 @@ writes the same records instead of keeping its own. This is what to do, in what 
 
 Going back is one line: set `EXPO_PUBLIC_SERVICE_MODE=mock` and restart the app. Nothing on the server is lost.
 
+## Who can do what
+
+You are the **owner**. Prices, the dairy's payment details, and taking people on or letting them go are yours
+alone — nobody else can change them, however much else they can do.
+
+- A **manager** is somebody you add to run the day: customers, rounds, attendance, offers, announcements, chat,
+  confirming payments, and the counter's takings. They cannot re-price the milk or add staff.
+- A **desk user** rings up walk-in sales at the counter and prints the bill. They see their own sales and the
+  catalogue, and nothing else of the dairy's.
+
+Add either from **Desk users** on your dashboard. They sign in like everybody else: their own mobile number the
+first time, then a PIN of their own.
+
+## The counter
+
+For somebody who walks in and pays on the spot. The desk opens the app, taps what they are buying, takes cash or
+UPI, and presses **Place the order** — the bill prints and the sale is done. It never goes near a monthly bill.
+
+You see the day's takings under **Counter sales**: the total, split by cash and UPI, by who sold, and what sold.
+It is kept apart from the milk round's money so you can tell which of the two is paying for the dairy.
+
+**The printer is the one thing still to set up.** Printing to a Bluetooth counter printer needs the app installed
+as a build (not the Expo preview), which is the same EAS step that push notifications need. Until then a sale is
+still rung up and saved, and the desk is simply told the bill did not print.
+
 ## How everybody signs in
 
 No SMS and no codes. Each person signs in with their **mobile number and a 4-digit PIN of their own**:
@@ -103,7 +128,7 @@ customer(s) about tomorrow`). Both the dairy's and the customers' notification l
 | --- | --- |
 | MSG91 / DLT | no SMS at all: sign-in does not need it, but changing one’s own mobile number in the app does |
 | R2 not enabled | no offer posters, announcement pictures or profile photos |
-| no EAS project id | no push: reminders appear in the app, not on the phone's lock screen |
+| no EAS project id | no push (reminders stay inside the app), and no Bluetooth bill printing at the counter |
 | `dairy.matdarraja.in` CNAME | the website is live at `amrale-dairy-site.pages.dev` only |
 
 ## Getting the app onto a phone

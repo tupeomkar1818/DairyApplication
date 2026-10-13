@@ -88,6 +88,45 @@ on the phone, so the app works while the rest is built. Back to the way it was: 
 Signing in needs a number the dairy knows: the admin login created by `migrations/0003_admin_login.sql`, or a
 customer or delivery boy the admin has added.
 
+## Who is who
+
+Five roles, and the first two are the dairy itself:
+
+| role | what it is |
+| --- | --- |
+| `super_admin` | The dairy's own login. Prices, payment details and who works here are its alone. |
+| `admin` | A manager, taken on by the owner. Runs the day; cannot re-price the milk, change where money goes, or take staff on. |
+| `desk` | Rings up walk-in sales at the counter and prints the bill. Nothing else. |
+| `customer` | Their own record, their own days, their own bills. |
+| `delivery_boy` | Their own round and their own attendance. |
+
+`requireRole` lets a super admin through wherever an admin would pass. That is the whole hierarchy and it is
+written in one place, because spelled out at seventy call sites one forgotten role shuts the dairy out of its own
+screen. Where something is the owner's alone the call says `super_admin` and only that. Code that shows one thing
+to the dairy and another to everybody else asks `isDairy()` rather than comparing with `'admin'`.
+
+## The counter
+
+A desk sells to whoever walks in, and they pay there and then. `POST /counter/sales` takes the lines and works
+out the total itself — a bill is money, and the phone does not get to decide what somebody owes. What is written
+down is what was on the paper: the product name, pack and price are **copied onto each line**, so re-pricing next
+month cannot rewrite a receipt somebody is holding.
+
+- **It never reaches a monthly bill.** The billing engine works out what a subscription owes; money already in the
+  till would be charged a second time.
+- **A sale sent twice is rung up once.** The phone sends its own `clientRef`; the same one comes back with the
+  same bill rather than taking the money again.
+- **Bill numbers** are per day — 001, 002 — decided by a unique index on (day, number) with a retry, so two
+  counters cannot both be 007.
+- **`GET /counter/day`** is what the dairy sees: the total, split by cash and UPI, by who sold, and what sold.
+  Kept apart from the subscription money on purpose — one figure for both would hide which trade pays for the
+  dairy. A desk user reading `GET /counter/sales` sees only their own.
+- **Their sales outlive them.** Remove a desk user and the day still reads right, under the name that was on the
+  bill.
+
+`npm run e2e:counter` walks all of it: taking somebody on, the two tiers, a sale, the same sale twice, a discount
+bigger than the sale, and what is left when the desk user is gone.
+
 ## Signing in
 
 No SMS is needed. Somebody signs in with their mobile number and a 4-digit PIN they choose themselves

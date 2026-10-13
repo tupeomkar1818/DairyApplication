@@ -7,6 +7,10 @@
 --
 -- SQLite cannot widen a CHECK, so `users` is rebuilt. `defer_foreign_keys` holds the references in sessions,
 -- customers, delivery_boys and push_tokens still while the old table goes and the new one takes its name.
+--
+-- One thing it does cost: the sessions go with it, so everybody signs in again the next time they open the app.
+-- Their PINs are untouched, so that is one sign-in and no more. Measured on the live database rather than
+-- guessed at: three sessions before, none after.
 
 PRAGMA defer_foreign_keys = on;
 
