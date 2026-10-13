@@ -1,0 +1,11 @@
+{
+  "platforms": [
+    "android",
+    "web"
+  ],
+  "android": {
+    "modules": [
+      "expo.modules.billprinter.BillPrinterModule"
+    ]
+  }
+}
