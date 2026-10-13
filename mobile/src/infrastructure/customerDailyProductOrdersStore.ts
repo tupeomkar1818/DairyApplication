@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import type { CustomerDailyProductOrderLineDto } from '@/src/domain/customers/dtos';
 import { CustomerDailyProductOrderLineDtoSchema } from '@/src/domain/customers/validations';
 import { CUSTOMER_DAILY_PRODUCT_ORDERS_STORE_PREFIX } from '@/src/infrastructure/storage/keys';
@@ -20,6 +22,26 @@ function sanitizeLines(raw: unknown): CustomerDailyProductOrderLineDto[] {
 export async function loadDailyProductOrderLines(customerId: string): Promise<CustomerDailyProductOrderLineDto[]> {
   const raw = await readJson<unknown>(storageKey(customerId));
   return sanitizeLines(raw);
+}
+
+/** True while any of the old day-order rows are still on this phone. */
+export async function hasLegacyDayOrderRows(): Promise<boolean> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    return keys.some((k) => k.startsWith(`${CUSTOMER_DAILY_PRODUCT_ORDERS_STORE_PREFIX}:`));
+  } catch {
+    // A phone that will not list its keys is not worth guessing about: let the migration look properly.
+    return true;
+  }
+}
+
+/** Takes a customer's old rows off the phone for good, so nothing is left to find. */
+export async function clearDailyProductOrderLines(customerId: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(storageKey(customerId));
+  } catch {
+    // It will be read as empty and skipped either way.
+  }
 }
 
 export async function saveDailyProductOrderLines(

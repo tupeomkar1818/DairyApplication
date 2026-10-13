@@ -28,8 +28,17 @@ export function RoleGuardLayout({ role, children }: Props) {
     );
   }
 
-  if (session.data?.role !== role) {
+  // Nobody is signed in: they have to.
+  if (!session.data) {
     return <Redirect href="/(auth)/login" />;
+  }
+
+  // Somebody *is* signed in, just not one of these. That is not a reason to show them a sign-in screen — and it
+  // happens for an ordinary reason: three of the apps have a screen called `reports`, so opening /reports cold (a
+  // link, or a refresh on the web) can land in the wrong group's stack before anyone has done anything wrong. The
+  // splash is the screen whose job is working out where somebody belongs, so it takes them to their own app.
+  if (session.data.role !== role) {
+    return <Redirect href="/(auth)/splash" />;
   }
 
   return (

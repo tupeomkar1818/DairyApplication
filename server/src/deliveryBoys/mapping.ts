@@ -69,6 +69,9 @@ const COLUMN_KEYS = [
 
 /** Personal details a colleague has no business reading (the dairy sees everything). */
 const PRIVATE_KEYS = [
+  'salaryType',
+  'monthlySalary',
+  'perDaySalary',
   'bankDetails',
   'upiId',
   'aadhaarNumber',

@@ -42,8 +42,9 @@
       "fullName": "",
       "mobileNumber": "",
       "primaryRouteName": "Kothrud A",
-      "salaryType": "Monthly",
+      "salaryType": "Fixed Monthly Salary",
       "monthlySalary": 0,
+      "_perDaySalary_instead": "Use \"salaryType\": \"Attendance Based Salary\" with \"perDaySalary\" if they are paid by the day.",
       "joiningDate": ""
     }
   ],

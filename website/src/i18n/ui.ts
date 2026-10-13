@@ -109,7 +109,7 @@ const en = {
     intro: 'Start in a message. After that, your milk simply arrives — and you stay in control from your phone.',
     steps: [
       { title: 'Tell us what you need', text: 'WhatsApp or call us with the milk and quantity you want each day.' },
-      { title: 'We set up your account', text: 'We add your home to a delivery route and give you access to our app with your mobile number.' },
+      { title: 'We set up your account', text: 'We add your home to a delivery route and give you access to our app. The first time you sign in, your mobile number is the password — then you choose a 4-digit PIN of your own.' },
       { title: 'Delivered every morning', text: 'Your delivery partner brings your order to your door.' },
       { title: 'Change anytime, pay monthly', text: 'Pause a day or add items until 9 pm the evening before. One bill a month, paid by UPI or cash.' },
     ],
@@ -125,7 +125,7 @@ const en = {
   app: {
     eyebrow: 'The Amrale app',
     title: 'Manage your milk from your phone',
-    intro: 'Our customers manage their daily order in the Amrale app, signing in with the mobile number registered with the dairy.',
+    intro: 'Our customers manage their daily order in the Amrale app, signing in with the mobile number registered with the dairy and a 4-digit PIN they choose themselves.',
     features: [
       'Pause a day or a whole holiday',
       'Add curd, paneer or sweets to any day’s delivery',
@@ -265,7 +265,7 @@ const mr: Dictionary = {
     intro: 'एका मेसेजने सुरुवात करा. त्यानंतर दूध रोज येत राहील — आणि सगळं नियंत्रण तुमच्या फोनवर.',
     steps: [
       { title: 'तुम्हाला काय हवं ते सांगा', text: 'रोज कोणतं आणि किती दूध हवं ते WhatsApp किंवा फोनवर कळवा.' },
-      { title: 'आम्ही तुमचं खातं तयार करतो', text: 'आम्ही तुमचं घर डिलिव्हरी मार्गात जोडतो आणि तुमच्या मोबाईल नंबरने आमचं ॲप वापरण्याची सोय देतो.' },
+      { title: 'आम्ही तुमचं खातं तयार करतो', text: 'आम्ही तुमचं घर डिलिव्हरी मार्गात जोडतो आणि आमचं ॲप वापरण्याची सोय देतो. पहिल्यांदा साइन इन करताना तुमचा मोबाईल नंबरच पासवर्ड असतो — मग तुम्ही स्वतःचा ४ अंकी PIN निवडता.' },
       { title: 'रोज सकाळी डिलिव्हरी', text: 'तुमचा डिलिव्हरी पार्टनर ऑर्डर तुमच्या दारात आणून देतो.' },
       { title: 'कधीही बदल, महिन्याला पेमेंट', text: 'आदल्या दिवशी रात्री 9 पर्यंत एखादा दिवस थांबवा किंवा पदार्थ जोडा. महिन्याला एकच बिल, UPI किंवा रोख भरा.' },
     ],
@@ -281,7 +281,7 @@ const mr: Dictionary = {
   app: {
     eyebrow: 'अमराळे ॲप',
     title: 'तुमचं दूध, तुमच्या फोनवरून',
-    intro: 'आमचे ग्राहक डेअरीकडे नोंदवलेल्या मोबाईल नंबरने अमराळे ॲपमध्ये आपली रोजची ऑर्डर सांभाळतात.',
+    intro: 'आमचे ग्राहक डेअरीकडे नोंदवलेला मोबाईल नंबर आणि स्वतः निवडलेला ४ अंकी PIN वापरून अमराळे ॲपमध्ये आपली रोजची ऑर्डर सांभाळतात.',
     features: [
       'एखादा दिवस किंवा सुट्टीचे दिवस थांबवा',
       'कोणत्याही दिवशी दही, पनीर किंवा मिठाई जोडा',

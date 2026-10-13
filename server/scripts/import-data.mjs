@@ -24,6 +24,9 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
 
+/** The two the apps understand. Anything else and the salary screens work out to nothing. */
+const SALARY_TYPES = ['Fixed Monthly Salary', 'Attendance Based Salary'];
+
 const LIVE = 'https://amrale-dairy-api.amrale-dairy-website.workers.dev';
 const LOCAL = 'http://127.0.0.1:8787';
 
@@ -147,6 +150,13 @@ function complaints(data) {
     const where = `deliveryBoys[${i}]${b.fullName ? ` (${b.fullName})` : ''}`;
     if (!String(b.fullName ?? '').trim()) out.push(`${where}: needs a name`);
     if (!/^\d{10}$/.test(String(b.mobileNumber ?? '').trim())) out.push(`${where}: needs a 10-digit mobile number`);
+    if (b.salaryType !== undefined && !SALARY_TYPES.includes(b.salaryType)) {
+      out.push(`${where}: salaryType is "${b.salaryType}" — it has to be one of ${SALARY_TYPES.map((t) => `"${t}"`).join(' or ')}`);
+    }
+    if (b.salaryType === 'Attendance Based Salary' ? !(Number(b.perDaySalary) > 0) : !(Number(b.monthlySalary) > 0)) {
+      const field = b.salaryType === 'Attendance Based Salary' ? 'perDaySalary' : 'monthlySalary';
+      out.push(`${where}: ${field} is still ${b[field] ?? 'missing'} — they would be paid nothing`);
+    }
   });
 
   const seen = new Map();
@@ -234,7 +244,7 @@ async function importDeliveryBoys(boys) {
       primaryRouteName: boy.primaryRouteName ?? '',
       status: boy.status ?? 'Active',
       appAccessEnabled: boy.appAccessEnabled ?? true,
-      salaryType: boy.salaryType ?? 'Monthly',
+      salaryType: boy.salaryType ?? 'Fixed Monthly Salary',
       monthlySalary: Number(boy.monthlySalary ?? 0),
       perDaySalary: Number(boy.perDaySalary ?? 0),
       joiningDate: ymd(boy.joiningDate) || today,
