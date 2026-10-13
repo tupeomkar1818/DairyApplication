@@ -20,7 +20,9 @@ you will remember."*
 
 Things to know:
 
-- **Only numbers the dairy has added can sign in at all.** A stranger gets "No such address."
+- **Only numbers already in the dairy's records can sign in at all.** Adding the customer or delivery boy is what
+  creates their login; anyone else is told the number is not registered. Remove them and the login goes too — the
+  PIN they chose stops working that moment.
 - **Five wrong PINs locks that person out for 15 minutes.** Waiting is enough; nothing is lost.
 - **Forgotten PIN?** Open that customer in the admin app and press **Reset app PIN** on their card. They then sign
   in with their own mobile number again and choose a new one. Only the dairy can do this.

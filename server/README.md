@@ -93,6 +93,11 @@ customer or delivery boy the admin has added.
 No SMS is needed. Somebody signs in with their mobile number and a 4-digit PIN they choose themselves
 (`src/auth/pin.ts`):
 
+- **The number has to be one the dairy keeps** — the admin login, a row in `customers`, or one in
+  `delivery_boys`. Anything else is `MOBILE_NOT_REGISTERED` before a password is even looked at. Adding somebody
+  is what lets them in; the `users` row itself is made on their first sign-in. Deleting them takes the `users`
+  row with it (`forgetLogin`), so a removed customer’s PIN stops working that moment and their sessions and push
+  tokens cascade away. The dairy’s own admin login is never removed this way.
 - **The first time**, their password *is* their own mobile number. `POST /auth/login` answers
   `{ session, mustSetPin: true }`, and the app takes them straight to **Choose your PIN**.
 - **Until a PIN exists** that session may do nothing else: every other route answers `403 PIN_NOT_SET`. Only

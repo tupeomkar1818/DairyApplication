@@ -175,6 +175,17 @@ export async function signInWithPin(env: Env, mobile: string, secret: string, no
 }
 
 /**
+ * Forgets the login of somebody the dairy has removed.
+ *
+ * A login is made on the first sign-in and outlives the customer or delivery boy record it was made for, so
+ * without this a removed customer would keep signing in with the PIN they chose. Their sessions and push tokens
+ * cascade away with it. The dairy's own admin login is never touched.
+ */
+export async function forgetLogin(env: Env, mobile: string): Promise<void> {
+  await env.DB.prepare("delete from users where mobile = ? and role != 'admin'").bind(mobile).run();
+}
+
+/**
  * Sets the PIN, or changes it. Changing one needs the old PIN; setting the first one does not — signing in with
  * the mobile number is what proved the phone.
  *

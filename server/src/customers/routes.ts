@@ -1,3 +1,4 @@
+import { forgetLogin } from '@/auth/pin';
 import {
   customerFromRow,
   customerToRow,
@@ -303,9 +304,11 @@ export function mountCustomers(router: Router): Router {
       await requireRole(context, 'admin');
       const { env, params } = context;
       const id = params.id!;
-      await getCustomer(env, id);
+      const gone = await getCustomer(env, id);
       // Their plans, days, orders, deliveries and payments go with them (the tables cascade).
       await env.DB.prepare('delete from customers where id = ?').bind(id).run();
+      // And so does their login, or they would keep signing in with the PIN they chose.
+      if (gone.mobile) await forgetLogin(env, String(gone.mobile));
       return new Response(null, { status: 204 });
     });
 }

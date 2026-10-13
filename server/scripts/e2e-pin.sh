@@ -82,5 +82,9 @@ login "$MOBILE" "2468" | show '"signs in with the new PIN: " + !!v.session'
 step "and a PIN has to be four digits"
 cust -X POST "$API/auth/pin" -d '{"pin":"123","currentPin":"2468"}' | problem
 
-step "tidy up"
-admin -o /dev/null -w "customer %{http_code}\n" -X DELETE "$API/customers/$CUST_ID"
+step "the dairy removes them, and the login goes too"
+admin -o /dev/null -w "removed: %{http_code}\n" -X DELETE "$API/customers/$CUST_ID"
+echo "the PIN they chose:"
+login "$MOBILE" "2468" | problem
+echo "and their own number:"
+login "$MOBILE" "$MOBILE" | problem

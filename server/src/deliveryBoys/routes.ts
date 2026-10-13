@@ -1,3 +1,4 @@
+import { forgetLogin } from '@/auth/pin';
 import { requireRole, requireUser } from '@/auth/service';
 import { newId, nowIso } from '@/db';
 import {
@@ -189,12 +190,14 @@ export function mountDeliveryBoys(router: Router): Router {
     .delete('/delivery-boys/:id', async (context) => {
       await requireRole(context, 'admin');
       const id = context.params.id!;
-      await getBoy(context.env, id);
+      const gone = await getBoy(context.env, id);
       const onRoute = await customersOnRoute(context.env, id);
       if (onRoute > 0) {
         throw ApiError.badRequest('DELIVERY_BOY_HAS_CUSTOMERS', 'Move this route’s customers to someone else first.');
       }
       await context.env.DB.prepare('delete from delivery_boys where id = ?').bind(id).run();
+      // And their login with them, or they would keep signing in with the PIN they chose.
+      if (gone.mobileNumber) await forgetLogin(context.env, String(gone.mobileNumber));
       return new Response(null, { status: 204 });
     });
 }
