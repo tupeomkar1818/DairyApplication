@@ -1,4 +1,4 @@
-import { forgetLogin } from '@/auth/pin';
+import { forgetLogin, matchLoginToRecord, moveLogin } from '@/auth/pin';
 import {
   customerFromRow,
   customerToRow,
@@ -134,6 +134,13 @@ async function writeCustomer(env: Env, customer: Customer, createdAt: string, up
       updatedAt,
     ),
   ];
+
+  // Switching a customer off — by status or by the app-access switch — reaches a phone already signed in.
+  if (customer.mobile) {
+    statements.push(
+      matchLoginToRecord(env, String(customer.mobile), row.status !== 'Inactive' && row.app_access_enabled !== 0, updatedAt),
+    );
+  }
 
   // Plans are sent whole or not at all: a profile edit leaves them alone, the subscription tab replaces them.
   if (plans) {
@@ -293,6 +300,8 @@ export function mountCustomers(router: Router): Router {
       const merged: Customer = { ...current, ...patch, id, createdAt: current.createdAt, updatedAt: nowIso() };
       assertRequiredFields(merged);
       if (patch.mobile !== undefined) await assertMobileFree(env, String(merged.mobile), id);
+      // Their login goes with the number, so they stay signed in and keep the PIN they chose.
+      if (current.mobile && merged.mobile) await moveLogin(env, String(current.mobile), String(merged.mobile));
       // Only the lists the patch actually carried are written; the merged record keeps the rest for the answer.
       const toWrite: Customer = { ...merged };
       for (const area of HISTORY) if (!Array.isArray(patch[area.key])) delete toWrite[area.key];

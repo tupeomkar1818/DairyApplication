@@ -1,6 +1,7 @@
 export type DomainErrorCode =
   | 'MOBILE_NOT_REGISTERED'
   | 'USER_INACTIVE'
+  | 'APP_ACCESS_DISABLED'
   | 'OTP_RESEND_COOLDOWN'
   | 'OTP_EXPIRED'
   | 'OTP_INVALID'

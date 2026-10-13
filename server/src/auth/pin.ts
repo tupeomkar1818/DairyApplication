@@ -83,7 +83,7 @@ async function countWrongTry(env: Env, user: UserRow, now: Date): Promise<never>
 }
 
 /** The dairy's record for this number: the admin's own login, a customer, or a delivery boy. */
-async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | null; linked: { role: Role; id: string; name: string } | null }> {
+async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | null; linked: { role: Role; id: string; name: string; status: string; appAccess: boolean } | null }> {
   const user = await env.DB.prepare(
     `select id, mobile, role, display_name, status, created_at, pin_hash, pin_set_at, pin_attempts, pin_locked_until
        from users where mobile = ?`,
@@ -91,15 +91,42 @@ async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | nu
     .bind(mobile)
     .first<UserRow>();
 
-  const customer = await env.DB.prepare('select id, name from customers where mobile = ?').bind(mobile).first<{ id: string; name: string }>();
-  if (customer) return { user, linked: { role: 'customer', id: customer.id, name: customer.name } };
-
-  const boy = await env.DB.prepare('select id, full_name from delivery_boys where mobile = ?')
+  const customer = await env.DB.prepare('select id, name, status, app_access_enabled from customers where mobile = ?')
     .bind(mobile)
-    .first<{ id: string; full_name: string }>();
-  if (boy) return { user, linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name } };
+    .first<{ id: string; name: string; status: string; app_access_enabled: number }>();
+  if (customer) {
+    return { user, linked: { role: 'customer', id: customer.id, name: customer.name, status: customer.status, appAccess: customer.app_access_enabled !== 0 } };
+  }
+
+  const boy = await env.DB.prepare('select id, full_name, status, app_access_enabled from delivery_boys where mobile = ?')
+    .bind(mobile)
+    .first<{ id: string; full_name: string; status: string; app_access_enabled: number }>();
+  if (boy) {
+    return { user, linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name, status: boy.status, appAccess: boy.app_access_enabled !== 0 } };
+  }
 
   return { user, linked: null };
+}
+
+/**
+ * Turns away somebody the dairy has switched off.
+ *
+ * The admin app's switches move together — turning a customer Inactive turns their app access off as well — and
+ * either one means the same thing here: the number is still the dairy’s, but it is not to be signed in with.
+ * Their record and their bills are untouched, so switching them back on lets them in again with the PIN they
+ * already chose.
+ *
+ * @throws ApiError USER_INACTIVE, APP_ACCESS_DISABLED
+ */
+export function refuseIfClosed(
+  user: { status: string } | null,
+  linked: { status: string; appAccess: boolean } | null,
+): void {
+  const inactive = user?.status === 'Inactive' || linked?.status === 'Inactive';
+  if (inactive) throw new ApiError(403, 'USER_INACTIVE', 'This account is inactive. Please contact the dairy.');
+  if (linked && !linked.appAccess) {
+    throw new ApiError(403, 'APP_ACCESS_DISABLED', 'App access is switched off for this account. Please contact the dairy.');
+  }
 }
 
 export type LoginResult = { session: Session; mustSetPin: boolean };
@@ -111,10 +138,12 @@ export type LoginResult = { session: Session; mustSetPin: boolean };
  */
 export async function signInWithPin(env: Env, mobile: string, secret: string, now: Date = new Date()): Promise<LoginResult> {
   const { user, linked } = await findLogin(env, mobile);
-  if (!user && !linked) {
+  // Nobody the dairy keeps under this number — including a login left behind by a record that has since been
+  // removed or renumbered, which is no more a way in than a number the dairy never had.
+  if (!linked && user?.role !== 'admin') {
     throw ApiError.badRequest('MOBILE_NOT_REGISTERED', 'This number is not registered with the dairy. Please contact us.');
   }
-  if (user?.status === 'Inactive') throw ApiError.forbidden('This account is inactive. Please contact the dairy.');
+  refuseIfClosed(user, linked);
 
   const at = nowIso();
   // First sign-in for a customer or delivery boy the dairy added: their login is made now, with no PIN yet.
@@ -181,6 +210,36 @@ export async function signInWithPin(env: Env, mobile: string, secret: string, no
  * without this a removed customer would keep signing in with the PIN they chose. Their sessions and push tokens
  * cascade away with it. The dairy's own admin login is never touched.
  */
+/**
+ * Keeps a login in step with the record it belongs to, as part of that record’s own write.
+ *
+ * Signing in reads the customer’s or delivery boy’s own row, so switching somebody off stops the next sign-in
+ * by itself. A phone that is already signed in, though, does not sign in again for months — and `requireUser`
+ * refuses an inactive login, so this is what reaches that phone, on its very next request.
+ */
+export function matchLoginToRecord(env: Env, mobile: string, open: boolean, at: string) {
+  return env.DB
+    .prepare("update users set status = ?, updated_at = ? where mobile = ? and role != 'admin'")
+    .bind(open ? 'Active' : 'Inactive', at, mobile);
+}
+
+/**
+ * Moves a login when the dairy corrects somebody's mobile number.
+ *
+ * Without this the old number would go on signing in (it is still a login, even though the dairy no longer has
+ * that number anywhere), and worse, giving that number to somebody new later would hand them the old owner’s
+ * PIN. Moving it instead keeps the person signed in and keeps the PIN they chose, which is what the dairy means
+ * by correcting a number. A customer who changes their own number goes through `profile/routes.ts`, which
+ * already does this as part of its own write.
+ */
+export async function moveLogin(env: Env, from: string, to: string): Promise<void> {
+  if (from === to) return;
+  await env.DB
+    .prepare("update users set mobile = ?, updated_at = ? where mobile = ? and role != 'admin'")
+    .bind(to, nowIso(), from)
+    .run();
+}
+
 export async function forgetLogin(env: Env, mobile: string): Promise<void> {
   await env.DB.prepare("delete from users where mobile = ? and role != 'admin'").bind(mobile).run();
 }

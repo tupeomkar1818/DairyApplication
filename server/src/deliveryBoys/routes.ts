@@ -1,4 +1,4 @@
-import { forgetLogin } from '@/auth/pin';
+import { forgetLogin, matchLoginToRecord, moveLogin } from '@/auth/pin';
 import { requireRole, requireUser } from '@/auth/service';
 import { newId, nowIso } from '@/db';
 import {
@@ -97,6 +97,13 @@ async function writeBoy(env: Env, boy: DeliveryBoy, createdAt: string, updatedAt
   ];
 
   // Attendance arrives whole, like the other lists: what is sent is what the month has.
+  // Switching them off — by status or by the app-access switch — reaches a phone already signed in.
+  if (boy.mobileNumber) {
+    statements.push(
+      matchLoginToRecord(env, String(boy.mobileNumber), row.status !== 'Inactive' && row.app_access_enabled !== 0, updatedAt),
+    );
+  }
+
   if (attendance) {
     // A day can be marked as covering for someone — that someone has to be on the team.
     const coverIds = [...new Set(attendance.map((entry) => String(entry.coverForDeliveryBoyId ?? '')).filter(Boolean))];
@@ -177,6 +184,10 @@ export function mountDeliveryBoys(router: Router): Router {
       const merged: DeliveryBoy = { ...current, ...patch, id, createdAt: current.createdAt, updatedAt: nowIso() };
       assertRequiredFields(merged);
       if (patch.mobileNumber !== undefined) await assertMobileFree(context.env, String(merged.mobileNumber), id);
+      // Their login goes with the number, so they stay signed in and keep the PIN they chose.
+      if (current.mobileNumber && merged.mobileNumber) {
+        await moveLogin(context.env, String(current.mobileNumber), String(merged.mobileNumber));
+      }
       await writeBoy(
         context.env,
         merged,

@@ -129,7 +129,7 @@ describe('AuthServiceMock — admin-created accounts', () => {
 
   it('rejects a customer whose app access is disabled', async () => {
     seedCustomers([{ id: 'cust_1', name: 'Asha', mobile: '9123456780', status: 'Active', appAccessEnabled: false }]);
-    await expectDomainError(() => svc.requestOtp({ mobileNumber: '9123456780' }), 'USER_INACTIVE');
+    await expectDomainError(() => svc.requestOtp({ mobileNumber: '9123456780' }), 'APP_ACCESS_DISABLED');
   });
 
   it('rejects a delivery boy whose app access is disabled or who is inactive', async () => {
@@ -137,7 +137,7 @@ describe('AuthServiceMock — admin-created accounts', () => {
       { id: 'db_1', fullName: 'Ravi', mobileNumber: '9000000001', status: 'Active', appAccessEnabled: false },
       { id: 'db_2', fullName: 'Sunil', mobileNumber: '9000000002', status: 'Inactive', appAccessEnabled: true },
     ]);
-    await expectDomainError(() => svc.requestOtp({ mobileNumber: '9000000001' }), 'USER_INACTIVE');
+    await expectDomainError(() => svc.requestOtp({ mobileNumber: '9000000001' }), 'APP_ACCESS_DISABLED');
     await expectDomainError(() => svc.requestOtp({ mobileNumber: '9000000002' }), 'USER_INACTIVE');
   });
 

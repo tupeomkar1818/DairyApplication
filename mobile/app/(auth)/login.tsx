@@ -9,6 +9,7 @@ import { authFormStyles } from '@/src/components/auth/authFormStyles';
 import { RequestOtpRequestSchema } from '@/src/domain/auth/validations';
 import { DomainError } from '@/src/domain/shared/errors';
 import { useLogin } from '@/src/hooks/auth';
+import type { Dictionary } from '@/src/i18n/strings';
 import { useStrings } from '@/src/i18n/useStrings';
 import { amraleColors, amraleRadius, amraleTypography } from '@/src/theme/dairyTactile';
 
@@ -45,7 +46,7 @@ export default function LoginScreen() {
       const res = await login.mutateAsync({ mobileNumber, secret });
       router.replace(res.mustSetPin ? '/(auth)/set-pin' : '/');
     } catch (e) {
-      setError(e instanceof DomainError ? e.message : e instanceof Error ? e.message : c.errors.network);
+      setError(signInProblem(e, t, c));
     }
   }
 
@@ -139,6 +140,33 @@ export default function LoginScreen() {
       </AuthCard>
     </AuthBrandLayout>
   );
+}
+
+/**
+ * What to show when signing in is refused.
+ *
+ * The server answers in English, and half the dairy's customers read Marathi, so the codes it can answer with are
+ * said in the reader’s own language here. Anything unrecognised falls back to what the server said, which is
+ * better than a blank card.
+ */
+function signInProblem(e: unknown, t: Dictionary['auth'], c: Dictionary['common']): string {
+  if (e instanceof DomainError) {
+    switch (e.code) {
+      case 'MOBILE_NOT_REGISTERED':
+        return t.errors.notRegistered;
+      case 'USER_INACTIVE':
+        return t.errors.inactive;
+      case 'APP_ACCESS_DISABLED':
+        return t.errors.appAccessDisabled;
+      case 'PASSWORD_INVALID':
+        return t.errors.firstTimeWrong;
+      case 'PIN_INVALID':
+        return t.errors.pinWrong;
+      default:
+        return e.message;
+    }
+  }
+  return e instanceof Error ? e.message : c.errors.network;
 }
 
 const styles = StyleSheet.create({

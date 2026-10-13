@@ -82,6 +82,23 @@ login "$MOBILE" "2468" | show '"signs in with the new PIN: " + !!v.session'
 step "and a PIN has to be four digits"
 cust -X POST "$API/auth/pin" -d '{"pin":"123","currentPin":"2468"}' | problem
 
+step "the dairy corrects their number — the login goes with it, PIN and all"
+admin -o /dev/null -X PATCH "$API/customers/$CUST_ID" -d "{\"mobile\":\"9876588889\"}"
+echo -n "the old number: "; login "$MOBILE" "2468" | problem
+echo -n "the new one:    "; login "9876588889" "2468" | show 'JSON.stringify({signedIn: !!v.session, mustSetPin: v.mustSetPin})'
+admin -o /dev/null -X PATCH "$API/customers/$CUST_ID" -d "{\"mobile\":\"$MOBILE\"}"
+
+step "switching them off stops them signing in, and stops the phone already signed in"
+STILL_IN=$(login "$MOBILE" "2468" | field session.sessionId)
+admin -o /dev/null -X PATCH "$API/customers/$CUST_ID" -d '{"status":"Inactive","appAccessEnabled":false}'
+echo -n "signing in: "; login "$MOBILE" "2468" | problem
+echo -n "the phone that was already in: "
+curl -s -H "Authorization: Bearer $STILL_IN" "$API/me/customer" | problem
+
+step "switching them back on lets them in again, with the PIN they already chose"
+admin -o /dev/null -X PATCH "$API/customers/$CUST_ID" -d '{"status":"Active","appAccessEnabled":true}'
+login "$MOBILE" "2468" | show 'JSON.stringify({signedIn: !!v.session, mustSetPin: v.mustSetPin})'
+
 step "the dairy removes them, and the login goes too"
 admin -o /dev/null -w "removed: %{http_code}\n" -X DELETE "$API/customers/$CUST_ID"
 echo "the PIN they chose:"

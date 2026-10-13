@@ -23,6 +23,11 @@ Things to know:
 - **Only numbers already in the dairy's records can sign in at all.** Adding the customer or delivery boy is what
   creates their login; anyone else is told the number is not registered. Remove them and the login goes too — the
   PIN they chose stops working that moment.
+- **Marking somebody Inactive (or switching App access off) shuts them out at once** — they cannot sign in, and
+  a phone already signed in stops working on its next tap. Switch them back on and they are in again with the
+  same PIN. Use this rather than deleting somebody you may want back.
+- **Correcting somebody’s mobile number moves their login with it.** The old number stops working straight away;
+  they keep the same PIN and stay signed in.
 - **Five wrong PINs locks that person out for 15 minutes.** Waiting is enough; nothing is lost.
 - **Forgotten PIN?** Open that customer in the admin app and press **Reset app PIN** on their card. They then sign
   in with their own mobile number again and choose a new one. Only the dairy can do this.

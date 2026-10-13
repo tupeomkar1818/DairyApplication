@@ -98,6 +98,14 @@ No SMS is needed. Somebody signs in with their mobile number and a 4-digit PIN t
   is what lets them in; the `users` row itself is made on their first sign-in. Deleting them takes the `users`
   row with it (`forgetLogin`), so a removed customer’s PIN stops working that moment and their sessions and push
   tokens cascade away. The dairy’s own admin login is never removed this way.
+- **A customer the dairy has switched off cannot sign in.** Either switch does it — **Inactive**, or the
+  **App access** toggle (the admin form moves them together) — and the answer is `USER_INACTIVE` or
+  `APP_ACCESS_DISABLED`. The same write puts the `users` row into that state, so a phone that signed in months
+  ago is turned away on its very next request rather than when its session finally runs out. Switching them
+  back on lets them in with the PIN they already chose; nothing is reset.
+- **The number on the record is the number that signs in.** Correcting somebody’s mobile number moves their login
+with it (`moveLogin`), so the old number stops working at once while they stay signed in and keep the PIN they
+chose. A login whose record has gone — removed, or renumbered — is refused like a number the dairy never had.
 - **The first time**, their password *is* their own mobile number. `POST /auth/login` answers
   `{ session, mustSetPin: true }`, and the app takes them straight to **Choose your PIN**.
 - **Until a PIN exists** that session may do nothing else: every other route answers `403 PIN_NOT_SET`. Only

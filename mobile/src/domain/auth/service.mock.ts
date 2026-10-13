@@ -132,7 +132,7 @@ function assertLinkedRecordAllowsLogin(record: LinkedLoginRecord): void {
     throw new DomainError('USER_INACTIVE', strings('auth').errors.inactive);
   }
   if (record.appAccessEnabled === false) {
-    throw new DomainError('USER_INACTIVE', strings('auth').errors.appAccessDisabled);
+    throw new DomainError('APP_ACCESS_DISABLED', strings('auth').errors.appAccessDisabled);
   }
 }
 

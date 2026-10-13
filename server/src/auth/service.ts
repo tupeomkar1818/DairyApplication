@@ -1,4 +1,5 @@
 import { maskMobile, randomOtp, randomToken, sameHash, sha256Hex } from '@/auth/crypto';
+import { refuseIfClosed } from '@/auth/pin';
 import { sendOtpSms } from '@/auth/sms';
 import { newId, nowIso } from '@/db';
 import { ApiError, type Env, type RequestContext } from '@/http';
@@ -51,20 +52,24 @@ function pepper(env: Env): string {
 }
 
 /** The dairy's record for this number: the admin's own login, a customer, or a delivery boy. */
-async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | null; linked: { role: Role; id: string; name: string } | null }> {
+async function findLogin(env: Env, mobile: string): Promise<{ user: UserRow | null; linked: { role: Role; id: string; name: string; status: string; appAccess: boolean } | null }> {
   const user = await env.DB.prepare('select id, mobile, role, display_name, status, created_at from users where mobile = ?')
     .bind(mobile)
     .first<UserRow>();
 
-  const customer = await env.DB.prepare('select id, name, status from customers where mobile = ?')
+  const customer = await env.DB.prepare('select id, name, status, app_access_enabled from customers where mobile = ?')
     .bind(mobile)
-    .first<{ id: string; name: string; status: string }>();
-  if (customer) return { user, linked: { role: 'customer', id: customer.id, name: customer.name } };
+    .first<{ id: string; name: string; status: string; app_access_enabled: number }>();
+  if (customer) {
+    return { user, linked: { role: 'customer', id: customer.id, name: customer.name, status: customer.status, appAccess: customer.app_access_enabled !== 0 } };
+  }
 
-  const boy = await env.DB.prepare('select id, full_name, status from delivery_boys where mobile = ?')
+  const boy = await env.DB.prepare('select id, full_name, status, app_access_enabled from delivery_boys where mobile = ?')
     .bind(mobile)
-    .first<{ id: string; full_name: string; status: string }>();
-  if (boy) return { user, linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name } };
+    .first<{ id: string; full_name: string; status: string; app_access_enabled: number }>();
+  if (boy) {
+    return { user, linked: { role: 'delivery_boy', id: boy.id, name: boy.full_name, status: boy.status, appAccess: boy.app_access_enabled !== 0 } };
+  }
 
   return { user, linked: null };
 }
@@ -93,9 +98,7 @@ export async function requestOtp(env: Env, mobile: string): Promise<OtpRequestRe
   if (!user && !linked) {
     throw ApiError.badRequest('MOBILE_NOT_REGISTERED', 'This number is not registered with the dairy. Please contact us.');
   }
-  if (user && user.status === 'Inactive') {
-    throw ApiError.forbidden('This account is inactive. Please contact the dairy.');
-  }
+  refuseIfClosed(user, linked);
 
   const now = Date.now();
   const latest = await env.DB.prepare('select resend_at, created_at from otp_challenges where mobile = ? order by created_at desc limit 1')
@@ -168,7 +171,7 @@ export async function verifyOtp(env: Env, mobile: string, code: string): Promise
   const now = nowIso();
   const { user, linked } = await findLogin(env, mobile);
   if (!user && !linked) throw ApiError.badRequest('MOBILE_NOT_REGISTERED', 'This number is not registered with the dairy.');
-  if (user && user.status === 'Inactive') throw ApiError.forbidden('This account is inactive. Please contact the dairy.');
+  refuseIfClosed(user, linked);
 
   // First sign-in for a customer or delivery boy the admin added: their login is created now.
   let account: UserRow;
