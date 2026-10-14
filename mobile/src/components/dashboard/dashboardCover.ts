@@ -2,7 +2,7 @@ import { Image, Platform } from 'react-native';
 
 import type { DashboardCoverImage } from '@/src/domain/adminDashboard/entities';
 
-export const DEFAULT_DASHBOARD_COVER_ASSET = require('@/assets/images/admin-dashboard-cover.png');
+export const DEFAULT_DASHBOARD_COVER_ASSET = require('@/assets/images/admin-dashboard-cover.jpg');
 
 type ImageModule = number | string | { uri: string; width?: number; height?: number };
 

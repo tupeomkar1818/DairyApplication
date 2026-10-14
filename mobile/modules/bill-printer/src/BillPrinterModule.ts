@@ -7,7 +7,6 @@ export type PairedPrinter = { id: string; name: string };
  */
 declare class BillPrinterModule extends NativeModule<Record<never, never>> {
   isAvailable(): boolean;
-  requestPermission(): Promise<boolean>;
   pairedPrinters(): PairedPrinter[];
   connect(address: string): Promise<void>;
   disconnect(): Promise<void>;

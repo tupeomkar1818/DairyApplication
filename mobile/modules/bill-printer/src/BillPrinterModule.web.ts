@@ -12,9 +12,6 @@ class BillPrinterModule extends NativeModule<Record<never, never>> {
   isAvailable(): boolean {
     return false;
   }
-  async requestPermission(): Promise<boolean> {
-    return false;
-  }
   pairedPrinters(): PairedPrinter[] {
     return [];
   }

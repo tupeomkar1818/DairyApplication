@@ -1,3 +1,5 @@
+import { PermissionsAndroid, Platform } from 'react-native';
+
 import BillPrinterNative from '@/modules/bill-printer/src/BillPrinterModule';
 import { bytesToBase64 } from '@/src/infrastructure/printing/base64';
 
@@ -48,9 +50,26 @@ class NativeBillPrinter implements BillPrinter {
     }
   }
 
+  /**
+   * Asks Android for Bluetooth.
+   *
+   * Done here rather than natively because React Native already has it, and because which permission to ask for
+   * depends on the phone: Android 12 split the old blanket BLUETOOTH into connect and scan, and asking for a
+   * permission a phone has never heard of is refused outright.
+   */
   async requestPermission(): Promise<boolean> {
+    if (Platform.OS !== 'android') return false;
     try {
-      return await BillPrinterNative.requestPermission();
+      if (Number(Platform.Version) >= 31) {
+        const answer = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        ]);
+        // Connecting is what matters; scanning is only for finding a printer that is not paired yet.
+        return answer[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
+      }
+      // Older phones grant the old permission at install time, so there is nothing to ask.
+      return true;
     } catch {
       return false;
     }
