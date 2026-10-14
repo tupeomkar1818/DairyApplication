@@ -7,8 +7,12 @@ import type { UserRole } from '@/src/domain/shared/enums';
  */
 export function profileRouteForRole(role: UserRole | undefined): string {
   switch (role) {
+    // The owner lives in the dairy's app, so their profile is the dairy's one.
+    case 'super_admin':
     case 'admin':
       return '/(admin)/admin-profile';
+    case 'desk':
+      return '/(desk)/desk-profile';
     case 'customer':
       return '/(customer)/my-profile';
     case 'delivery_boy':

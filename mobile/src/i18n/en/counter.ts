@@ -1,6 +1,7 @@
 /** The desk: ringing up a walk-in sale, and what the dairy sees of the day. */
 export const counter = {
   title: 'Counter',
+  viewProfile: 'My profile',
   greeting: (name: string) => `Good day, ${name}`,
   subtitle: 'Add what they are buying, then take the money.',
 

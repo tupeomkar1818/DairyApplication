@@ -3,14 +3,19 @@ import { router } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { LogoutConfirmDialog } from '@/src/components/auth/LogoutConfirmDialog';
 import { AppSnackbar } from '@/src/components/shared/AppSnackbar';
 import { DairyTactileScreenBackground } from '@/src/components/shared/DairyTactileScreenBackground';
+import { ResponsiveContainer } from '@/src/components/shared/ResponsiveContainer';
 import { addToCart, cartTotals, setCartQuantity, type CartLine, type PaidBy } from '@/src/domain/counter/entities';
-import { useAuthSession } from '@/src/hooks/auth';
-import { useCounterSales, usePlaceSale } from '@/src/hooks/counter';
+import { useConfirmLogout } from '@/src/hooks/auth';
+import { useAuthSession } from '@/src/hooks/auth/useAuth';
+import { useCounterSales, useDeskUsers, usePlaceSale } from '@/src/hooks/counter';
 import { useProducts } from '@/src/hooks/products';
+import { useScreenSafeInsets } from '@/src/hooks/useScreenSafeInsets';
 import { useStrings } from '@/src/i18n/useStrings';
 import { printBill } from '@/src/infrastructure/printing/printBill';
+import { profileRouteForRole } from '@/src/utils/profileRoutes';
 import { amraleColors, amraleRadius, amraleSpacing, amraleTypography } from '@/src/theme/dairyTactile';
 
 /**
@@ -28,7 +33,12 @@ export default function CounterScreen() {
   const session = useAuthSession();
   const products = useProducts();
   const todaysSales = useCounterSales();
+  // The session knows a number, not a name; the desk list is where the dairy keeps who that is.
+  const deskUsers = useDeskUsers();
   const placeSale = usePlaceSale();
+
+  const { headerPaddingTop } = useScreenSafeInsets();
+  const { confirmLogout, isLoggingOut, logoutDialogProps } = useConfirmLogout();
 
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -72,6 +82,11 @@ export default function CounterScreen() {
   const totals = useMemo(() => cartTotals(cart, Number(discount) || 0), [cart, discount]);
   const busy = placeSale.isPending;
 
+  const today = todaysSales.data?.items ?? [];
+  const takenToday = today.reduce((sum, sale) => sum + sale.total, 0);
+  const me = deskUsers.data?.find((d) => d.mobile === session.data?.mobileNumber);
+  const firstName = (me?.fullName ?? '').trim().split(/\s+/)[0] ?? '';
+
   async function place() {
     if (!cart.length) {
       say(t.errors.empty);
@@ -98,23 +113,59 @@ export default function CounterScreen() {
 
   return (
     <DairyTactileScreenBackground>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{t.title}</Text>
-          <Text style={styles.subtitle}>{t.subtitle}</Text>
-        </View>
-        <Pressable
-          onPress={() => router.push('/(desk)/sales')}
-          accessibilityRole="button"
-          accessibilityLabel={t.today.title}
-          style={styles.headerBtn}
-        >
-          <MaterialCommunityIcons name="receipt-text-outline" size={22} color={amraleColors.blue} />
-          <Text style={styles.headerBtnText}>{t.today.sales(todaysSales.data?.items.length ?? 0)}</Text>
-        </Pressable>
+      <View style={[styles.appBar, { paddingTop: headerPaddingTop }]}>
+        <ResponsiveContainer style={styles.appBarRow}>
+          <Text style={styles.brandTitle} numberOfLines={1}>
+            {c.appName}
+          </Text>
+          <Pressable
+            onPress={() => router.push(profileRouteForRole(session.data?.role ?? 'desk') as never)}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel={t.viewProfile}
+          >
+            <MaterialCommunityIcons name="account-circle-outline" size={24} color={amraleColors.text} />
+          </Pressable>
+          <Pressable
+            onPress={confirmLogout}
+            disabled={isLoggingOut}
+            style={({ pressed }) => [styles.iconBtn, pressed && styles.pressed, isLoggingOut && styles.dim]}
+            accessibilityRole="button"
+            accessibilityLabel={c.actions.logout}
+          >
+            <MaterialCommunityIcons name="logout" size={22} color={amraleColors.text} />
+          </Pressable>
+        </ResponsiveContainer>
       </View>
 
       <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+        <View style={styles.hero}>
+          <View style={styles.heroTop}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.heroGreeting} numberOfLines={1}>
+                {firstName ? t.greeting(firstName) : t.title}
+              </Text>
+              <Text style={styles.heroSubtitle}>{t.subtitle}</Text>
+            </View>
+            <MaterialCommunityIcons name="cash-register" size={28} color="rgba(255,255,255,0.9)" />
+          </View>
+
+          <Pressable
+            onPress={() => router.push('/(desk)/sales')}
+            accessibilityRole="button"
+            accessibilityLabel={t.today.title}
+            style={({ pressed }) => [styles.heroTally, pressed && styles.pressed]}
+          >
+            <View>
+              <Text style={styles.heroTallyLabel}>{t.day.total}</Text>
+              <Text style={styles.heroTallyValue}>₹{takenToday.toLocaleString('en-IN')}</Text>
+            </View>
+            <View style={styles.heroTallyRight}>
+              <Text style={styles.heroTallyCount}>{t.today.sales(today.length)}</Text>
+              <MaterialCommunityIcons name="chevron-right" size={20} color="rgba(255,255,255,0.9)" />
+            </View>
+          </Pressable>
+        </View>
         <View style={styles.searchRow}>
           <MaterialCommunityIcons name="magnify" size={20} color={amraleColors.textMuted} />
           <TextInput
@@ -261,6 +312,7 @@ export default function CounterScreen() {
       ) : null}
 
       <AppSnackbar visible={toast.visible} message={toast.message} onDismiss={hide} duration={4000} />
+      <LogoutConfirmDialog {...logoutDialogProps} />
       <Text style={styles.hiddenHelper} accessibilityElementsHidden>
         {c.appName}
       </Text>
@@ -269,6 +321,53 @@ export default function CounterScreen() {
 }
 
 const styles = StyleSheet.create({
+  appBar: {
+    backgroundColor: amraleColors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: amraleColors.inputBorderLight,
+  },
+  appBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: amraleSpacing.lg,
+    paddingBottom: 10,
+  },
+  brandTitle: {
+    flex: 1,
+    fontFamily: amraleTypography.fontFamily.bold,
+    fontSize: 18,
+    color: amraleColors.text,
+  },
+  iconBtn: { padding: 8, borderRadius: 20 },
+  pressed: { opacity: 0.7 },
+  dim: { opacity: 0.4 },
+
+  /** The counter's own card: who is on it, and what has gone through it today. */
+  hero: {
+    borderRadius: amraleRadius.lg,
+    backgroundColor: amraleColors.blue,
+    padding: 16,
+    gap: 14,
+  },
+  heroTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  heroGreeting: { fontFamily: amraleTypography.fontFamily.bold, fontSize: 20, color: amraleColors.white },
+  heroSubtitle: { fontFamily: amraleTypography.fontFamily.regular, fontSize: 13, color: 'rgba(255,255,255,0.85)' },
+  heroTally: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: amraleRadius.md,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  heroTallyLabel: { fontFamily: amraleTypography.fontFamily.medium, fontSize: 12, color: 'rgba(255,255,255,0.85)' },
+  heroTallyValue: { fontFamily: amraleTypography.fontFamily.bold, fontSize: 26, color: amraleColors.white },
+  heroTallyRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  heroTallyCount: { fontFamily: amraleTypography.fontFamily.medium, fontSize: 13, color: 'rgba(255,255,255,0.9)' },
+
   header: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -3,6 +3,7 @@ import type { counter as en } from '@/src/i18n/en/counter';
 /** काउंटर: समोर येणाऱ्या ग्राहकाचं बिल, आणि दिवसभराची विक्री. */
 export const counter: typeof en = {
   title: 'काउंटर',
+  viewProfile: 'माझी प्रोफाइल',
   greeting: (name: string) => `नमस्कार, ${name}`,
   subtitle: 'ते काय घेत आहेत ते टाका, मग पैसे घ्या.',
 
